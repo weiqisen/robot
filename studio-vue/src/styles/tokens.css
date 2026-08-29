@@ -1,0 +1,128 @@
+/* ============================================================================
+   JetRover 设计 token —— 浅色 / 暗色两套值，一套语言。
+   色板不是新发明的，是从监控大屏原有的语言里提炼出来的；暗色是重新取阶的，
+   不是浅色翻转（大屏那套绿和琥珀放在白底上只有 1.9:1 和 2.2:1，用不了）。
+   状态色经 dataviz 验证器实测：CVD 最差对 ΔE 10.2、正常视力最差对 ΔE 21.3。
+   ============================================================================ */
+
+/* Inter 变体字（拉丁子集，48 KB）。机器人是局域网离线的，Google Fonts 取不到，
+   所以字体必须打进包里。文件来自 @fontsource-variable/inter 的
+   inter-latin-wght-normal.woff2，已复制到 public/fonts/。
+   中文不在 Inter 里，回退到 PingFang SC / 微软雅黑。 */
+@font-face {
+  font-family: 'Inter Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url(../fonts/inter-latin-var.woff2) format('woff2-variations');
+}
+
+:root {
+  /* 中文优先栈（拉丁字母也交给 PingFang SC 渲染），不再用打包进来的 Inter。
+     public/fonts/inter-latin-var.woff2 和上面的 @font-face 都留着——没被引用的
+     @font-face 浏览器不会下载，想换回去改这一行即可。 */
+  --font-sans: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', 'Segoe UI',
+               -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-code: ui-monospace, Menlo, Consolas, monospace;
+
+  /* 表面 */
+  --bg: #f1f4f8;
+  --surface: #ffffff;
+  --surface-2: #f6f8fa;
+  --border: #e2e8f0;
+  --divider: #edf1f5;
+  --shadow: 0 1px 2px rgba(15, 23, 42, .05), 0 1px 1px rgba(15, 23, 42, .03);
+
+  /* 文字四级 */
+  --text-1: #0f172a;
+  --text-2: #334155;
+  --text-3: #64748b;
+  --text-4: #94a3b8;
+
+  /* 强调色：唯一的一个色相，用于交互元素、图表折线、电量环 */
+  --accent: #0284c7;
+  --accent-soft: rgba(2, 132, 199, .10);
+
+  /* 语义状态色 —— 永远配「圆点 + 文字」，颜色不单独承载含义
+     （告警色在白底上只有 2.94:1，不足 3:1） */
+  /* 绿改成 antd 那支 #52c41a（用户点名要这个绿，不要原来的青绿 #0d9488）。
+     它当填充（圆点/进度条/电量环）很好看，但当**文字**压白底只有 2.3:1，
+     所以文字另给一档更深的 --ok-text。 */
+  --ok: #52c41a;   --ok-soft: rgba(82, 196, 26, .12);  --ok-text: #389e0d;
+  /* 状态灯专用绿：常亮实心 + 柔光圈，和图表用的 --ok 分开 */
+  --live: #52c41a; --live-halo: rgba(82, 196, 26, .22); --live-off: #cbd5e1;
+  --warn: #ca8a04; --warn-soft: rgba(202, 138, 4, .12);
+  --bad: #e11d48;  --bad-soft: rgba(225, 29, 72, .10);
+
+  /* 图表 */
+  --chart-grid: #edf1f5;
+  --chart-ink: #64748b;
+
+  /* 侧栏在两个主题下都是深色 —— 保持原样 */
+  --side-bg: #0b0f17;
+  --side-text: #e2e8f0;
+  --side-text-2: #8a98ac;
+  --side-group: #5b6a7e;
+  --side-border: rgba(255, 255, 255, .06);
+
+  --radius: 10px;
+  --radius-sm: 8px;
+}
+
+:root[data-theme='dark'] {
+  --bg: #080b12;
+  --surface: #0e1219;
+  --surface-2: #12171f;
+  --border: rgba(255, 255, 255, .08);
+  --divider: rgba(255, 255, 255, .06);
+  --shadow: none;
+
+  --text-1: #f1f5f9;
+  --text-2: #cbd5e1;
+  --text-3: #94a3b8;
+  --text-4: #64748b;
+
+  --accent: #38bdf8;
+  --accent-soft: rgba(56, 189, 248, .12);
+
+  --ok: #73d13d;   --ok-soft: rgba(115, 209, 61, .14);  --ok-text: #95de64;
+  --live: #73d13d; --live-halo: rgba(115, 209, 61, .24); --live-off: #4b5563;
+  --warn: #f59e0b; --warn-soft: rgba(245, 158, 11, .14);
+  --bad: #f43f5e;  --bad-soft: rgba(244, 63, 94, .12);
+
+  --chart-grid: rgba(255, 255, 255, .05);
+  --chart-ink: #64748b;
+}
+
+html, body, #app { height: 100%; }
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--text-1);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 所有数值等宽对齐 —— Inter 自带 tabular figures，不用再引一个等宽字族 */
+.num, .ant-statistic-content-value, .ant-table tbody td.num {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.2px;
+}
+/* 单位降级：小一号、次要色 */
+.unit { font-size: .72em; font-weight: 400; color: var(--text-3); margin-left: 3px; }
+/* 微标签：大写 + 字距，沿用大屏做法 */
+.microlabel {
+  font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase;
+  color: var(--text-4); font-weight: 500;
+}
+code, .code { font-family: var(--font-code); }
+
+/* 暗色的强调色是亮天蓝 #38bdf8，压白字只有 2.83:1，主按钮和选中的侧栏菜单项都糊。
+   注意别用 antd 的 colorTextLightSolid 全局改 —— 深色菜单的**未选中**项也吃这个
+   token，会让整列菜单变成深字压深底(1.01:1)、直接隐形。只点名这两处。 */
+:root[data-theme='dark'] .ant-btn-primary:not(:disabled),
+:root[data-theme='dark'] .ant-btn-primary:not(:disabled):hover,
+:root[data-theme='dark'] .sider .ant-menu-dark .ant-menu-item-selected,
+:root[data-theme='dark'] .sider .ant-menu-dark .ant-menu-item-selected a {
+  color: #04121c;
+}
