@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>华龙讯达 · 订阅调试样例</title>
+<link rel="icon" type="image/png" href="/favicon-hlxd.png">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --border: #e5e9ec; --text: #1f2937; --muted: #666;
+    --accent: #eb5c20; --accent-hover: #d4511c; --accent-soft: #fdefe7; --up: #52c41a; --down: #cf1322;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+         background: var(--bg); color: var(--text); }
+  main { padding: 16px; max-width: 820px; margin: 0 auto; }
+  section { background: var(--card); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 14px; overflow: hidden;
+            box-shadow: 0 1px 2px rgba(16,24,40,0.04); }
+  section h2 { font-size: 14px; margin: 0; padding: 12px 18px; background: linear-gradient(180deg,#fff,#fafafa); border-bottom: 1px solid var(--border); font-weight: 600;
+               display: flex; align-items: center; gap: 8px; }
+  .body { padding: 18px; }
+  .row { display: grid; grid-template-columns: 100px 1fr; gap: 14px; align-items: start; margin-bottom: 14px; }
+  .row label { font-size: 13px; color: var(--muted); padding-top: 9px; }
+  input[type="text"] {
+    width: 100%; padding: 9px 12px; border: 1px solid #d8dee9; border-radius: 8px;
+    font-size: 13.5px; outline: none; transition: border-color .15s, box-shadow .15s; background: #fbfcfe; font-family: inherit;
+  }
+  input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px #eb5c2026; background: #fff; }
+  .hint { font-size: 12px; color: #9aa4b2; margin-top: 4px; }
+  .actions { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--border); background: #fafbfd; }
+  button { border: none; border-radius: 8px; padding: 9px 16px; font-size: 13.5px; font-weight: 600; cursor: pointer; transition: background .15s, opacity .15s; }
+  button.primary { background: var(--accent); color: #fff; }
+  button.primary:hover { background: var(--accent-hover); }
+  button.danger { background: #fff; color: var(--down); border: 1px solid #fecaca; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .dot.up { background: var(--up); box-shadow: 0 0 0 3px rgba(22,163,74,0.15); }
+  .dot.down { background: var(--down); box-shadow: 0 0 0 3px rgba(220,38,38,0.12); }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 8px 18px; border-bottom: 1px solid #f0f2f6; vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; background: #fcfcfd; position: sticky; top: 0; }
+  td.payload { font-family: ui-monospace, Menlo, Consolas, monospace; word-break: break-all; }
+  .pl-text { white-space: pre-wrap; }
+  .pl-actions { display: flex; gap: 6px; margin-top: 8px; }
+  .pl-actions button { padding: 2px 10px; font-size: 11.5px; font-weight: 500; border: 1px solid var(--border);
+                       background: #fff; color: var(--muted); border-radius: 6px; }
+  .pl-actions button:hover { background: var(--accent-soft); color: var(--accent); }
+  #msgTableWrap { max-height: 320px; overflow-y: auto; }
+  .empty { padding: 20px 18px; color: var(--muted); font-size: 13px; }
+  /* 类型过滤 tab（同一通道有设备数据/告警/历史等不同包，顶部 tab 过滤，跟 edge 面板一致） */
+  .filter-tabs { display: flex; gap: 6px; padding: 12px 18px 0; flex-wrap: wrap; }
+  .ftab { font-size: 12.5px; padding: 5px 14px; border-radius: 999px; border: 1px solid #d8dee9;
+          background: #fff; color: var(--muted); cursor: pointer; font-weight: 500; transition: all .15s; }
+  .ftab:hover { border-color: var(--accent); color: var(--accent); }
+  .ftab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  /* 只显示最新一条：固定高度内容区，避免不同类型消息长短不一导致高度跳动 */
+  .latest-pre { height: 340px; overflow: auto; margin: 0; font-family: ui-monospace, Menlo, Consolas, monospace;
+                font-size: 12.5px; white-space: pre-wrap; word-break: break-all; background: #fbfcfe;
+                border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; color: var(--text); }
+  /* ────────── 二级弹窗（swal 风格：橙白配色 + 居中卡片 + 弹入动画，跟控制台一致） ────────── */
+  .modal-mask { position: fixed; inset: 0; background: rgba(17,24,39,0.45); backdrop-filter: blur(3px);
+                display: none; align-items: center; justify-content: center; z-index: 50; padding: 24px;
+                animation: swal-fade .18s ease-out; }
+  .modal-mask.show { display: flex; }
+  @keyframes swal-fade { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes swal-pop { from { opacity: 0; transform: translateY(14px) scale(.94); } to { opacity: 1; transform: none; } }
+  .modal { width: 640px; max-width: 92vw; max-height: 84vh; background: var(--card); border: 1px solid var(--border);
+           border-radius: 16px; overflow: hidden; display: flex; flex-direction: column; position: relative;
+           box-shadow: 0 24px 60px rgba(17,24,39,0.28); animation: swal-pop .28s cubic-bezier(.22,1,.36,1); }
+  /* 橙色实心标题栏：跟控制台/edge 面板的弹窗一致 */
+  .modal header { display: flex; align-items: center; justify-content: space-between; padding: 15px 20px;
+                  border-bottom: none; background: var(--accent); color: #fff; }
+  .modal header .t { font-size: 15.5px; font-weight: 700; letter-spacing: .2px; color: #fff; }
+  .modal .mbody { padding: 14px 20px; overflow: auto; background: var(--card); }
+  .modal pre { margin: 0; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; white-space: pre-wrap;
+               word-break: break-all; background: #fbfcfe; border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .modal .x { border: none; background: none; font-size: 15px; cursor: pointer; color: #ffffffd6; padding: 0;
+              width: 28px; height: 28px; border-radius: 8px; line-height: 1; transition: background .15s, color .15s; }
+  .modal .x:hover { background: #ffffff33; color: #fff; }
+  /* 复制按钮在橙色标题栏上：白描边透明底 */
+  .modal .cp { font-size: 12.5px; padding: 5px 14px; border: 1px solid #ffffff66; background: #ffffff1f; border-radius: 8px;
+               color: #fff; font-weight: 600; cursor: pointer; transition: background .15s, border-color .15s; }
+  .modal .cp:hover { background: #ffffff33; border-color: #fff; }
+  .modal-footer { padding: 12px 20px 16px; display: flex; align-items: center; justify-content: flex-end; gap: 10px;
+                  border-top: 1px solid var(--border); background: var(--card); }
+  .swal-btn { font-size: 13px; font-weight: 600; padding: 8px 20px; border-radius: 10px; cursor: pointer;
+              border: 1px solid var(--accent); background: var(--accent); color: #fff;
+              transition: background .2s cubic-bezier(.22,1,.36,1); }
+  .swal-btn:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+  /* ────────── 内嵌到控制台(iframe)时：去掉页面外壳，融入面板，避免"页中页" ────────── */
+  html.embedded, html.embedded body { background: transparent; }
+  html.embedded main { max-width: none; margin: 0; padding: 10px 14px; }
+  html.embedded section { box-shadow: none; border-radius: 10px; }
+  html.embedded section:first-child { margin-top: 0; }
+</style>
+<script>
+  // 被 iframe 内嵌时打个标记，套用上面的 .embedded 紧凑样式(在渲染前执行，避免闪一下)
+  if (window.self !== window.top) document.documentElement.classList.add('embedded');
+</script>
+</head>
+<body>
+<main>
+  <section>
+    <h2><span id="statusDot" class="dot down"></span><span id="statusText">未连接</span></h2>
+    <div class="body">
+      <div class="row">
+        <label>Subscribe 地址</label>
+        <div>
+          <input type="text" id="wsUrl">
+          <div class="hint">默认按当前控制台地址自动填好，对接方替换成公网地址即可</div>
+          <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">
+            <button type="button" onclick="fillWs('plain')" style="font-size:12px;padding:3px 10px;border:1px solid #d8dee9;background:#fff;border-radius:6px;cursor:pointer;">内网明文 ws://IP:18081</button>
+            <button type="button" onclick="fillWs('wss')" style="font-size:12px;padding:3px 10px;border:1px solid #d8dee9;background:#fff;border-radius:6px;cursor:pointer;">HTTPS 加密 wss://域名</button>
+          </div>
+        </div>
+      </div>
+      <div class="row">
+        <label>Topic 过滤</label>
+        <div>
+          <input type="text" id="topics" placeholder="逗号分隔，留空订阅全部，如 device/data/channel-1,device/data/channel-3">
+          <div class="hint">勾选下方 channel 自动填入，或手动输入；支持 MQTT 通配符 + / #，留空表示接收全部 topic</div>
+          <div id="chanPicker" style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;"></div>
+        </div>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="primary" id="connectBtn">连接</button>
+      <button class="danger" id="disconnectBtn" disabled>断开</button>
+      <button id="clearBtn" style="background:#fff;border:1px solid #d8dee9;">清空日志</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>收到的消息（默认只显示最新一条） <span id="countBadge" style="font-weight:400;color:var(--muted);"></span></h2>
+    <div class="filter-tabs" id="filterTabs">
+      <button class="ftab active" data-type="all">全部</button>
+      <button class="ftab" data-type="opcua">设备数据</button>
+      <button class="ftab" data-type="alarm">告警</button>
+      <button class="ftab" data-type="history">历史</button>
+    </div>
+    <div class="body">
+      <div class="hint" id="latestStatus" style="margin-bottom:8px;">暂无消息，连接后等待推送...</div>
+      <pre class="latest-pre" id="latestPre"></pre>
+      <div class="pl-actions" style="margin-top:10px;">
+        <button id="copyLatest">复制</button>
+        <button id="viewLatest">弹窗查看</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="modal-mask" id="jsonModal">
+  <div class="modal">
+    <header>
+      <span class="t">消息内容（格式化 JSON）</span>
+      <span style="display:flex;align-items:center;gap:8px;">
+        <button class="cp" onclick="copyText(document.getElementById('jsonModalContent').textContent, this)">复制</button>
+        <button class="x" onclick="document.getElementById('jsonModal').classList.remove('show')">✕</button>
+      </span>
+    </header>
+    <div class="mbody"><pre id="jsonModalContent"></pre></div>
+    <div class="modal-footer">
+      <button class="swal-btn" onclick="document.getElementById('jsonModal').classList.remove('show')">关闭</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let ws = null;
+let count = 0;
+// 只显示最新一条 + 按类型过滤：缓存每种类型最近一条，切 tab 立即回填(不必等下一条该类型消息)
+let curFilter = 'all';
+let lastRaw = '';
+let shownRaw = '';   // 当前 pre 里显示的原始消息(复制/弹窗用)
+const lastByType = { opcua: '', alarm: '', history: '' };
+const TYPE_LABEL = { all: '全部', opcua: '设备数据', alarm: '告警', history: '历史' };
+
+// 按顶层 action 归类：告警 / 历史 / 设备数据(其余都算设备数据)，跟 edge 面板一致
+function classifyMsg(raw) {
+  try {
+    const m = JSON.parse(raw);
+    if (m.action === 'getCurAlarmAndAlarmList') return 'alarm';
+    if (m.action === 'getHistory') return 'history';
+    return 'opcua';
+  } catch (e) { return 'opcua'; }
+}
+
+// 渲染节流：现场是高频消息(设备数据 200ms 一条、80KB+)，逐条 pretty-print 巨型 pre 会卡，攒窗口只渲最新一条
+let pendingRaw = null, renderScheduled = false;
+const RENDER_THROTTLE_MS = 150;
+function scheduleLatest(raw) {
+  pendingRaw = raw;
+  if (renderScheduled) return;
+  renderScheduled = true;
+  setTimeout(() => {
+    renderScheduled = false;
+    const r = pendingRaw; pendingRaw = null;
+    if (r != null) renderLatest(r);
+  }, RENDER_THROTTLE_MS);
+}
+function renderLatest(raw) {
+  shownRaw = raw;
+  document.getElementById('latestPre').textContent = prettyJson(raw);
+  const now = new Date().toLocaleString('zh-CN', { hour12: false });
+  document.getElementById('latestStatus').textContent = TYPE_LABEL[classifyMsg(raw)] + ' · 收到时间 ' + now;
+}
+
+// 弹窗关闭：点遮罩空白处 + ESC，跟云端控制台的交互一致
+document.getElementById('jsonModal').onclick = (e) => {
+  if (e.target.id === 'jsonModal') e.currentTarget.classList.remove('show');
+};
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') document.getElementById('jsonModal').classList.remove('show');
+});
+
+// 按当前控制台地址自动推断 subscribe 地址，方便对接人直接连本环境
+(function initUrl() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  document.getElementById('wsUrl').value = proto + '://' + location.host + '/ws/subscribe';
+})();
+
+// 一键切换 明文/加密 两种接入地址，方便验证 HTTPS(wss) 是否通
+function fillWs(mode) {
+  const u = mode === 'wss'
+    ? 'wss://hdata2.muxingyun.com/ws/subscribe'
+    : 'ws://1.95.74.69:18081/ws/subscribe';
+  document.getElementById('wsUrl').value = u;
+}
+
+// channel-1..16 勾选框：勾选自动填入 Topic 过滤框，免手动输入
+(function initChanPicker() {
+  const box = document.getElementById('chanPicker');
+  const topicsInput = document.getElementById('topics');
+  const syncFromChecks = () => {
+    const sel = [...box.querySelectorAll('input.chan:checked')].map(c => 'device/data/channel-' + c.value);
+    topicsInput.value = sel.join(',');
+  };
+  const toolBtn = (text, fn) => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = text;
+    b.style.cssText = 'font-size:12px;padding:3px 10px;border:1px solid #d8dee9;background:#fff;border-radius:6px;cursor:pointer;';
+    b.onclick = fn;
+    return b;
+  };
+  box.appendChild(toolBtn('全选', () => { box.querySelectorAll('input.chan').forEach(c => c.checked = true); syncFromChecks(); }));
+  box.appendChild(toolBtn('清空', () => { box.querySelectorAll('input.chan').forEach(c => c.checked = false); syncFromChecks(); }));
+  for (let i = 1; i <= 16; i++) {
+    const lb = document.createElement('label');
+    lb.style.cssText = 'font-size:12.5px;display:inline-flex;align-items:center;gap:3px;padding:3px 8px;border:1px solid #e5e9ec;border-radius:6px;cursor:pointer;user-select:none;';
+    lb.innerHTML = `<input type="checkbox" class="chan" value="${i}" style="cursor:pointer;"> ${i}`;
+    lb.querySelector('input').onchange = syncFromChecks;
+    box.appendChild(lb);
+  }
+})();
+
+function setConnected(connected) {
+  document.getElementById('statusDot').className = 'dot ' + (connected ? 'up' : 'down');
+  document.getElementById('statusText').textContent = connected ? '已连接' : '未连接';
+  document.getElementById('connectBtn').disabled = connected;
+  document.getElementById('disconnectBtn').disabled = !connected;
+}
+
+document.getElementById('connectBtn').onclick = () => {
+  let url = document.getElementById('wsUrl').value.trim();
+  // 防呆：每个 topic 去掉前后空格和前导 '/'。真实 topic 形如 device/data/channel-1，
+  // 不以 '/' 开头；带了前导斜杠(如 /device/data/channel-1)会匹配不上、收不到数据。
+  const topics = document.getElementById('topics').value.trim()
+    .split(',').map(s => s.trim().replace(/^\/+/, '')).filter(Boolean).join(',');
+  const params = new URLSearchParams();
+  if (topics) params.set('topics', topics);
+  const qs = params.toString();
+  if (qs) url += (url.includes('?') ? '&' : '?') + qs;
+
+  ws = new WebSocket(url);
+  ws.onopen = () => setConnected(true);
+  ws.onclose = () => setConnected(false);
+  ws.onerror = () => setConnected(false);
+  ws.onmessage = (evt) => {
+    count++;
+    document.getElementById('countBadge').textContent = '(' + count + ')';
+    const data = evt.data;
+    // 归类并缓存"每种类型最近一条"，供切 tab 立即回填
+    const type = classifyMsg(data);
+    lastRaw = data;
+    lastByType[type] = data;
+    // 当前筛选匹配才更新展示(节流只渲最新一条)
+    if (curFilter === 'all' || curFilter === type) scheduleLatest(data);
+  };
+};
+
+// 顶部类型 tab：切换立即用缓存的该类型最近一条回填，不必等下一条
+document.getElementById('filterTabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('.ftab');
+  if (!btn) return;
+  curFilter = btn.dataset.type;
+  document.querySelectorAll('#filterTabs .ftab').forEach(b => b.classList.toggle('active', b === btn));
+  const cached = curFilter === 'all' ? lastRaw : lastByType[curFilter];
+  if (cached) {
+    renderLatest(cached);
+  } else {
+    shownRaw = '';
+    document.getElementById('latestPre').textContent = '';
+    document.getElementById('latestStatus').textContent = '等待下一条「' + TYPE_LABEL[curFilter] + '」消息...';
+  }
+});
+document.getElementById('copyLatest').onclick = function () { if (shownRaw) copyText(shownRaw, this); };
+document.getElementById('viewLatest').onclick = () => { if (shownRaw) showJson(shownRaw); };
+
+// —— 复制 / 弹窗格式化 JSON ——
+function prettyJson(s) {
+  try { return JSON.stringify(JSON.parse(s), null, 2); } catch (e) { return s; }
+}
+function copyText(s, btn) {
+  const done = () => { if (!btn) return; const o = btn.textContent; btn.textContent = '已复制'; setTimeout(() => btn.textContent = o, 1200); };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(s).then(done).catch(() => fallbackCopy(s, done));
+  } else {
+    fallbackCopy(s, done);   // http 非安全上下文没有 clipboard API，用 execCommand 兜底
+  }
+}
+function fallbackCopy(s, done) {
+  const ta = document.createElement('textarea');
+  ta.value = s; ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.focus(); ta.select();
+  try { document.execCommand('copy'); if (done) done(); } catch (e) {}
+  document.body.removeChild(ta);
+}
+function showJson(s) {
+  document.getElementById('jsonModalContent').textContent = prettyJson(s);
+  document.getElementById('jsonModal').classList.add('show');
+}
+document.getElementById('jsonModal').onclick = (e) => {
+  if (e.target.id === 'jsonModal') e.currentTarget.classList.remove('show');
+};
+
+document.getElementById('disconnectBtn').onclick = () => {
+  if (ws) ws.close();
+  setConnected(false);
+};
+
+document.getElementById('clearBtn').onclick = () => {
+  count = 0;
+  lastRaw = ''; shownRaw = '';
+  lastByType.opcua = ''; lastByType.alarm = ''; lastByType.history = '';
+  pendingRaw = null;
+  document.getElementById('countBadge').textContent = '';
+  document.getElementById('latestPre').textContent = '';
+  document.getElementById('latestStatus').textContent = '暂无消息，连接后等待推送...';
+};
+</script>
+</body>
+</html>

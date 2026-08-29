@@ -1,0 +1,1511 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>云端数据订阅控制台</title>
+<link rel="icon" type="image/png" href="/favicon-hlxd.png">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>(function(){try{if(localStorage.getItem('console-theme')==='dark')document.documentElement.setAttribute('data-theme','dark');}catch(e){}})();</script>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --border: #e5e9ec; --text: #1f2937; --muted: #666;
+    --accent: #eb5c20; --accent-hover: #d4511c; --accent-soft: #fdefe7; --accent-dim: #eb5c201a;
+    --up: #52c41a; --down: #cf1322; --warn: #fa8c16;
+    --topnav-bg: #eb5c20; --panel-head: linear-gradient(180deg,#fff,#fafafa);
+    --th-bg: #fcfcfd; --td-border: #f0f2f6; --hover: #fff4ec; --zebra: #fbfbfc;
+    --code-bg: #fbfcfe; --unresolved: #fff2ea;
+    --font: "PingFang SC","Microsoft YaHei","Noto Sans SC","Segoe UI",-apple-system,sans-serif;
+    --shadow: 0 8px 24px #1111110f;
+    --page-bg:
+      radial-gradient(ellipse 70% 45% at 0% 0%, #eb5c2012, transparent 55%),
+      radial-gradient(ellipse 50% 40% at 100% 0%, #1111110a, transparent 50%),
+      linear-gradient(180deg,#fafafa 0%, var(--bg) 40%, #eef1f5 100%);
+  }
+  html[data-theme="dark"] {
+    --bg: #0e1014; --card: #1a1f2a; --border: #2c3342; --text: #e8ecf4; --muted: #9aa3b5;
+    --accent: #f06a30; --accent-hover: #ff7a42; --accent-soft: #f06a301a; --accent-dim: #f06a3029;
+    --up: #73d13d; --down: #ff7875; --warn: #ffb020;
+    --topnav-bg: #12141a; --panel-head: linear-gradient(180deg,#1e2430,#191e28);
+    --th-bg: #12151c; --td-border: #232a36; --hover: #232a36; --zebra: #171b22;
+    --code-bg: #12161e; --unresolved: #2a1e1e;
+    --shadow: 0 10px 28px #00000059;
+    --page-bg:
+      radial-gradient(ellipse 70% 45% at 0% 0%, #f06a301a, transparent 55%),
+      radial-gradient(ellipse 50% 40% at 100% 0%, #5078ff0d, transparent 50%),
+      linear-gradient(180deg,#12151c 0%, var(--bg) 45%, #0a0c10 100%);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: var(--font); color: var(--text);
+         background: var(--page-bg); background-attachment: fixed; min-height: 100vh; }
+  /* 顶栏背景通栏，里面的内容跟正文一样收在 1200px 居中容器里、两边留白(参考官网的排布) */
+  header { padding: 0; height: 58px; background: var(--topnav-bg); color: #fff; display: flex;
+           align-items: center; box-shadow: 0 2px 8px rgba(0,0,0,.18); position: sticky; top: 0; z-index: 20; }
+  .hd-inner { width: 100%; max-width: 1200px; margin: 0 auto; padding: 0 24px;
+              display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  /* logo 和标题之间留出较大间距(官网 logo 与 slogan 也是这个处理) */
+  header .brand { display: flex; align-items: center; gap: 20px; }
+  header .brand .logo-img { height: 34px; width: auto; display: block; }
+  header .brand .topbar-title { color: #fff; font-size: 15px; font-weight: 600; letter-spacing: .4px; }
+  /* 右侧入口：大间距纯文字，不做成一个个小方块按钮；hover 出下划线 */
+  nav { display: flex; align-items: center; gap: 28px; }
+  nav a { position: relative; color: #ffffffdb; text-decoration: none; font-size: 14px; padding: 6px 0;
+          cursor: pointer; transition: color .15s; white-space: nowrap; }
+  nav a::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
+                 background: #fff; transform: scaleX(0); transform-origin: center;
+                 transition: transform .2s cubic-bezier(.22,1,.36,1); }
+  nav a:hover { color: #fff; }
+  nav a:hover::after { transform: scaleX(1); }
+  /* 主操作(退出登录)用白色描边胶囊，比实心白块轻，跟官网右侧的克制风格更搭 */
+  nav a.btn { border: 1px solid #ffffff8c; border-radius: 999px; padding: 6px 16px; font-weight: 600; color: #fff; }
+  nav a.btn::after { display: none; }
+  nav a.btn:hover { background: #ffffff26; border-color: #fff; }
+  /* 顶部健康状态条 */
+  /* 状态条同理：底色通栏，文字跟顶栏 logo、正文卡片左右对齐 */
+  .statusbar-bar { background: var(--card); border-bottom: 1px solid var(--border); }
+  .statusbar { display: flex; flex-wrap: wrap; align-items: center; gap: 20px; font-size: 13px;
+               max-width: 1200px; margin: 0 auto; padding: 9px 24px; color: var(--muted); }
+  .statusbar b { color: var(--text); font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .statusbar .sdot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+  .statusbar .sdot.ok { background: var(--up); } .statusbar .sdot.bad { background: var(--down); box-shadow: 0 0 0 3px #cf13221a; }
+  .statusbar-bar.alarm { background: var(--unresolved); border-bottom-color: #f6d9c9; }
+  /* 状态条上的数字可点，弹窗看明细 */
+  .statusbar .hb-link { cursor: pointer; border-bottom: 1px dashed currentColor; transition: color .15s; }
+  .statusbar .hb-link:hover { color: var(--accent); }
+  /* 构建时间推到最右：跟顶栏右侧入口同一条边，也顺便让状态条左右都顶到容器边 */
+  .statusbar .build { margin-left: auto; font-size: 11.5px; color: var(--muted); opacity: .85;
+                      font-family: ui-monospace, Menlo, Consolas, monospace; }
+  /* 弹窗里的明细表格：比页面表格紧凑一点 */
+  .modal-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .modal-table th, .modal-table td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--td-border); }
+  .modal-table th { color: var(--muted); font-weight: 500; background: var(--th-bg); position: sticky; top: 0; }
+  .modal-table tr:last-child td { border-bottom: none; }
+  .modal-table td.mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .modal-empty { padding: 18px 4px; color: var(--muted); font-size: 13px; }
+  main { padding: 20px 24px; max-width: 1200px; margin: 0 auto; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; margin-bottom: 18px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px;
+          box-shadow: var(--shadow); position: relative; overflow: hidden; }
+  .card::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--accent); opacity: .85; }
+  .card .label { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .card .value { font-size: 24px; font-weight: 800; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .rate-row { display: flex; align-items: baseline; gap: 8px; margin-top: 8px; }
+  .rate-row .ar { font-size: 14px; font-weight: 800; line-height: 1; }
+  .rate-row .ar.up { color: var(--up); } .rate-row .ar.dn { color: var(--accent); }
+  .rate-row .rate-lbl { font-size: 12px; color: var(--muted); width: 62px; }
+  .rate-row .rate-num { font-size: 21px; font-weight: 800; font-family: ui-monospace, Menlo, Consolas, monospace; min-width: 58px; text-align: right; }
+  .rate-row .rate-unit { font-size: 11.5px; color: var(--muted-2, var(--muted)); }
+  /* 速率走势：纯前端存最近 2 分钟的采样点，看得出刚刚有没有掉过 */
+  .spark { display: block; width: 100%; height: 30px; margin-top: 8px; }
+  .spark .sp-line { fill: none; stroke-width: 1.6; }
+  .spark .sp-up { stroke: var(--up); }
+  .spark .sp-dn { stroke: var(--accent); }
+  .spark .sp-area { stroke: none; opacity: .12; }
+  .spark .sp-empty { fill: var(--muted); font-size: 10px; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+  .dot.up { background: var(--up); box-shadow: 0 0 0 3px rgba(22,163,74,0.15); }
+  .dot.down { background: var(--down); box-shadow: 0 0 0 3px rgba(220,38,38,0.12); }
+  .live-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; vertical-align: middle; }
+  .live-dot.on { background: var(--up); box-shadow: 0 0 0 3px rgba(82,196,26,0.22); }  /* 在线常亮实心绿 */
+  .live-dot.off { background: #cbd5e1; }
+  @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+  .topic-link { color: var(--accent); cursor: pointer; word-break: break-all; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+  .topic-link:hover { text-decoration: underline; }
+  .tcnt { color: var(--muted); font-size: 11px; margin-left: 5px; white-space: nowrap; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11.5px; font-weight: 600; }
+  .badge.open { background: #cf13221a; color: var(--down); }
+  .badge.resolved { background: #52c41a1a; color: var(--up); }
+  tr.unresolved td { background: var(--unresolved) !important; }
+  .tbl-scroll { max-height: 520px; overflow-y: auto; }
+  .tbl-scroll thead th { position: sticky; top: 0; z-index: 1; }
+  /* 告警点位/告警记录 表列宽固定，长列省略/换行，避免有的太宽有的太挤 */
+  .pt-table, .rec-table { table-layout: fixed; }
+  .pt-table th, .pt-table td, .rec-table th, .rec-table td { padding-left: 12px; padding-right: 12px; }
+  .pt-table th:first-child, .pt-table td:first-child,
+  .rec-table th:first-child, .rec-table td:first-child { padding-left: 18px; }
+  .pt-table th:last-child, .pt-table td:last-child,
+  .rec-table th:last-child, .rec-table td:last-child { padding-right: 18px; }
+  /* 变量名称/点位编号这类定长内容不换行, 超出省略(hover 有 title 看全); 原因列正常换行 */
+  /* pt-table 7列: 1项目 2点位编号 3故障编码 4变量名称 5工位 6故障原因 7等级
+     海尔的点位编号/变量名称是超长 OPC 字符串, 必须省略截断否则会溢出重叠 */
+  .pt-table td:nth-child(2), .pt-table td:nth-child(3), .pt-table td:nth-child(4)
+    { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pt-table td:nth-child(6) { white-space: normal; word-break: break-word; }
+  /* rec-table 8列: 1项目 2状态 3发生时间 4恢复时间 5点位 6工位 7原因 8触发值
+     时间/点位(海尔OPC超长)不换行省略, 原因换行, 触发值省略 */
+  .rec-table td:nth-child(3), .rec-table td:nth-child(4), .rec-table td:nth-child(5)
+    { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rec-table td:nth-child(7) { white-space: normal; word-break: break-word; }
+  .rec-table td:nth-child(8) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .station-filter { display: flex; gap: 6px; padding: 10px 18px 0; }
+  .station-filter button { padding: 3px 14px; font-size: 12.5px; border: 1px solid var(--border); background: var(--card);
+                           color: var(--muted); border-radius: 6px; cursor: pointer; transition: background .15s, color .15s; }
+  .station-filter button:hover { background: var(--accent-soft); color: var(--accent); }
+  .station-filter button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  /* 告警推送开关(Topic 流量统计那一列的滑动开关) */
+  .tog { position: relative; display: inline-block; width: 40px; height: 20px; vertical-align: middle; }
+  .tog input { opacity: 0; width: 0; height: 0; }
+  .tog .sld { position: absolute; inset: 0; background: #cbd2da; border-radius: 999px; cursor: pointer; transition: background .2s; }
+  .tog .sld::before { content: ''; position: absolute; width: 16px; height: 16px; left: 2px; top: 2px;
+                      background: #fff; border-radius: 50%; transition: transform .2s; box-shadow: 0 1px 2px rgba(0,0,0,.2); }
+  .tog input:checked + .sld { background: var(--accent); }
+  .tog input:checked + .sld::before { transform: translateX(20px); }
+  .tog-lbl { font-size: 11.5px; color: var(--muted); margin-left: 6px; vertical-align: middle; }
+  .sub { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  section { background: var(--card); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 18px; overflow: hidden;
+            box-shadow: var(--shadow); }
+  section h2 { font-size: 15px; margin: 0; padding: 12px 18px; background: var(--panel-head); border-bottom: 1px solid var(--border); font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 9px 18px; border-bottom: 1px solid var(--td-border); }
+  th { color: var(--muted); font-weight: 500; background: var(--th-bg); }
+  tbody tr:nth-child(even) td { background: var(--zebra); }
+  tbody tr:hover td { background: var(--hover); }
+  tr:last-child td { border-bottom: none; }
+  /* 运行日志：VS Code 集成终端(Dark+)风格——背景 #1e1e1e、前景 #cccccc、ANSI 亮色系 */
+  section.term { background: #1e1e1e; border-color: #333333; }
+  .term-bar { display: flex; align-items: center; gap: 8px; padding: 8px 14px; background: #252526; border-bottom: 1px solid #333333; }
+  .tl { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+  .tl.red { background: #ff5f56; } .tl.yellow { background: #ffbd2e; } .tl.green { background: #27c93f; }
+  .term-title { color: #cccccc; font-size: 12.5px; font-weight: 600; margin-left: 8px; font-family: var(--font); }
+  .term-actions { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+  .term-actions .toggle { float: none; color: #9d9d9d; }
+  .term-btn { background: #0e639c; color: #ffffff; border: none; border-radius: 4px; padding: 4px 12px; font-size: 12px;
+              cursor: pointer; transition: background .15s; }
+  .term-btn:hover { background: #1177bb; }
+  #logbox { height: 380px; overflow-y: auto; background: #1e1e1e; padding: 10px 16px;
+             font-family: "SF Mono", Menlo, Monaco, Consolas, "Droid Sans Mono", "Courier New", monospace;
+             font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; color: #cccccc; }
+  #logbox.fs { flex: 1; height: auto; }
+  /* VS Code 终端 ANSI 亮色：brightRed / yellow / brightBlue / brightBlack */
+  .lvl-ERROR { color: #f14c4c; }
+  .lvl-WARN { color: #e5e510; }
+  .lvl-INFO { color: #cccccc; }   /* INFO 用终端默认前景色，蓝色留给不了眼的行，ERROR/WARN 才跳出来 */
+  .lvl-DEBUG { color: #767676; }
+  .log-fs-mask { position: fixed; inset: 0; background: rgba(17,24,39,.55); backdrop-filter: blur(3px); display: none;
+                 align-items: center; justify-content: center; z-index: 45; padding: 24px; animation: swal-fade .18s ease-out; }
+  .log-fs-mask.show { display: flex; }
+  .term-fs { width: 96vw; height: 92vh; display: flex; flex-direction: column; background: #1e1e1e; border-radius: 16px; overflow: hidden;
+             box-shadow: 0 24px 70px rgba(0,0,0,.55); animation: swal-pop .28s cubic-bezier(.22,1,.36,1); }
+  .toggle { float: right; font-size: 12px; color: var(--muted); cursor: pointer; user-select: none; font-weight: 400; }
+  .eye-btn { border: 1px solid var(--border); background: var(--card); border-radius: 6px; padding: 4px 12px; cursor: pointer;
+             font-size: 12.5px; line-height: 1.5; color: var(--muted); white-space: nowrap; transition: background .15s, color .15s; }
+  .eye-btn:hover { background: var(--accent-soft); color: var(--accent); }
+  /* ────────── 二级弹窗（swal 风格：橙白配色 + 居中卡片 + 弹入动画，跟 seal-line-edge 面板一致） ────────── */
+  /* ────────── 云端链路拓扑 ────────── */
+  .topo-body { padding: 16px 18px; }
+  .topo-hub { display: flex; align-items: stretch; gap: 4px; margin-bottom: 6px; }
+  .topo-col { flex: 1 1 0; min-width: 0; border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; background: var(--th-bg); }
+  .topo-col .ct { font-size: 11.5px; color: var(--muted); margin-bottom: 8px; display: flex; justify-content: space-between; gap: 8px; }
+  .topo-col .ct b { color: var(--text); font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .topo-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+  /* 16 路一格一路：在线亮橙，离线留白，鼠标悬浮看场景全名 */
+  .topo-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+  .topo-cell { height: 32px; display: flex; align-items: center; justify-content: center; border-radius: 8px;
+               border: 1px solid var(--border); background: var(--card); color: var(--muted); cursor: pointer;
+               font-size: 11.5px; font-family: ui-monospace, Menlo, Consolas, monospace;
+               transition: background .18s, color .18s, border-color .18s, box-shadow .18s; }
+  .topo-cell:hover { border-color: var(--accent); color: var(--accent); }
+  /* 在线=绿：跟页面里状态点/已恢复徽章同一套语义(绿=正常运转)，橙色留给交互和告警，
+     16 格同时亮起时也不会满屏刺眼 */
+  .topo-cell.live { background: rgba(82,196,26,.14); border-color: var(--up); color: var(--up); font-weight: 700;
+                    box-shadow: 0 0 0 3px rgba(82,196,26,.10); }
+  html[data-theme="dark"] .topo-cell.live { background: rgba(115,209,61,.16); }
+  .topo-cell.live:hover { border-color: var(--up); color: var(--up); }
+  /* 悬浮提示：用 fixed 定位的自定义 tooltip，不受 section 的 overflow 裁剪，
+     也不用等浏览器原生 title 那一秒 */
+  .topo-tip { position: fixed; z-index: 60; display: none; pointer-events: none; max-width: 280px;
+              background: #1f2937; color: #fff; font-size: 12px; line-height: 1.55; padding: 8px 11px;
+              border-radius: 9px; box-shadow: 0 10px 28px rgba(17,24,39,.32); }
+  .topo-tip .tn { font-weight: 700; margin-bottom: 3px; }
+  .topo-tip .tm { color: #cbd5e1; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; }
+  .topo-tip .to { color: #86efac; font-size: 11px; margin-top: 3px; }
+  .topo-tip .to.off { color: #fca5a5; }
+  .topo-chip { font-size: 11px; padding: 3px 9px; border-radius: 999px; background: var(--card); border: 1px solid var(--border);
+               color: var(--muted); white-space: nowrap; cursor: default; }
+  .topo-chip.live { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .topo-chip.clickable { cursor: pointer; }
+  .topo-chip.clickable:hover { border-color: var(--accent); color: var(--accent); }
+  .topo-arrow { flex: 0 0 104px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 0 6px; }
+  .topo-arrow .al { font-size: 10.5px; color: var(--muted); text-align: center; line-height: 1.35; word-break: break-all; }
+  .topo-arrow .ar { font-size: 11px; font-weight: 700; font-family: ui-monospace, Menlo, Consolas, monospace; color: var(--accent); }
+  .topo-arrow .ar.off { color: var(--muted); font-weight: 400; }
+  .topo-track { width: 100%; height: 4px; border-radius: 2px; background: #eef1f6; overflow: hidden; position: relative; }
+  html[data-theme="dark"] .topo-track { background: #232a36; }
+  /* 有流量就跑一道橙色光；停了就是一条静止的灰条，一眼能看出哪条链路是活的 */
+  .topo-flow { position: absolute; inset: 0; background-image: linear-gradient(90deg, transparent, var(--accent), transparent);
+               background-size: 45% 100%; background-repeat: no-repeat; animation: topo-run 1.5s linear infinite; }
+  @keyframes topo-run { from { background-position: -45% 0; } to { background-position: 145% 0; } }
+  .topo-flow.off { animation: none; background-image: none; }
+  .topo-core { flex: 0 0 190px; border: 1px solid var(--accent); border-radius: 12px; background: var(--accent-soft);
+               padding: 12px 10px; text-align: center; display: flex; flex-direction: column; justify-content: center; gap: 3px; }
+  .topo-core .cn { font-size: 14px; font-weight: 800; color: var(--accent); letter-spacing: .3px; }
+  .topo-core .cd { font-size: 11px; color: var(--muted); }
+  .topo-core .cm { font-size: 11px; font-family: ui-monospace, Menlo, Consolas, monospace; color: var(--text); }
+  .topo-lane { border: 1px solid var(--border); border-radius: 12px; padding: 11px 12px; margin-top: 12px; background: var(--card); }
+  .topo-lane.idle { opacity: .62; }
+  .topo-lane-head { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 700; margin-bottom: 10px; }
+  .topo-lane-head .lt { color: var(--text); }
+  .topo-lane-head .ls { font-size: 11.5px; font-weight: 400; color: var(--muted); margin-left: auto;
+                        font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .topo-pipe { display: flex; align-items: stretch; overflow-x: auto; padding-bottom: 2px; }
+  .topo-stage { flex: 1 1 0; min-width: 138px; border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px; background: var(--th-bg); }
+  .topo-stage.on { border-color: var(--accent); background: var(--accent-soft); }
+  .topo-stage .st { font-size: 11.5px; font-weight: 700; color: var(--text); margin-bottom: 5px; display: flex; align-items: center; gap: 6px; }
+  .topo-stage .sm { font-size: 15px; font-weight: 800; font-family: ui-monospace, Menlo, Consolas, monospace; color: var(--accent); line-height: 1.2; }
+  .topo-stage .ss { font-size: 10.5px; color: var(--muted); margin-top: 3px; word-break: break-all; line-height: 1.4; }
+  @media (max-width: 900px) {
+    .topo-hub { flex-direction: column; }
+    .topo-arrow { flex: 0 0 auto; height: 44px; width: 100%; }
+    .topo-core { flex: 0 0 auto; width: 100%; }
+  }
+
+  /* ────────── 手机 / 平板竖屏 ──────────
+     监控台在工位上多半是手机随手看一眼，这里主要解决三件事：
+     ① 顶栏和状态条别挤成两行半 ② 宽表格能横滑看全 ③ 触摸屏上点得到 */
+  @media (max-width: 768px) {
+    main { padding: 12px 12px 20px; }
+    header { height: 52px; }
+    .hd-inner { padding: 0 12px; }
+    .statusbar { padding: 8px 12px; }
+    header .brand .logo-img { height: 28px; }
+    header .brand .topbar-title { font-size: 14px; }
+    nav { gap: 14px; }
+    nav a { font-size: 12.5px; }
+    nav a.btn { padding: 5px 12px; }
+    header .brand { gap: 10px; }
+    header .brand .logo-img { height: 26px; }
+
+    .statusbar { gap: 10px 14px; font-size: 12px; }
+    .cards { grid-template-columns: 1fr 1fr; gap: 10px; }
+    .card { padding: 12px 13px; }
+    .card .value { font-size: 20px; }
+    .rate-row .rate-num { font-size: 17px; min-width: 44px; }
+    .rate-row .rate-lbl { width: 54px; }
+
+    section h2 { font-size: 14px; padding: 11px 14px; }
+    /* 宽表(Topic 统计 8 列、订阅明细 6 列)手机上放不下，给个横滑而不是把字压成两行 */
+    section { overflow: auto hidden; }
+    section > table, .tbl-scroll > table { min-width: 620px; }
+    .tbl-scroll { overflow: auto; }
+    th, td { padding: 8px 12px; font-size: 12.5px; }
+
+    .topo-body { padding: 12px; }
+    .topo-grid { gap: 5px; }
+    .topo-cell { height: 34px; }        /* 手指点得到 */
+    .topo-stage { min-width: 124px; }
+    .topo-tip { display: none !important; }   /* 触摸屏没有 hover，直接点格子看报文 */
+
+    #logbox { height: 260px; font-size: 12px; padding: 10px 12px; }
+    .term-bar { padding: 7px 12px; }
+    .term-title { font-size: 12px; }
+
+    .modal { width: 100%; max-width: 100%; max-height: 88vh; border-radius: 14px; }
+    .modal-mask { padding: 12px; }
+    .modal header { padding: 13px 16px; }
+    .modal .modal-title { font-size: 14.5px; }
+    .modal .modal-body { padding: 12px 14px; }
+    .modal-footer { padding: 10px 14px 14px; }
+    .swal-btn { flex: 1; text-align: center; }   /* 底部按钮拉满，好点 */
+    .modal-table { min-width: 520px; }
+    .modal .modal-body { overflow: auto; }
+  }
+
+  @media (max-width: 420px) {
+    .cards { grid-template-columns: 1fr; }
+    .statusbar { font-size: 11.5px; gap: 8px 12px; }
+    header .brand .topbar-title { font-size: 13px; }
+    .topo-grid { grid-template-columns: repeat(4, 1fr); }
+  }
+  .modal-mask { position: fixed; inset: 0; background: rgba(17,24,39,0.45); backdrop-filter: blur(3px);
+                display: none; align-items: center; justify-content: center; z-index: 40; padding: 24px;
+                animation: swal-fade .18s ease-out; }
+  .modal-mask.show { display: flex; }
+  @keyframes swal-fade { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes swal-pop { from { opacity: 0; transform: translateY(14px) scale(.94); } to { opacity: 1; transform: none; } }
+  .modal { width: 640px; max-width: 92vw; max-height: 84vh; background: var(--card); border: 1px solid var(--border);
+           border-radius: 16px; overflow: hidden; box-shadow: 0 24px 60px rgba(17,24,39,0.28);
+           display: flex; flex-direction: column; position: relative;
+           animation: swal-pop .28s cubic-bezier(.22,1,.36,1); }
+  /* 橙色实心标题栏：跟 edge 面板"查看广播数据"弹窗一样的观感 */
+  .modal header { padding: 15px 20px; height: auto; background: var(--accent); color: #fff; box-shadow: none;
+                  position: static; border-bottom: none;
+                  display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .modal .modal-title { font-size: 15.5px; font-weight: 700; letter-spacing: .2px; color: #fff; }
+  .modal .modal-close { cursor: pointer; color: #ffffffd6; font-size: 15px; background: none; border: none; padding: 0;
+                        width: 28px; height: 28px; border-radius: 8px; flex: 0 0 28px; line-height: 1;
+                        transition: background .15s, color .15s; }
+  .modal .modal-close:hover { background: #ffffff33; color: #fff; }
+  .modal .modal-meta { font-size: 12px; color: var(--muted); padding: 12px 20px 0; }
+  .modal .modal-body { padding: 14px 20px; overflow: auto; background: var(--card); }
+  .modal .modal-body pre { margin: 0; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px;
+                            white-space: pre-wrap; word-break: break-all; background: var(--code-bg);
+                            border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; color: var(--text); }
+  .modal-footer { padding: 12px 20px 16px; display: flex; align-items: center; justify-content: flex-end; gap: 10px;
+                  border-top: 1px solid var(--border); background: var(--card); }
+  .swal-btn { font-size: 13px; font-weight: 600; padding: 8px 20px; border-radius: 10px; cursor: pointer;
+              border: 1px solid var(--border); background: var(--card); color: var(--text);
+              transition: background .2s cubic-bezier(.22,1,.36,1), color .2s, border-color .2s; }
+  .swal-btn:hover { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+  .swal-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .swal-btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: #fff; }
+</style>
+</head>
+<body>
+<header>
+  <div class="hd-inner">
+    <div class="brand"><img src="/logo-hlxd.png" alt="华龙讯达" class="logo-img"><span class="topbar-title">云端数据订阅控制台</span></div>
+    <nav>
+      <a id="themeToggle" title="切换深色/浅色">深色</a>
+      <a href="/wrap-config.html">数据结构包装</a>
+      <a href="/logout" class="btn">退出登录</a>
+    </nav>
+  </div>
+</header>
+<div class="statusbar-bar" id="statusbarBar"><div class="statusbar" id="statusbar"></div></div>
+<main>
+  <div class="cards">
+    <div class="card">
+      <div class="label">云端数据源（EMQX）</div>
+      <div class="value" id="edgeCount">-</div>
+      <div class="sub" id="edgeSub">-</div>
+    </div>
+    <div class="card">
+      <div class="label">websocket 接入连接</div>
+      <div class="value" id="subCount">-</div>
+      <div class="sub" id="subSub">-</div>
+    </div>
+    <div class="card">
+      <div class="label">消息速率</div>
+      <div class="rate-row"><span class="ar up">↑</span><span class="rate-lbl">MQTT上行</span><span class="rate-num" id="rateUp">-</span><span class="rate-unit" id="rateUpB"></span></div>
+      <div class="rate-row"><span class="ar dn">↓</span><span class="rate-lbl">WS下行</span><span class="rate-num" id="rateDown">-</span><span class="rate-unit" id="rateDownB"></span></div>
+      <svg class="spark" id="rateSpark" viewBox="0 0 200 30" preserveAspectRatio="none"></svg>
+      <div class="sub" id="rateSparkSub" style="margin-top:2px;">最近 2 分钟走势</div>
+    </div>
+    <div class="card">
+      <div class="label">累计消息 / 字节</div>
+      <div class="value" id="total">-</div>
+      <div class="sub" id="totalSub">-</div>
+    </div>
+  </div>
+
+  <section>
+    <h2>云端链路拓扑 <span class="tcnt" id="topoStats"></span>
+      <button class="eye-btn" id="topoToggle" style="float:right;">展开明细</button>
+    </h2>
+    <div class="topo-body">
+      <div class="topo-hub" id="topoHub"></div>
+      <div id="topoLanes" style="display:none;"></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>云端数据源 — EMQX</h2>
+    <table>
+      <thead><tr><th>clientId</th><th>状态</th><th>接入时间</th><th>最近心跳</th><th>消息数</th><th>累计字节</th></tr></thead>
+      <tbody id="edgeRows"><tr><td colspan="6">加载中...</td></tr></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>websocket 订阅控制台
+      <span class="toggle" id="openDemoBtn" style="color:var(--accent);font-weight:600;cursor:pointer;">订阅调试样例 ▾</span>
+      <span class="toggle" id="openDemoNewTab" title="在新标签页打开" style="color:var(--muted);font-weight:400;cursor:pointer;margin-left:10px;">↗</span>
+    </h2>
+    <table>
+      <thead><tr><th>订阅 ID</th><th>来源地址</th><th>订阅 Topic</th><th>接入时间</th><th>已推条数</th><th>丢弃</th></tr></thead>
+      <tbody id="subRows"><tr><td colspan="6">加载中...</td></tr></tbody>
+    </table>
+    <!-- 订阅调试样例内嵌面板：默认收起，点标题右侧「订阅调试样例 ▾」展开，免得跳来跳去。
+         iframe 高度由 JS 按内容自适应(scrolling=no)，避免 iframe 自己再出一条滚动条 -->
+    <div id="demoPanel" style="display:none;border-top:1px solid var(--border);">
+      <iframe id="demoFrame" title="订阅调试样例" scrolling="no"
+              style="width:100%;height:480px;border:0;display:block;background:var(--card);overflow:hidden;"></iframe>
+    </div>
+  </section>
+
+  <section>
+    <h2>反向控制连接明细（/ws/control）</h2>
+    <table>
+      <thead><tr><th>控制端 ID</th><th>来源地址</th><th>目标 channel</th><th>接入时间</th><th>下发指令数</th></tr></thead>
+      <tbody id="ctrlRows"><tr><td colspan="5">加载中...</td></tr></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>端到端延迟监控（edge 广播 → 云端收到，channel-1）
+      <span id="latSummary" style="font-weight:400;color:var(--muted);font-size:12.5px"></span>
+    </h2>
+    <div style="padding:14px 18px">
+      <div style="font-size:13px;margin-bottom:8px">当前(近5分钟)
+        p50 <b id="latP50">-</b> · p95 <b id="latP95">-</b> · p99 <b id="latP99">-</b> · 最大 <b id="latMaxv" style="color:var(--accent)">-</b>（毫秒）
+      </div>
+      <svg id="latChart" viewBox="0 0 600 150" preserveAspectRatio="none"
+           style="width:100%;height:160px;background:var(--th-bg,#fafbfd);border:1px solid var(--border);border-radius:8px"></svg>
+      <div class="sub" id="latHint" style="margin-top:6px">最近 60 分钟，每分钟一个点：<span style="color:var(--accent)">■</span> p95 &nbsp; <span style="color:#9aa4b2">■</span> p50 &nbsp; 淡点=每分钟最大值。</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Topic 流量统计</h2>
+    <table>
+      <thead><tr><th>序号</th><th>场景</th><th>数据源</th><th>上行·数据 (设备→云)</th><th>下行·控制 (云→设备)</th><th>回执 (设备→云)</th><th>控制端接入</th><th>告警推送</th><th>在线状态 / 最近时间</th></tr></thead>
+      <tbody id="topicRows"><tr><td colspan="9">加载中...</td></tr></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>告警点位配置 <span id="pointCount" class="tcnt"></span>
+      <span class="toggle" onclick="reloadPoints()" style="color:var(--accent);font-weight:600;cursor:pointer;">热重载 ↻</span>
+    </h2>
+    <!-- 项目(line)过滤：按钮由 loadPoints 动态生成(全部 + 各项目) -->
+    <div class="station-filter" id="projectFilter"></div>
+    <div class="station-filter" id="stationFilter">
+      <button class="active" data-s="">全部</button>
+      <button data-s="A1">A1</button>
+      <button data-s="A2">A2</button>
+      <button data-s="A3">A3</button>
+      <button data-s="A4">A4</button>
+    </div>
+    <div class="tbl-scroll">
+      <table class="pt-table">
+        <colgroup><col style="width:12%"><col style="width:10%"><col style="width:10%"><col style="width:20%"><col style="width:7%"><col style="width:30%"><col style="width:11%"></colgroup>
+        <thead><tr><th>项目</th><th>点位编号</th><th>故障编码</th><th>变量名称</th><th>工位</th><th>故障原因</th><th>等级</th></tr></thead>
+        <tbody id="pointRows"><tr><td colspan="7">加载中...</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>告警记录 <span id="recCount" class="tcnt"></span></h2>
+    <!-- 项目(line)过滤：按钮由 loadRecords/loadPoints 动态生成(全部 + 各项目)，服务端按 line 过滤 -->
+    <div class="station-filter" id="recProjectFilter"></div>
+    <div class="tbl-scroll">
+      <table class="rec-table">
+        <colgroup><col style="width:11%"><col style="width:8%"><col style="width:13%"><col style="width:13%"><col style="width:12%"><col style="width:7%"><col style="width:24%"><col style="width:12%"></colgroup>
+        <thead><tr><th>项目</th><th>状态</th><th>发生时间</th><th>恢复时间</th><th>点位</th><th>工位</th><th>原因</th><th>触发值</th></tr></thead>
+        <tbody id="recordRows"><tr><td colspan="8">加载中...</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="term">
+    <div class="term-bar">
+            <span class="term-title">运行日志 — cloud-service</span>
+      <span class="term-actions">
+        <span class="toggle" id="autoscrollToggle">自动滚动: 开</span>
+        <button class="term-btn" id="logFsBtn" title="全屏">⛶ 全屏</button>
+      </span>
+    </div>
+    <div id="logbox"></div>
+  </section>
+</main>
+
+<div class="log-fs-mask" id="logFsMask">
+  <div class="term-fs" id="logFsWin">
+    <div class="term-bar">
+            <span class="term-title">运行日志 — cloud-service（全屏）</span>
+      <span class="term-actions">
+        <button class="term-btn" id="logFsExit">✕ 退出全屏</button>
+      </span>
+    </div>
+  </div>
+</div>
+
+<div class="topo-tip" id="topoTip"></div>
+
+<div class="modal-mask" id="modalMask">
+  <div class="modal">
+    <header style="display:flex; align-items:center; justify-content:space-between;">
+      <span class="modal-title" id="modalTitle">最新一条消息</span>
+      <button class="modal-close" id="modalClose">✕</button>
+    </header>
+    <div class="modal-meta" id="modalMeta"></div>
+    <div class="modal-body" id="modalBody"><pre id="modalContent"></pre></div>
+    <div class="modal-footer">
+      <button class="swal-btn" id="modalCopy">复制内容</button>
+      <button class="swal-btn primary" id="modalOk">关闭</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let lastLogId = 0;
+let autoScroll = true;
+let lastTopics = {};
+
+// 固定展示的 16 路 channel 及其数据来源场景（channel-16 暂无场景，留空）。
+// 即使还没有数据上来也常驻显示，方便对接方对照。
+const CHANNEL_SCENARIOS = {
+  'device/data/channel-1':  '印章新产线(新产线)',
+  'device/data/channel-2':  'CNC(数控加工)',
+  'device/data/channel-3':  '鸿蒙水务',
+  'device/data/channel-4':  '鸿蒙园区:建研院',
+  'device/data/channel-5':  '装备制造:五块屏轻工业制造',
+  'device/data/channel-6':  '物流:三轴滑台(飞机制造)',
+  'device/data/channel-7':  '生物医疗:蛋白纯化',
+  'device/data/channel-8':  '电力:储能电站(南网-飞轮)',
+  'device/data/channel-9':  '焊接机器人',
+  'device/data/channel-10': '具身智能生产线(小站)',
+  'device/data/channel-11': '家电制造:海尔压装产线',
+  'device/data/channel-12': '512轴测试床',
+  'device/data/channel-13': '工业机器人:协同控制(4台)',
+  'device/data/channel-14': '具身双臂协作机器人',
+  'device/data/channel-15': '物流:三轴滑台(飞机制造) - 面向鸿蒙生态的互联互通展区',
+};
+const FIXED_TOPICS = Array.from({ length: 16 }, (_, i) => 'device/data/channel-' + (i + 1));
+
+// 把订阅 filter 字符串转成"场景名"展示(位置不够就缩写)，鼠标悬停看原始 topic
+function topicsToScenarios(topics) {
+  if (!topics || topics === '(全部)') return topics || '-';
+  return topics.split(',').map(t => {
+    t = t.trim();
+    const scen = CHANNEL_SCENARIOS[t];
+    const m = t.match(/channel-(\d+)/);
+    if (!scen) return t;
+    const short = scen.length > 12 ? scen.slice(0, 12) + '…' : scen;
+    return (m ? 'ch' + m[1] + '·' : '') + short;
+  }).join('、');
+}
+
+// 订阅调试样例：内嵌成默认收起的展开面板(同源 iframe, 带登录态), 免得跳来跳去。
+// iframe 首次展开时才设 src(懒加载), 收起不断开已连接的 WebSocket。仍保留「↗」在新标签页打开。
+// iframe 高度跟随内容自适应(同源可读)，配合 scrolling=no → 内嵌面板不出 iframe 自己的滚动条，
+// 整页只有一条外层滚动 + 消息区那一条内部滚动，去掉套娃滚动条
+function fitDemoFrame() {
+  const frame = document.getElementById('demoFrame');
+  try {
+    const d = frame.contentDocument || frame.contentWindow.document;
+    if (d && d.body) frame.style.height = d.body.scrollHeight + 'px';
+  } catch (e) { /* 未加载完/跨域(不会发生) */ }
+}
+(function () {
+  const frame = document.getElementById('demoFrame');
+  frame.addEventListener('load', () => {
+    fitDemoFrame();
+    try { new ResizeObserver(fitDemoFrame).observe(frame.contentDocument.body); } catch (e) {}
+  });
+})();
+document.getElementById('openDemoBtn').onclick = () => {
+  const panel = document.getElementById('demoPanel');
+  const frame = document.getElementById('demoFrame');
+  const opening = panel.style.display === 'none';
+  if (opening && !frame.src) frame.src = '/subscribe-demo.html';
+  panel.style.display = opening ? 'block' : 'none';
+  document.getElementById('openDemoBtn').textContent = opening ? '订阅调试样例 ▴' : '订阅调试样例 ▾';
+  if (opening) setTimeout(fitDemoFrame, 60);   // 已加载过的话展开时再校准一次高度
+};
+document.getElementById('openDemoNewTab').onclick = () => window.open('/subscribe-demo.html', '_blank');
+document.getElementById('autoscrollToggle').onclick = () => {
+  autoScroll = !autoScroll;
+  document.getElementById('autoscrollToggle').textContent = '自动滚动: ' + (autoScroll ? '开' : '关');
+};
+
+// 运行日志全屏：把同一个 #logbox 节点搬进/搬出全屏窗口，流式日志继续写入不中断
+(function () {
+  const box = document.getElementById('logbox');
+  const home = box.parentElement;               // 原来的 .term section
+  const mask = document.getElementById('logFsMask');
+  const win = document.getElementById('logFsWin');
+  const openFs = () => { win.appendChild(box); box.classList.add('fs'); mask.classList.add('show'); box.scrollTop = box.scrollHeight; };
+  const closeFs = () => { home.appendChild(box); box.classList.remove('fs'); mask.classList.remove('show'); box.scrollTop = box.scrollHeight; };
+  document.getElementById('logFsBtn').onclick = openFs;
+  document.getElementById('logFsExit').onclick = closeFs;
+  mask.onclick = (e) => { if (e.target === mask) closeFs(); };
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && mask.classList.contains('show')) closeFs(); });
+})();
+
+function prettyIfJson(text) {
+  try { return JSON.stringify(JSON.parse(text), null, 2); } catch (e) { return text; }
+}
+
+// 报文弹窗：body 复位成 pre（明细弹窗会把 body 整块换掉），复制按钮恢复可见。
+// 报文不在 /api/status 里(那样每 2 秒要拖 300 多 KB)，点开时才按 topic 拉一条。
+async function showPayloadModal(topic) {
+  document.getElementById('modalBody').innerHTML = '<pre id="modalContent">加载中...</pre>';
+  document.getElementById('modalCopy').style.display = '';
+  document.getElementById('modalTitle').textContent = topic;
+  document.getElementById('modalMeta').textContent = '';
+  document.getElementById('modalMask').classList.add('show');
+  try {
+    const res = await fetch('/api/topic-payload?topic=' + encodeURIComponent(topic));
+    const d = await res.json();
+    if (!d.found || !d.payload) {
+      document.getElementById('modalMeta').textContent = '暂无数据';
+      document.getElementById('modalContent').textContent = '';
+    } else {
+      document.getElementById('modalMeta').textContent = '接收时间: ' + fmtTime(d.lastMessageAt);
+      document.getElementById('modalContent').textContent = prettyIfJson(d.payload);
+    }
+  } catch (e) {
+    document.getElementById('modalContent').textContent = '加载失败: ' + e;
+  }
+}
+// ────────── 顶部状态条：点数字看明细 ──────────
+
+// 明细弹窗：把 modal-body 整块换成表格（没有 pre，所以复制按钮先藏掉）
+function openDetailModal(title, meta, html) {
+  document.getElementById('modalTitle').textContent = title;
+  document.getElementById('modalMeta').textContent = meta || '';
+  document.getElementById('modalBody').innerHTML = html;
+  document.getElementById('modalCopy').style.display = 'none';
+  document.getElementById('modalMask').classList.add('show');
+}
+
+function esc(v) {
+  return String(v === undefined || v === null ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// 16 路 channel 的在线明细：30 秒内有消息算在线，跟状态条的判定同一套口径
+function showEdgeDetail() {
+  const now = Date.now();
+  const rows = FIXED_TOPICS.map(topic => {
+    const t = lastTopics[topic] || {};
+    const on = !!(t.lastMessageAt && (now - t.lastMessageAt < 30000));
+    const ch = (topic.match(/channel-(\d+)/) || [])[1] || '';
+    return `<tr><td class="mono">ch${ch}</td><td>${esc(CHANNEL_SCENARIOS[topic] || '—')}</td>` +
+      `<td><span class="dot ${on ? 'up' : 'down'}"></span>${on ? '在线' : '静默'}</td>` +
+      `<td>${t.lastMessageAt ? fmtTime(t.lastMessageAt) : '从未收到'}</td>` +
+      `<td class="mono">${(t.count || 0).toLocaleString()}</td></tr>`;
+  }).join('');
+  const online = FIXED_TOPICS.filter(tp => {
+    const t = lastTopics[tp];
+    return t && t.lastMessageAt && (now - t.lastMessageAt < 30000);
+  }).length;
+  openDetailModal('EMQX 边缘侧数据源接入明细',
+    `在线 ${online} / 共 ${FIXED_TOPICS.length} 路（30 秒内有消息算在线）`,
+    '<table class="modal-table" style="table-layout:fixed">' +
+    '<colgroup><col style="width:10%"><col style="width:20%"><col style="width:16%"><col style="width:34%"><col style="width:20%"></colgroup>' +
+    '<thead><tr><th>通道</th><th>场景</th><th>状态</th><th>最近消息</th><th>累计条数</th></tr></thead>' +
+    '<tbody>' + rows + '</tbody></table>');
+}
+
+// 故障中的告警明细（未恢复的排前面）
+function showAlarmDetail() {
+  const open = lastRecords.filter(r => !r.resolved);
+  if (open.length === 0) {
+    openDetailModal('告警明细', '当前没有故障中的告警', '<div class="modal-empty">暂无故障中的告警 ✓</div>');
+    return;
+  }
+  const rows = open.map(r =>
+    `<tr><td>${fmtTimeShort(r.occurTime)}</td><td class="mono">${esc(r.pointKey)}</td><td>${esc(r.station)}</td>` +
+    `<td>${esc(r.reason)}</td><td class="mono">${esc(r.pointValue)}</td></tr>`
+  ).join('');
+  openDetailModal('告警明细（故障中）', `共 ${open.length} 条未恢复`,
+    '<table class="modal-table"><thead><tr><th>发生时间</th><th>点位</th><th>工位</th><th>原因</th><th>触发值</th></tr></thead>' +
+    '<tbody>' + rows + '</tbody></table>');
+}
+
+// 第三方订阅连接明细
+function showSubDetail() {
+  if (lastSubs.length === 0) {
+    openDetailModal('订阅端明细', '当前没有订阅连接', '<div class="modal-empty">暂无第三方订阅连接</div>');
+    return;
+  }
+  const rows = lastSubs.map(([id, su]) =>
+    `<tr><td class="mono">${esc(id)}</td><td class="mono">${esc(su.remoteAddress || '-')}</td>` +
+    `<td title="${esc(su.topics || '')}">${esc(topicsToScenarios(su.topics))}</td>` +
+    `<td>${fmtTime(su.connectedSince)}</td><td class="mono">${(su.sentCount || 0).toLocaleString()}</td>` +
+    `<td class="mono">${su.droppedCount || 0}</td></tr>`
+  ).join('');
+  openDetailModal('订阅端明细', `共 ${lastSubs.length} 个连接`,
+    '<table class="modal-table"><thead><tr><th>订阅 ID</th><th>来源地址</th><th>订阅 Topic</th><th>接入时间</th><th>已推</th><th>丢弃</th></tr></thead>' +
+    '<tbody>' + rows + '</tbody></table>');
+}
+
+function closeModal() { document.getElementById('modalMask').classList.remove('show'); }
+document.getElementById('modalClose').onclick = closeModal;
+document.getElementById('modalOk').onclick = closeModal;
+document.getElementById('modalMask').onclick = (e) => {
+  if (e.target.id === 'modalMask') closeModal();
+};
+// ESC 关闭弹窗（日志全屏有自己的 ESC 处理，见下面的全屏 IIFE）
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+// 复制弹窗里的报文：内网 http 下 navigator.clipboard 不可用, 用 execCommand 兜底
+document.getElementById('modalCopy').onclick = () => {
+  const txt = document.getElementById('modalContent').textContent || '';
+  const btn = document.getElementById('modalCopy');
+  const done = (ok) => {
+    btn.textContent = ok ? '已复制 ✓' : '复制失败';
+    setTimeout(() => { btn.textContent = '复制内容'; }, 1500);
+  };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(txt).then(() => done(true), () => done(false));
+    return;
+  }
+  const ta = document.createElement('textarea');
+  ta.value = txt;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+  document.body.removeChild(ta);
+  done(ok);
+};
+
+function fmtTime(ts) {
+  if (!ts) return '-';
+  const d = new Date(ts);
+  return d.toLocaleString('zh-CN', { hour12: false });
+}
+// 紧凑时间(告警记录表用)：MM-DD HH:MM:SS，去掉年和毫秒，省列宽。ts 是 "2026-08-18 17:30:03.618" 这种字面量
+function fmtTimeShort(ts) {
+  if (!ts) return '-';
+  const s = String(ts);
+  return s.length >= 19 ? s.slice(5, 19) : s;
+}
+function fmtBytes(n) {
+  if (n === undefined || n === null) return '-';
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1024 / 1024).toFixed(2) + ' MB';
+}
+
+async function loadStatus() {
+  try {
+    const res = await fetch('/api/status');
+    const s = await res.json();
+
+    // 先把内存快照落地再渲染：后面任何一处 DOM 渲染出错，状态条/拓扑至少还是真实数据，
+    // 不会像之前那样整块变成 0/16 在线、累计 0 条
+    lastTopics = s.topics || {};
+    hbSubs = (s.subscribers && s.subscribers.connectedCount) || 0;
+    hbTotal = (s.traffic && s.traffic.totalMessages) || 0;
+
+    const edges = Object.entries(s.edges || {});
+    const connectedEdges = edges.filter(([, e]) => e.connected).length;
+    document.getElementById('edgeCount').textContent = connectedEdges + ' / ' + edges.length;
+    document.getElementById('edgeSub').textContent = '在线 / 已知数据源';
+
+    document.getElementById('subCount').textContent = s.subscribers.connectedCount;
+    document.getElementById('subSub').textContent = '丢弃消息: ' + s.subscribers.droppedCount;
+
+
+    // 概览卡片虽然去掉了「反向控制连接」，但下面的控制明细表和 Topic 统计还要用 ctrl
+    const ctrl = s.control || { connectedCount: 0, list: {} };
+
+    document.getElementById('rateUp').textContent = (s.traffic.mqttUplinkPerSecond || 0).toFixed(1);
+    document.getElementById('rateUpB').textContent = '条/秒 · ' + fmtBytes(s.traffic.mqttUplinkBytesPerSecond) + '/s';
+    document.getElementById('rateDown').textContent = (s.traffic.wsDownlinkPerSecond || 0).toFixed(1);
+    document.getElementById('rateDownB').textContent = '条/秒 · ' + fmtBytes(s.traffic.wsDownlinkBytesPerSecond) + '/s';
+    pushSpark(s.traffic.mqttUplinkPerSecond || 0, s.traffic.wsDownlinkPerSecond || 0);
+    renderSpark();
+
+    document.getElementById('total').textContent = s.traffic.totalMessages + ' 条';
+    document.getElementById('totalSub').textContent = fmtBytes(s.traffic.totalBytes) + ' 累计';
+
+    const edgeRows = document.getElementById('edgeRows');
+    if (edges.length === 0) {
+      edgeRows.innerHTML = '<tr><td colspan="6">暂无接入</td></tr>';
+    } else {
+      edgeRows.innerHTML = edges.sort((a, b) => b[1].lastSeen - a[1].lastSeen).map(([clientId, e]) =>
+        `<tr><td>${clientId}</td><td><span class="dot ${e.connected ? 'up' : 'down'}"></span>${e.connected ? '在线' : '离线'}</td>` +
+        `<td>${fmtTime(e.connectedSince)}</td><td>${fmtTime(e.lastSeen)}</td><td>${e.messageCount}</td><td>${fmtBytes(e.byteCount)}</td></tr>`
+      ).join('');
+    }
+
+    // 第三方订阅连接明细
+    const subs = (s.subscribers && s.subscribers.list) || {};
+    const subEntries = Object.entries(subs);
+    lastSubs = subEntries.slice().sort((a, b) => b[1].connectedSince - a[1].connectedSince);  // 状态条「订阅端」明细弹窗用
+    const subRows = document.getElementById('subRows');
+    if (subEntries.length === 0) {
+      subRows.innerHTML = '<tr><td colspan="6">暂无第三方订阅连接</td></tr>';
+    } else {
+      subRows.innerHTML = subEntries.sort((a, b) => b[1].connectedSince - a[1].connectedSince).map(([id, su]) =>
+        `<tr><td>${id}</td><td>${su.remoteAddress || '-'}</td><td title="${su.topics || ''}">${topicsToScenarios(su.topics)}</td>` +
+        `<td>${fmtTime(su.connectedSince)}</td><td>${su.sentCount || 0}</td><td>${su.droppedCount || 0}</td></tr>`
+      ).join('');
+    }
+
+    // 反向控制连接明细（/ws/control）
+    const ctrlEntries = Object.entries(ctrl.list || {});
+    const ctrlRows = document.getElementById('ctrlRows');
+    if (ctrlEntries.length === 0) {
+      ctrlRows.innerHTML = '<tr><td colspan="5">暂无反向控制连接</td></tr>';
+    } else {
+      ctrlRows.innerHTML = ctrlEntries.sort((a, b) => b[1].connectedSince - a[1].connectedSince).map(([id, c]) =>
+        `<tr><td>${id}</td><td>${c.remoteAddress || '-'}</td><td>${c.topic || '-'}</td>` +
+        `<td>${fmtTime(c.connectedSince)}</td><td>${c.cmdCount || 0}</td></tr>`
+      ).join('');
+    }
+
+    // 按场景一行，展示三种 topic：上行数据 / 下行控制 / 回执。点 topic 名看最新一条。
+    const tbody = document.getElementById('topicRows');
+    // 单个 topic 单元格：状态灯(最近10s有数据=绿闪) + 可点的消息数(点开看最新报文)，不再显示 topic 全名
+    const topicCell = (topic) => {
+      const st = lastTopics[topic] || {};
+      const live = st.lastMessageAt && (Date.now() - st.lastMessageAt < 10000);
+      return `<span class="live-dot ${live ? 'on' : 'off'}" title="${live ? '实时有数据' : '无数据'}"></span>` +
+        `<a class="topic-link" onclick="showPayloadModal('${topic.replace(/'/g, "\\'")}')" title="点击查看最新报文">${st.count || 0} 条</a>`;
+    };
+    // 控制端按目标 channel 聚合：连接数 + 累计下发数
+    const ctrlByChannel = {};
+    for (const c of Object.values(ctrl.list || {})) {
+      const t = c.topic || '';
+      if (!ctrlByChannel[t]) ctrlByChannel[t] = { conns: 0, cmds: 0 };
+      ctrlByChannel[t].conns++;
+      ctrlByChannel[t].cmds += (c.cmdCount || 0);
+    }
+    tbody.innerHTML = FIXED_TOPICS.map((up, idx) => {
+      const scen = CHANNEL_SCENARIOS[up];
+      const scenCell = scen ? `<b>${scen}</b>` : '<span style="color:#9aa4b2">预留</span>';
+      const ust = lastTopics[up] || {};
+      const src = ust.source || '云侧MQTT';   // 16 路都从云端 EMQX 订阅(channel-1 由 ws-relay 上报)
+      const srcCell = `<span style="color:var(--muted);font-weight:600">${src}</span>`;
+      const cc = ctrlByChannel[up] || { conns: 0, cmds: 0 };
+      const ctrlCell = `<span class="live-dot ${cc.conns > 0 ? 'on' : 'off'}"></span>` +
+        `<span class="tcnt">${cc.conns} 连接 / ${cc.cmds} 指令</span>`;
+      // 在线状态：最近 30s 有数据 = 在线(实心绿常亮) + 最近时间，风格同 emqx 在线状态
+      const online = ust.lastMessageAt && (Date.now() - ust.lastMessageAt < 30000);
+      const timeCell = `<span class="live-dot ${online ? 'on' : 'off'}"></span>` +
+        `<span style="color:${online ? 'var(--up)' : 'var(--muted)'};font-weight:${online ? 600 : 400}">${online ? '在线' : '离线'}</span>` +
+        `<span class="tcnt">${fmtTime(ust.lastMessageAt)}</span>`;
+      // 告警推送开关：只有配置成告警通道(channel-1/channel-11 …)才有开关，其它通道显示 —
+      let pushCell = '<span style="color:#9aa4b2">—</span>';
+      if (Object.prototype.hasOwnProperty.call(alarmPush, up)) {
+        const on = !!alarmPush[up];
+        pushCell = `<label class="tog"><input type="checkbox" ${on ? 'checked' : ''} ` +
+          `onchange="toggleAlarmPush('${up.replace(/'/g, "\\'")}', this.checked)"><span class="sld"></span></label>` +
+          `<span class="tog-lbl">${on ? '开' : '关'}</span>`;
+      }
+      return `<tr><td>${idx + 1}</td><td>${scenCell}</td><td>${srcCell}</td>` +
+        `<td>${topicCell(up)}</td><td>${topicCell(up + '/c')}</td><td>${topicCell(up + '/c/ack')}</td>` +
+        `<td>${ctrlCell}</td><td>${pushCell}</td><td>${timeCell}</td></tr>`;
+    }).join('');
+
+    renderHealthbar();
+    renderTopology(s);
+  } catch (e) { /* ignore, keep last rendered state */ }
+}
+
+// 顶部健康状态条：数据源在线数 / 告警数 / 订阅端 / 累计
+let alarmCount = 0, hbSubs = 0, hbTotal = 0;
+// 状态条明细弹窗用的数据缓存（跟着轮询一起更新，弹窗打开时直接读内存不再请求）
+let buildLabel = '';
+let lastRecords = [];
+let lastSubs = [];
+// ────────── 云端链路拓扑 ──────────
+// 一张图说清楚云上数据怎么走：现场 → EMQX → cloud-service → 第三方订阅端，
+// 外加下行控制、指令回执、告警同步三条支线。所有数字都取自 /api/status 和 EMQX 自己的
+// 监控接口，没有写死的装饰——线在跑就是真有流量，灰的就是真没数据。
+const TOPO_ONLINE_WINDOW_MS = 30000;
+
+// EMQX 自己的监控指标(/api/v5/stats + /api/v5/metrics，后端 EmqxAdminClient 代理)。
+// EMQX 只给累计值，收发速率在前端按两次采样的差值算，跟页面上其它速率一个口径。
+let lastEmqx = null;
+let emqxPrev = null;
+let emqxRate = { recv: 0, sent: 0 };
+
+async function loadEmqxMetrics() {
+  try {
+    const res = await fetch('/api/emqx-metrics');
+    const m = await res.json();
+    if (m && m.available) {
+      if (emqxPrev && m.at > emqxPrev.at) {
+        const dt = (m.at - emqxPrev.at) / 1000;
+        emqxRate = {
+          recv: Math.max(0, (m.messagesReceived - emqxPrev.messagesReceived) / dt),
+          sent: Math.max(0, (m.messagesSent - emqxPrev.messagesSent) / dt)
+        };
+      }
+      emqxPrev = m;
+    }
+    lastEmqx = m;
+  } catch (e) { /* 取不到就保持上次的值，拓扑照常渲染 */ }
+}
+
+function topoLive(topic) {
+  const t = lastTopics[topic];
+  return !!(t && t.lastMessageAt && (Date.now() - t.lastMessageAt < TOPO_ONLINE_WINDOW_MS));
+}
+function topoCount(topic) {
+  const t = lastTopics[topic];
+  return (t && t.count) || 0;
+}
+function topoSum(suffix) {
+  return FIXED_TOPICS.reduce((a, tp) => a + topoCount(tp + suffix), 0);
+}
+function topoAnyLive(suffix) {
+  return FIXED_TOPICS.some(tp => topoLive(tp + suffix));
+}
+function topoNum(n) {
+  return (n || 0).toLocaleString();
+}
+
+function topoArrow(label, rateText, active) {
+  return '<div class="topo-arrow">' +
+    '<div class="al">' + label + '</div>' +
+    '<div class="topo-track"><div class="topo-flow' + (active ? '' : ' off') + '"></div></div>' +
+    '<div class="ar' + (active ? '' : ' off') + '">' + rateText + '</div>' +
+    '</div>';
+}
+
+function topoStage(title, main, subs, on) {
+  return '<div class="topo-stage' + (on ? ' on' : '') + '">' +
+    '<div class="st">' + title + '</div>' +
+    '<div class="sm">' + main + '</div>' +
+    (subs || []).map(x => '<div class="ss">' + x + '</div>').join('') +
+    '</div>';
+}
+
+function renderTopology(s) {
+  const traffic = s.traffic || {};
+  const upRate = traffic.mqttUplinkPerSecond || 0;
+  const downRate = traffic.wsDownlinkPerSecond || 0;
+  const subCount = (s.subscribers && s.subscribers.connectedCount) || 0;
+  const subDropped = (s.subscribers && s.subscribers.droppedCount) || 0;
+  const ctrlCount = (s.control && s.control.connectedCount) || 0;
+  const ctrlCmds = Object.values((s.control && s.control.list) || {}).reduce((a, c) => a + (c.cmdCount || 0), 0);
+  const onlineChannels = FIXED_TOPICS.filter(tp => topoLive(tp)).length;
+
+  document.getElementById('topoStats').textContent =
+    onlineChannels + '/' + FIXED_TOPICS.length + ' 路在流 · 上行 ' + upRate.toFixed(1) +
+    ' 条/秒 · 下发 ' + downRate.toFixed(1) + ' 条/秒';
+
+  // ── 汇聚图：左边 16 路数据源，中间 EMQX + cloud-service，右边对外出口 ──
+  const srcCells = FIXED_TOPICS.map(tp => {
+    const ch = (tp.match(/channel-(\d+)/) || [])[1] || '';
+    const name = CHANNEL_SCENARIOS[tp] || '（预留，暂无场景）';
+    const live = topoLive(tp);
+    const t = lastTopics[tp] || {};
+    return '<div class="topo-cell' + (live ? ' live' : '') + '"' +
+      ' data-name="' + esc(name) + '"' +
+      ' data-topic="' + tp + '"' +
+      ' data-count="' + topoNum(topoCount(tp)) + '"' +
+      ' data-live="' + (live ? '1' : '0') + '"' +
+      ' data-last="' + (t.lastMessageAt ? esc(fmtTime(t.lastMessageAt)) : '从未收到数据') + '"' +
+      ' onclick="showPayloadModal(\'' + tp + '\')">ch' + ch + '</div>';
+  }).join('');
+
+  const outChips =
+    '<span class="topo-chip clickable' + (subCount > 0 ? ' live' : '') + '" onclick="showSubDetail()" title="第三方订阅端 /ws/subscribe">' +
+      '订阅端 ' + subCount + '</span>' +
+    '<span class="topo-chip' + (ctrlCount > 0 ? ' live' : '') + '" title="反向控制端 /ws/control · 累计下发 ' + topoNum(ctrlCmds) + ' 条">' +
+      '控制端 ' + ctrlCount + '</span>' +
+    '<span class="topo-chip clickable' + (alarmCount > 0 ? ' live' : '') + '" onclick="showAlarmDetail()" title="云端告警库 cloud_trace">' +
+      '告警 ' + alarmCount + '</span>';
+
+  const emqx = lastEmqx && lastEmqx.available ? lastEmqx : null;
+
+  document.getElementById('topoHub').innerHTML =
+    '<div class="topo-col">' +
+      '<div class="ct"><span>16 路数据源</span><b>' + onlineChannels + ' 在线</b></div>' +
+      '<div class="topo-grid">' + srcCells + '</div>' +
+    '</div>' +
+    topoArrow('MQTT', upRate > 0 ? upRate.toFixed(1) + ' 条/秒' : '静默', upRate > 0) +
+    '<div class="topo-core">' +
+      '<div class="cn">EMQX</div>' +
+      '<div class="cm">' + (emqx ? (emqx.connections + ' 连接 · ' + emqx.topics + ' 主题') : 'tcp://emqx:1883') + '</div>' +
+      (emqx ? '<div class="cd">收 ' + emqxRate.recv.toFixed(1) + ' / 发 ' + emqxRate.sent.toFixed(1) + ' 条/秒</div>' : '<div class="cd">指标取不到</div>') +
+    '</div>' +
+    topoArrow('订阅', upRate > 0 ? upRate.toFixed(1) + ' 条/秒' : '静默', upRate > 0) +
+    '<div class="topo-core">' +
+      '<div class="cn">cloud-service</div>' +
+      '<div class="cm">' + topoNum(traffic.totalMessages) + ' 条</div>' +
+      '<div class="cd">' + fmtBytes(traffic.totalBytes) + '</div>' +
+    '</div>' +
+    topoArrow('推送', downRate > 0 ? downRate.toFixed(1) + ' 条/秒' : '静默', downRate > 0) +
+    '<div class="topo-col">' +
+      '<div class="ct"><span>对外出口</span><b>' + (subCount + ctrlCount) + ' 连接</b></div>' +
+      '<div class="topo-chips">' + outChips + '</div>' +
+    '</div>';
+
+  // ── 四条链路：上行数据 / 下行控制 / 指令回执 / 告警同步 ──
+  const upTotal = topoSum('');
+  const ctrlTotal = topoSum('/c');
+  const ackTotal = topoSum('/c/ack');
+  const ctrlLive = topoAnyLive('/c');
+  const ackLive = topoAnyLive('/c/ack');
+
+  const lanes = [
+    {
+      title: '① 上行数据 · 设备 → 云 → 第三方',
+      state: onlineChannels + '/' + FIXED_TOPICS.length + ' 路在流 · 累计 ' + topoNum(upTotal) + ' 条',
+      active: upRate > 0,
+      stages: [
+        topoStage('现场数据源', onlineChannels + ' 路在线', ['ws-relay / 各场景网关', 'MQTT publish'], onlineChannels > 0),
+        topoStage('EMQX topic', topoNum(upTotal) + ' 条',
+          ['device/data/channel-1..16',
+           lastEmqx && lastEmqx.available ? ('EMQX 侧累计收 ' + topoNum(lastEmqx.messagesReceived) + ' 条') : 'EMQX 指标取不到'],
+          upRate > 0),
+        topoStage('cloud-service', upRate.toFixed(1) + ' 条/秒', ['EmqxSubscriber 订阅', 'wrap 包装 + ch1 注入告警'], upRate > 0),
+        topoStage('第三方订阅端', subCount + ' 连接', ['/ws/subscribe', '丢弃 ' + topoNum(subDropped) + ' 条'], subCount > 0)
+      ],
+      arrows: [
+        ['publish', upRate > 0 ? upRate.toFixed(1) + ' 条/秒' : '—', upRate > 0],
+        ['subscribe', upRate > 0 ? upRate.toFixed(1) + ' 条/秒' : '—', upRate > 0],
+        ['broadcast', downRate > 0 ? downRate.toFixed(1) + ' 条/秒' : '—', downRate > 0]
+      ]
+    },
+    {
+      title: '② 下行控制 · 控制端 → 云 → 设备',
+      state: ctrlCount + ' 个控制端 · 累计下发 ' + topoNum(ctrlCmds) + ' 条',
+      active: ctrlLive,
+      stages: [
+        topoStage('控制端', ctrlCount + ' 连接', ['/ws/control'], ctrlCount > 0),
+        topoStage('cloud-service', topoNum(ctrlCmds) + ' 条', ['ControlBroker 转发'], ctrlCount > 0),
+        topoStage('EMQX 控制 topic', topoNum(ctrlTotal) + ' 条', ['device/data/channel-N/c'], ctrlLive),
+        topoStage('现场设备', ctrlLive ? '接收中' : '待命', ['edge 侧订阅执行'], ctrlLive)
+      ],
+      arrows: [
+        ['WebSocket', ctrlCount > 0 ? '在线' : '—', ctrlCount > 0],
+        ['publish /c', ctrlTotal > 0 ? topoNum(ctrlTotal) + ' 条' : '—', ctrlLive],
+        ['下发到现场', ctrlLive ? '在流' : '—', ctrlLive]
+      ]
+    },
+    {
+      title: '③ 指令回执 · 设备 → 云 → 控制端',
+      state: '累计 ' + topoNum(ackTotal) + ' 条回执',
+      active: ackLive,
+      stages: [
+        topoStage('现场设备', ackLive ? '回执中' : '无回执', ['执行结果上报'], ackLive),
+        topoStage('EMQX 回执 topic', topoNum(ackTotal) + ' 条', ['device/data/channel-N/c/ack'], ackLive),
+        topoStage('cloud-service', ackLive ? '转发中' : '待命', ['ControlBroker.forwardAck'], ackLive),
+        topoStage('控制端', ctrlCount + ' 连接', ['原路回传 /ws/control'], ctrlCount > 0)
+      ],
+      arrows: [
+        ['publish /c/ack', ackTotal > 0 ? topoNum(ackTotal) + ' 条' : '—', ackLive],
+        ['subscribe', ackLive ? '在流' : '—', ackLive],
+        ['回传', ctrlCount > 0 ? '在线' : '—', ackLive && ctrlCount > 0]
+      ]
+    },
+    {
+      title: '④ 告警同步 · 边缘检测 → 云端库 → 控制台',
+      state: alarmCount > 0 ? (alarmCount + ' 条故障中') : '无故障',
+      active: alarmCount > 0,
+      stages: [
+        topoStage('边缘故障检测', allPoints.length + ' 个点位', ['seal-line-edge FaultDetector'], allPoints.length > 0),
+        topoStage('云端告警库', alarmCount + ' 条故障中', ['MySQL cloud_trace', 'fault_record 状态化 upsert'], alarmCount > 0),
+        topoStage('控制台展示', alarmCount > 0 ? '告警中' : '正常', ['告警记录 / 状态条'], alarmCount > 0)
+      ],
+      arrows: [
+        ['状态化 upsert', allPoints.length > 0 ? '实时' : '—', alarmCount > 0],
+        ['查询展示', '2 秒轮询', true]
+      ]
+    }
+  ];
+
+  document.getElementById('topoLanes').innerHTML = lanes.map(lane => {
+    let pipe = '';
+    lane.stages.forEach((st, i) => {
+      pipe += st;
+      if (i < lane.stages.length - 1 && lane.arrows[i]) {
+        pipe += topoArrow(lane.arrows[i][0], lane.arrows[i][1], lane.arrows[i][2]);
+      }
+    });
+    return '<div class="topo-lane' + (lane.active ? '' : ' idle') + '">' +
+      '<div class="topo-lane-head"><span class="lt">' + lane.title + '</span><span class="ls">' + lane.state + '</span></div>' +
+      '<div class="topo-pipe">' + pipe + '</div>' +
+      '</div>';
+  }).join('');
+}
+
+// 16 格的悬浮提示：委托绑在 hub 上，格子每 2 秒重建也不用重新绑
+(function () {
+  const hub = document.getElementById('topoHub');
+  const tip = document.getElementById('topoTip');
+  if (!hub || !tip) return;
+
+  const place = (e) => {
+    // 跟着鼠标走，靠近右/下边缘时翻到另一侧，别被窗口切掉
+    const pad = 14;
+    const r = tip.getBoundingClientRect();
+    let x = e.clientX + pad;
+    let y = e.clientY + pad;
+    if (x + r.width > window.innerWidth - 8) x = e.clientX - r.width - pad;
+    if (y + r.height > window.innerHeight - 8) y = e.clientY - r.height - pad;
+    tip.style.left = Math.max(8, x) + 'px';
+    tip.style.top = Math.max(8, y) + 'px';
+  };
+
+  hub.addEventListener('mouseover', (e) => {
+    const cell = e.target.closest('.topo-cell');
+    if (!cell) return;
+    const live = cell.dataset.live === '1';
+    tip.innerHTML =
+      '<div class="tn">' + cell.dataset.name + '</div>' +
+      '<div class="tm">' + cell.dataset.topic + '</div>' +
+      '<div class="tm">累计 ' + cell.dataset.count + ' 条</div>' +
+      '<div class="to' + (live ? '' : ' off') + '">' +
+        (live ? '● 在流 · 最近 ' + cell.dataset.last : '○ 30 秒内无数据 · 最近 ' + cell.dataset.last) +
+      '</div>';
+    tip.style.display = 'block';
+    place(e);
+  });
+  hub.addEventListener('mousemove', (e) => {
+    if (tip.style.display === 'block') place(e);
+  });
+  hub.addEventListener('mouseout', (e) => {
+    if (!e.relatedTarget || !e.relatedTarget.closest || !e.relatedTarget.closest('.topo-cell')) {
+      tip.style.display = 'none';
+    }
+  });
+})();
+
+// 拓扑明细(四条链路 lane)默认收起：总览一眼看完，要追细节再展开
+(function () {
+  const btn = document.getElementById('topoToggle');
+  const box = document.getElementById('topoLanes');
+  let open = false;
+  try { open = localStorage.getItem('topo-lanes-open') === '1'; } catch (e) { /* 隐私模式下 localStorage 会抛 */ }
+  const apply = () => {
+    box.style.display = open ? '' : 'none';
+    btn.textContent = open ? '收起明细' : '展开明细';
+  };
+  btn.onclick = () => {
+    open = !open;
+    try { localStorage.setItem('topo-lanes-open', open ? '1' : '0'); } catch (e) { /* 忽略 */ }
+    apply();
+  };
+  apply();
+})();
+
+// ────────── 速率走势 sparkline ──────────
+// 只在前端内存里存最近 60 个采样点(2 秒一个 = 2 分钟)，刷新页面就重来。
+// 目的不是做监控历史，是让人一眼看出"刚刚是不是掉过零/抖过"。
+const SPARK_MAX = 60;
+const sparkUp = [];
+const sparkDown = [];
+
+function pushSpark(up, down) {
+  sparkUp.push(up); sparkDown.push(down);
+  if (sparkUp.length > SPARK_MAX) sparkUp.shift();
+  if (sparkDown.length > SPARK_MAX) sparkDown.shift();
+}
+
+function sparkPath(data, max, w, h) {
+  if (data.length < 2) return '';
+  const step = w / (SPARK_MAX - 1);
+  return data.map((v, i) => {
+    const x = (i * step).toFixed(1);
+    const y = (h - (max > 0 ? (v / max) * (h - 3) : 0) - 1).toFixed(1);
+    return (i === 0 ? 'M' : 'L') + x + ',' + y;
+  }).join(' ');
+}
+
+function renderSpark() {
+  const el = document.getElementById('rateSpark');
+  if (!el) return;
+  const w = 200, h = 30;
+  if (sparkUp.length < 2) {
+    el.innerHTML = '<text class="sp-empty" x="2" y="18">采样中…</text>';
+    return;
+  }
+  // 两条线共用一个纵轴刻度，才能直观比出上行/下行的量级差
+  const max = Math.max(1, ...sparkUp, ...sparkDown);
+  const upPath = sparkPath(sparkUp, max, w, h);
+  const dnPath = sparkPath(sparkDown, max, w, h);
+  el.innerHTML =
+    '<path class="sp-line sp-up" d="' + upPath + '"></path>' +
+    '<path class="sp-line sp-dn" d="' + dnPath + '"></path>';
+  const sub = document.getElementById('rateSparkSub');
+  if (sub) {
+    sub.textContent = '最近 ' + Math.round(sparkUp.length * 2 / 60 * 10) / 10 + ' 分钟 · 峰值 ' +
+      max.toFixed(1) + ' 条/秒（绿=上行 橙=下行）';
+  }
+}
+
+function renderHealthbar() {
+  const bar = document.getElementById('statusbar');
+  if (!bar) return;
+  const total = FIXED_TOPICS.length;
+  const online = FIXED_TOPICS.filter(up => {
+    const t = lastTopics[up];
+    return t && t.lastMessageAt && (Date.now() - t.lastMessageAt < 30000);
+  }).length;
+  document.getElementById('statusbarBar').classList.toggle('alarm', alarmCount > 0);
+  bar.innerHTML =
+    `<span><span class="sdot ${online > 0 ? 'ok' : 'bad'}"></span>EMQX 边缘侧数据源接入 ` +
+    `<b class="hb-link" onclick="showEdgeDetail()" title="点击查看各 channel 明细">${online}/${total}</b> 在线</span>` +
+    `<span><span class="sdot ${alarmCount > 0 ? 'bad' : 'ok'}"></span>告警 ` +
+    `<b class="hb-link" onclick="showAlarmDetail()" title="点击查看故障中的告警明细" style="${alarmCount > 0 ? 'color:var(--down)' : ''}">${alarmCount}</b> ` +
+    `${alarmCount > 0 ? '<span style="color:var(--down)">故障中</span>' : ''}</span>` +
+    `<span>订阅端 <b class="hb-link" onclick="showSubDetail()" title="点击查看订阅连接明细">${hbSubs}</b></span>` +
+    `<span>累计 <b>${(hbTotal || 0).toLocaleString()}</b> 条</span>` +
+    `<span class="build" id="buildInfo" title="页面构建时间。跟你预期的部署时间对不上，就是还在看旧版本(硬刷 Cmd+Shift+R)">${buildLabel}</span>`;
+}
+
+async function loadLogs() {
+  try {
+    const res = await fetch('/api/logs?sinceId=' + lastLogId);
+    const data = await res.json();
+    if (data.entries && data.entries.length > 0) {
+      const box = document.getElementById('logbox');
+      const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 20;
+      for (const e of data.entries) {
+        const line = document.createElement('div');
+        line.className = 'lvl-' + e.level;
+        line.textContent = `[${fmtTime(e.timestamp)}] ${e.level.padEnd(5)} ${e.logger} - ${e.message}`;
+        box.appendChild(line);
+      }
+      while (box.childElementCount > 1500) box.removeChild(box.firstChild);
+      lastLogId = data.lastId;
+      if (autoScroll || atBottom) box.scrollTop = box.scrollHeight;
+    }
+  } catch (e) { /* ignore */ }
+}
+
+let recProjFilter = '';   // 告警记录的项目过滤: '' = 全部
+
+// 项目按钮来源：告警点位配置里出现的项目 ∪ 当前记录里出现的项目
+function knownProjects() {
+  const s = new Set(allPoints.map(effLine));
+  (lastRecords || []).forEach(r => s.add(effLine(r)));
+  return [...s].sort();
+}
+
+function renderRecProjectFilter() {
+  const box = document.getElementById('recProjectFilter');
+  if (!box) return;
+  const lines = knownProjects();
+  const mk = (label, val) => `<button data-p="${val}" class="${recProjFilter === val ? 'active' : ''}">${label}</button>`;
+  box.innerHTML = mk('全部项目', '') + lines.map(l => mk(l, l)).join('');
+  box.querySelectorAll('button').forEach(btn => {
+    btn.onclick = () => { recProjFilter = btn.dataset.p; renderRecProjectFilter(); loadRecords(); };
+  });
+  box.style.display = lines.length > 1 ? 'flex' : 'none';
+}
+
+async function loadRecords() {
+  try {
+    const url = '/api/fault-records?limit=200' + (recProjFilter ? '&line=' + encodeURIComponent(recProjFilter) : '');
+    const res = await fetch(url);
+    const list = await res.json();
+    const tbody = document.getElementById('recordRows');
+    if (!Array.isArray(list) || list.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="8">暂无告警记录</td></tr>';
+    } else {
+      tbody.innerHTML = list.map(r =>
+        `<tr class="${r.resolved ? '' : 'unresolved'}">` +
+        `<td>${effLine(r)}</td>` +
+        `<td><span class="badge ${r.resolved ? 'resolved' : 'open'}">${r.resolved ? '已恢复' : '故障中'}</span></td>` +
+        `<td>${fmtTimeShort(r.occurTime)}</td><td>${fmtTimeShort(r.resolvedTime)}</td>` +
+        `<td title="${r.pointKey || ''}">${r.pointKey || ''}</td><td>${r.station || ''}</td><td>${r.reason || ''}</td>` +
+        `<td title="${r.pointValue || ''}">${r.pointValue || ''}</td></tr>`
+      ).join('');
+    }
+    lastRecords = Array.isArray(list) ? list : [];   // 状态条「告警」明细弹窗用
+    // 状态条告警数要反映全局；只有未按项目过滤时才用它刷新，避免过滤后显示偏小
+    if (!recProjFilter) { alarmCount = lastRecords.filter(r => !r.resolved).length; renderHealthbar(); }
+    renderRecProjectFilter();
+    const rc = document.getElementById('recCount');
+    if (rc) rc.textContent = recProjFilter ? `${recProjFilter} ${lastRecords.length} 条` : `共 ${lastRecords.length} 条`;
+  } catch (e) { /* ignore, 保留上次渲染 */ }
+}
+
+let allPoints = [];
+let pointFilter = '';     // 工位: '' = 全部，或 A1/A2/A3/A4
+let projFilter = '';      // 项目(line): '' = 全部
+let alarmPush = {};        // 各告警通道推送开关: topic -> true/false (Topic 流量统计那一列用)
+
+// 拉取告警推送开关状态(哪些通道是告警通道 + 各自开/关)
+async function loadAlarmPush() {
+  try {
+    const res = await fetch('/api/alarm-push');
+    const list = await res.json();
+    const next = {};
+    (Array.isArray(list) ? list : []).forEach(c => { next[c.topic] = !!c.enabled; });
+    alarmPush = next;
+  } catch (e) { /* ignore, 保留上次 */ }
+}
+
+// 开关某通道的告警推送交互(实时帧+快照+getHistory)
+async function toggleAlarmPush(topic, enabled) {
+  try {
+    await fetch('/api/alarm-push?topic=' + encodeURIComponent(topic) + '&enabled=' + enabled, { method: 'POST' });
+    alarmPush[topic] = enabled;   // 本地即时反映，下一轮状态轮询会再对齐
+  } catch (e) { /* ignore */ }
+}
+
+const DEFAULT_LINE = '印章密封线';   // line 为空的历史点位都算这个(跟后端一致)
+function effLine(p) { return (p.line && p.line.trim()) ? p.line.trim() : DEFAULT_LINE; }
+
+function renderPoints() {
+  const tbody = document.getElementById('pointRows');
+  const list = allPoints.filter(p =>
+    (!projFilter || effLine(p) === projFilter) && (!pointFilter || p.station === pointFilter));
+  const cnt = document.getElementById('pointCount');
+  const scope = [projFilter, pointFilter].filter(Boolean).join(' · ');
+  cnt.textContent = scope ? `${scope} ${list.length} 个 / 共 ${allPoints.length}` : `共 ${allPoints.length} 个`;
+  if (list.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7">暂无点位配置</td></tr>';
+  } else {
+    tbody.innerHTML = list.map(p =>
+      `<tr><td>${effLine(p)}</td><td title="${p.pointKey || ''}">${p.pointKey || ''}</td><td>${p.faultCode || ''}</td>` +
+      `<td title="${p.variableName || ''}">${p.variableName || ''}</td>` +
+      `<td>${p.station || ''}</td><td>${p.reason || ''}</td><td>${p.faultLevel || ''}</td></tr>`
+    ).join('');
+  }
+}
+
+// 按 allPoints 里出现的项目动态生成项目过滤按钮(全部 + 各 line)
+function renderProjectFilter() {
+  const box = document.getElementById('projectFilter');
+  const lines = [...new Set(allPoints.map(effLine))].sort();
+  const mk = (label, val) => `<button data-p="${val}" class="${projFilter === val ? 'active' : ''}">${label}</button>`;
+  box.innerHTML = mk('全部项目', '') + lines.map(l => mk(l, l)).join('');
+  box.querySelectorAll('button').forEach(btn => {
+    btn.onclick = () => {
+      projFilter = btn.dataset.p;
+      renderProjectFilter();
+      syncStationFilter();
+      renderPoints();
+    };
+  });
+  // 只有一个项目时没必要显示项目过滤条
+  box.style.display = lines.length > 1 ? 'flex' : 'none';
+  syncStationFilter();
+}
+
+// 工位(A1-A4)是印章密封线独有的：只在"全部/印章密封线"且确有印章点位时显示，选中海尔等其它项目就隐藏
+function syncStationFilter() {
+  const sf = document.getElementById('stationFilter');
+  const hasSeal = allPoints.some(p => effLine(p) === DEFAULT_LINE);
+  const show = hasSeal && (projFilter === '' || projFilter === DEFAULT_LINE);
+  sf.style.display = show ? 'flex' : 'none';
+  if (!show && pointFilter) {   // 隐藏时清掉工位过滤，避免过滤出空
+    pointFilter = '';
+    document.querySelectorAll('#stationFilter button').forEach(b => b.classList.toggle('active', b.dataset.s === ''));
+  }
+}
+
+async function loadPoints() {
+  try {
+    const res = await fetch('/api/fault-points');
+    const list = await res.json();
+    allPoints = Array.isArray(list) ? list : [];
+    renderProjectFilter();
+    renderPoints();
+    renderRecProjectFilter();   // 点位项目列表也用于告警记录的项目过滤按钮
+  } catch (e) { /* ignore, 保留上次渲染 */ }
+}
+
+// 工位过滤按钮
+document.querySelectorAll('#stationFilter button').forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll('#stationFilter button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    pointFilter = btn.dataset.s;
+    renderPoints();
+  };
+});
+
+async function reloadPoints() {
+  try {
+    await fetch('/api/fault-points/reload', { method: 'POST' });
+    loadPoints();
+  } catch (e) { /* ignore */ }
+}
+
+// 深色/浅色切换（持久化到 localStorage，头部内联脚本已提前应用避免闪烁）
+(function () {
+  const btn = document.getElementById('themeToggle');
+  const apply = (t) => {
+    document.documentElement.setAttribute('data-theme', t === 'dark' ? 'dark' : '');
+    btn.textContent = t === 'dark' ? '浅色' : '深色';
+  };
+  let cur = 'light';
+  try { cur = localStorage.getItem('console-theme') === 'dark' ? 'dark' : 'light'; } catch (e) {}
+  apply(cur);
+  btn.onclick = () => {
+    cur = cur === 'dark' ? 'light' : 'dark';
+    try { localStorage.setItem('console-theme', cur); } catch (e) {}
+    apply(cur);
+  };
+})();
+
+// 轮询统一走这里：标签页切走/最小化时全停(document.hidden)，切回来立刻补一次再继续。
+// 挂着不看的标签页原来照样每小时拖几百 MB，纯浪费。
+const POLLERS = [];
+function poll(fn, intervalMs) {
+  POLLERS.push({ fn: fn, interval: intervalMs, timer: null });
+}
+function startPolling() {
+  POLLERS.forEach(p => {
+    if (p.timer) return;
+    p.timer = setInterval(() => { if (!document.hidden) p.fn(); }, p.interval);
+  });
+}
+function stopPolling() {
+  POLLERS.forEach(p => { if (p.timer) { clearInterval(p.timer); p.timer = null; } });
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    stopPolling();
+  } else {
+    POLLERS.forEach(p => p.fn());   // 回来先补一次，别让用户看着旧数据等一个周期
+    startPolling();
+  }
+});
+
+// 构建时间只拉一次：部署后页面会重新加载，值不会在运行期变
+(async () => {
+  try {
+    const res = await fetch('/api/version');
+    const v = await res.json();
+    const t = v.buildTime || v.startedAt;
+    if (t) {
+      const d = new Date(t);
+      const p2 = (n) => String(n).padStart(2, '0');
+      buildLabel = '构建 ' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + ' ' +
+                   p2(d.getHours()) + ':' + p2(d.getMinutes());
+      renderHealthbar();
+    }
+  } catch (e) { /* 拿不到就不显示，不影响其它功能 */ }
+})();
+
+loadEmqxMetrics();
+// ────────── 端到端延迟曲线（edge 广播 → 云端收到，最近60分钟） ──────────
+function latNiceCeil(v){ const p=Math.pow(10,Math.floor(Math.log10(v))); const n=v/p; const m=n<=1?1:n<=2?2:n<=5?5:10; return m*p; }
+function latPath(series, key, yMax){
+  let d='', pen=false;
+  series.forEach((p,i)=>{
+    const v=p[key];
+    if(v==null){ pen=false; return; }
+    const x=(i/59*600).toFixed(1), y=(150-(v/yMax)*146-2).toFixed(1);
+    d += (pen?'L':'M')+x+','+y+' '; pen=true;
+  });
+  return d;
+}
+async function loadLatency(){
+  try{
+    const s=await (await fetch('/api/latency')).json();
+    const cur=s.current||{};
+    const setv=(id,v)=>{const e=document.getElementById(id); if(e) e.textContent=(v!=null?v:'-');};
+    setv('latP50',cur.p50); setv('latP95',cur.p95); setv('latP99',cur.p99); setv('latMaxv',cur.max);
+    const series=s.series||[];
+    let yMax=200; series.forEach(p=>{ if(p.max!=null&&p.max>yMax) yMax=p.max; });
+    yMax=latNiceCeil(yMax);
+    const svg=document.getElementById('latChart'); if(!svg) return;
+    let grid='';
+    [0,0.5,1].forEach(f=>{ const y=(150-f*146-2).toFixed(1); grid+='<line x1="0" y1="'+y+'" x2="600" y2="'+y+'" stroke="#e5e9ec" stroke-width="1" vector-effect="non-scaling-stroke"/>'; });
+    let dots='';
+    series.forEach((p,i)=>{ if(p.max!=null){ const x=(i/59*600).toFixed(1), y=(150-(p.max/yMax)*146-2).toFixed(1); dots+='<circle cx="'+x+'" cy="'+y+'" r="1.6" fill="#eb5c2055"/>'; }});
+    svg.innerHTML=grid+dots+
+      '<path d="'+latPath(series,'p50',yMax)+'" fill="none" stroke="#9aa4b2" stroke-width="1.5" vector-effect="non-scaling-stroke"/>'+
+      '<path d="'+latPath(series,'p95',yMax)+'" fill="none" stroke="#eb5c20" stroke-width="2" vector-effect="non-scaling-stroke"/>';
+    const total=s.totalSamples||0, skew=s.skewSuspect||0;
+    const sm=document.getElementById('latSummary');
+    if(sm) sm.textContent='纵轴 0~'+yMax+'ms · 累计采样 '+total.toLocaleString()+(skew>0?(' · ⚠ '+skew+' 条负延迟(edge/云两机可能未对时)'):'');
+  }catch(e){}
+}
+
+loadAlarmPush();   // 先拿到告警推送开关状态，Topic 流量统计那一列才知道哪些通道有开关
+loadStatus();
+loadLogs();
+loadRecords();
+loadPoints();
+loadLatency();
+poll(loadStatus, 2000);
+poll(loadEmqxMetrics, 3000);
+poll(loadLogs, 2000);
+poll(loadRecords, 8000);      // 告警记录变化不频繁，3 秒拉 200 条全量没必要
+poll(loadPoints, 30000);
+poll(loadAlarmPush, 10000);   // 开关状态偶尔刷新(多人操作时对齐)
+poll(loadLatency, 10000);     // 延迟曲线每10秒刷新(数据本就按分钟聚合)
+startPolling();
+</script>
+</body>
+</html>
