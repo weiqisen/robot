@@ -22,6 +22,7 @@ const state = reactive({
   logs: [],              // 运行日志环形缓冲（systemd journal + /rosout 合并）
   button: null, joy: null, sbus: null, motors: null,   // 扩展板(ros_robot_controller)外设
   units: null,           // Jetson 上的 systemd 服务状态（/system/services）
+  hw: null,              // 整车硬件清单（/system/hardware）
                          // 注意别叫 services —— 下面 rosapi 自省已经占了这个名字
   counts: { nodes: 0, topics: 0, services: 0 },
   nodes: [], services: [], topics: [], // topics: [[name,type],...]
@@ -76,12 +77,19 @@ function subscribeAll() {
     state.logs.push(e)
     if (state.logs.length > LOG_MAX) state.logs.splice(0, state.logs.length - LOG_MAX)
   }
+  sub('/system/hardware', 'std_msgs/msg/String', m => {
+    try { const d = JSON.parse(m.data); if (d.usb) state.hw = d } catch (e) {}
+  })
   sub('/system/services', 'std_msgs/msg/String', m => {
     // 空列表不覆盖上一次的结果，否则卡片会一闪一闪（采集端偶尔 systemctl 超时）
     try { const d = JSON.parse(m.data); if (d.services?.length) state.units = d } catch (e) {}
   })
   sub('/system/log', 'std_msgs/msg/String', m => {
-    try { const d = JSON.parse(m.data); pushLog({ ...d, from: 'sys' }) } catch (e) {}
+    // 采集端改成攒批发（一条消息里若干行），兼容老的单行格式
+    try {
+      const d = JSON.parse(m.data)
+      for (const e of (d.lines || [d])) pushLog({ ...e, from: 'sys' })
+    } catch (e) {}
   })
   const ROS_LVL = { 10: 'debug', 20: 'info', 30: 'warn', 40: 'error', 50: 'error' }
   sub('/rosout', 'rcl_interfaces/msg/Log', m => pushLog({

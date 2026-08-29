@@ -12,6 +12,7 @@ WS_URL = "ws://127.0.0.1:9090"
 TOPIC = "/jetson/stats"
 LOG_TOPIC = "/system/log"
 SVC_TOPIC = "/system/services"
+HW_TOPIC = "/system/hardware"
 # 只列我们自己部署上车的那几个 py 服务，系统自带的（ssh / nvargus / x11vnc 等）不管。
 # 第三列是对应的脚本路径 —— 一起报它的修改时间，就能一眼看出刚推的版本有没有真的落地。
 # 列表里不存在的服务会标成「未安装」而不是报错。
@@ -39,6 +40,121 @@ def ws_send(obj):
             return True
         except Exception:
             return False
+
+
+def _uvc_profiles(usb_id):
+    """从 USB 视频描述符里读这颗摄像头真正支持的分辨率/帧率。
+    RGB 那颗是标准 UVC，描述符是权威来源，比查规格书靠谱。
+    深度那颗是私有接口，没有 UVC 描述符，读不到——如实留空。"""
+    out = {}
+    fmt = cur = None
+    for ln in _run(["sudo", "-n", "lsusb", "-v", "-d", usb_id], timeout=15).splitlines():
+        t = ln.strip()
+        m = re.match(r"bDescriptorSubtype\s+\d+ \((FORMAT_\w+)\)", t)
+        if m:
+            fmt = m.group(1).replace("FORMAT_", ""); continue
+        m = re.match(r"wWidth\s+(\d+)", t)
+        if m:
+            cur = [int(m.group(1))]; continue
+        m = re.match(r"wHeight\s+(\d+)", t)
+        if m and cur:
+            cur.append(int(m.group(1))); continue
+        m = re.match(r"dwFrameInterval\(\s*0\)\s+(\d+)", t)
+        if m and cur and len(cur) == 2:
+            iv = int(m.group(1))
+            out.setdefault(fmt or "?", set()).add((cur[0], cur[1], round(1e7 / iv) if iv else 0))
+            cur = None
+    return {k: sorted(v, reverse=True) for k, v in out.items()}
+
+
+_HW_CACHE = {}
+
+
+def hardware_snapshot():
+    """整车硬件清单。绝大部分是静态的，算一次缓存住；只有网络/串口会变。"""
+    hw = {}
+
+    if "usb" not in _HW_CACHE:
+        usb = []
+        for ln in _run(["lsusb"]).splitlines():
+            m = re.match(r"Bus (\d+) Device (\d+): ID (\w{4}:\w{4})\s*(.*)", ln.strip())
+            if m and "root hub" not in m.group(4).lower():
+                usb.append({"id": m.group(3), "name": m.group(4).strip() or "(未命名设备)"})
+        _HW_CACHE["usb"] = usb
+        _HW_CACHE["rgb_profiles"] = _uvc_profiles("2bc5:0559")
+
+        # 相机 / 雷达的型号固件在 app 启动日志里，抓一次就够
+        log = _run(["journalctl", "-u", "start_app_node", "-n", "4000", "--no-pager"], timeout=20)
+        cam = {}
+        for k, pat in (("model", r"Device (.+?) connected"), ("serial", r"Serial number: (\S+)"),
+                       ("fw", r"Firmware version: (\S+)")):
+            m = re.findall(pat, log)
+            if m:
+                cam[k] = m[-1]
+        for st in ("depth", "ir", "color"):
+            m = re.findall(r"Stream %s width: (\d+) height: (\d+) fps: (\d+) format: (\S+)" % st, log)
+            if m:
+                w, h, f, fmt = m[-1]
+                cam[st] = {"w": int(w), "h": int(h), "fps": int(f), "fmt": fmt}
+        _HW_CACHE["camera"] = cam
+
+        lidar = {}
+        for k, pat in (("serial", r"SLLidar S/N: (\S+)"), ("fw", r"Firmware Ver: (\S+)"),
+                       ("hw", r"Hardware Rev: (\S+)"), ("mode", r"current scan mode: (.+?),")):
+            m = re.findall(pat, log)
+            if m:
+                lidar[k] = m[-1].strip()
+        m = re.findall(r"sample rate: (\d+) Khz, max_distance: ([\d.]+) m, scan frequency:([\d.]+) Hz", log)
+        if m:
+            lidar["sample_khz"], lidar["max_m"], lidar["hz"] = m[-1]
+        _HW_CACHE["lidar"] = lidar
+
+    hw.update({k: _HW_CACHE[k] for k in ("usb", "rgb_profiles", "camera", "lidar")})
+
+    # 存储
+    disks = []
+    for ln in _run(["lsblk", "-dn", "-o", "NAME,SIZE,MODEL,TRAN"]).splitlines():
+        f = ln.split(None, 3)
+        if f and not f[0].startswith(("loop", "zram")):
+            disks.append({"name": f[0], "size": f[1] if len(f) > 1 else "",
+                          "model": (f[2] if len(f) > 2 else "").strip(),
+                          "tran": (f[3] if len(f) > 3 else "").strip()})
+    hw["disks"] = disks
+
+    # 网络接口
+    nets = []
+    for ln in _run(["ip", "-br", "addr"]).splitlines():
+        f = ln.split()
+        if f and f[0] != "lo" and not f[0].startswith(("docker", "veth", "l4tbr")):
+            nets.append({"name": f[0], "state": f[1] if len(f) > 1 else "",
+                         "addr": " ".join(a for a in f[2:] if "." in a)})
+    hw["nets"] = nets
+
+    # 串口（雷达和扩展板都挂在这上面，掉线时最先看这里）
+    ser = []
+    for name in sorted(os.listdir("/dev")):
+        if not (name.startswith(("ttyCH341USB", "ttyACM", "ttyUSB")) or name == "lidar"):
+            continue
+        path = "/dev/" + name
+        try:
+            tgt = os.readlink(path) if os.path.islink(path) else ""
+        except OSError:
+            tgt = ""
+        ser.append({"dev": path, "link": tgt})
+    hw["serial"] = ser
+    return hw
+
+
+def hardware_thread():
+    while True:
+        try:
+            hw = hardware_snapshot()
+            if hw.get("usb"):
+                ws_send({"op": "publish", "topic": HW_TOPIC,
+                         "msg": {"data": json.dumps(hw, ensure_ascii=False)}})
+        except Exception:
+            pass
+        time.sleep(60)
 
 
 def services_snapshot():
@@ -111,7 +227,7 @@ def services_thread():
                                                     ensure_ascii=False)}})
         except Exception:
             pass
-        time.sleep(5)
+        time.sleep(15)
 
 
 def journal_thread():
@@ -123,6 +239,7 @@ def journal_thread():
         try:
             proc = subprocess.Popen(args, stdout=subprocess.PIPE, text=True,
                                     stderr=subprocess.DEVNULL, bufsize=1)
+            buf, last_flush = [], time.time()
             for line in proc.stdout:
                 line = line.rstrip("\n")
                 if not line or line.startswith("-- "):
@@ -137,8 +254,14 @@ def journal_thread():
                 d["lvl"] = ("error" if ("error" in low or "traceback" in low or "failed" in low
                                         or "exception" in low)
                             else "warn" if ("warn" in low or "died" in low) else "info")
-                ws_send({"op": "publish", "topic": LOG_TOPIC,
-                         "msg": {"data": json.dumps(d, ensure_ascii=False)}})
+                # 攒批：日志一忙起来一秒能有几十行，一行一条 websocket 消息会把
+                # rosbridge 的序列化压满（实测它一个人吃掉 50% 的核）。0.5 秒合并发一次。
+                buf.append(d)
+                if time.time() - last_flush >= 0.5 or len(buf) >= 40:
+                    ws_send({"op": "publish", "topic": LOG_TOPIC,
+                             "msg": {"data": json.dumps({"lines": buf}, ensure_ascii=False)}})
+                    buf = []
+                    last_flush = time.time()
         except Exception:
             pass
         time.sleep(5)
@@ -329,6 +452,7 @@ def main():
     si = static_info()
     threading.Thread(target=journal_thread, daemon=True).start()
     threading.Thread(target=services_thread, daemon=True).start()
+    threading.Thread(target=hardware_thread, daemon=True).start()
     while True:
         proc = None
         try:
@@ -338,6 +462,7 @@ def main():
             ws_send({"op": "advertise", "topic": TOPIC, "type": "std_msgs/msg/String"})
             ws_send({"op": "advertise", "topic": LOG_TOPIC, "type": "std_msgs/msg/String"})
             ws_send({"op": "advertise", "topic": SVC_TOPIC, "type": "std_msgs/msg/String"})
+            ws_send({"op": "advertise", "topic": HW_TOPIC, "type": "std_msgs/msg/String"})
             proc = subprocess.Popen(['tegrastats', '--interval', '1000'],
                                     stdout=subprocess.PIPE, text=True)
             for line in proc.stdout:

@@ -34,7 +34,7 @@ import cv2
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
-from sensor_msgs.msg import Image, CameraInfo, JointState
+from sensor_msgs.msg import Image, CameraInfo, JointState, CompressedImage
 from std_msgs.msg import String, UInt16
 
 from arm_kinematics import (ik_best, ik_auto_pitch, fk, fk_wrist, ServoMap,
@@ -147,6 +147,14 @@ DEFAULT_CONFIG = {
     "low_volt_park": 10.6,     # V，连续低于它就收臂并禁止抓取
     "low_volt_clear": 11.0,    # V，回到它以上才解除
     "low_volt_hold": 5,        # 连续多少个采样（电池约 1 Hz）才算数
+    # 视觉管线固定在这个宽度上工作，与相机实际分辨率解耦。
+    # 相机开到 1080p 是为了让人在网页上看清楚；HSV 检测/反投影完全不需要那么多像素，
+    # 在 1080p 上跑一遍 CPU 直接飙到 117%，而所有像素阈值和标定都是按 640 调的。
+    # 降采样后 K 会按同样比例缩放，所以 3D 坐标不受影响。
+    "proc_width": 640,
+    # 解码限速：相机 12~15 fps，但识别只在"到观察位之后拍几帧"时用，
+    # 标注图也只发 5 Hz。每来一帧就解一次纯属白烧 CPU。
+    "proc_fps": 6,
     "camera_frame": "depth_cam_color_optical_frame",
     "base_frame": "base_link",
     "use_tf": True,
@@ -189,6 +197,8 @@ class SnackButler(Node):
         self.auto = False
         self.stats = {'picked': 0, 'failed': 0, 'started': time.time()}
         self.calib_samples = []
+        self.cam_w = 0              # 相机原始宽度（用来算降采样比例）
+        self._last_dec = 0.0        # 上次解码时刻，用于限速
         self.batt_v = None          # 最近一次电池电压（V）
         self._low_n = 0             # 连续低压计数
         self.low_volt = False       # 已触发低压保护（latch，回到 clear 阈值才解除）
@@ -198,7 +208,12 @@ class SnackButler(Node):
 
         sensor_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT,
                                 history=HistoryPolicy.KEEP_LAST)
-        self.create_subscription(Image, '/depth_cam/rgb/image_raw', self.on_rgb, sensor_qos)
+        # 订压缩流而不是原始流：相机开到 1080p 后，原始图每帧 6.2 MB，12 fps 就是 75 MB/s，
+        # 光是 DDS 传输 + rclpy 反序列化就能把一个核吃满，而我们只需要 640 宽。
+        # 压缩流每帧一两百 KB，而且 cv2.imdecode 支持 IMREAD_REDUCED_*，
+        # 直接在 JPEG 的 DCT 阶段降采样解出小图，比「整解再 resize」便宜得多。
+        self.create_subscription(CompressedImage, '/depth_cam/rgb/image_raw/compressed',
+                                 self.on_rgb_compressed, sensor_qos)
         self.create_subscription(Image, '/depth_cam/depth/image_raw', self.on_depth, sensor_qos)
         self.create_subscription(CameraInfo, '/depth_cam/rgb/camera_info', self.on_info, sensor_qos)
         self.create_subscription(JointState, '/controller_manager/joint_states', self.on_joints, 10)
@@ -257,11 +272,33 @@ class SnackButler(Node):
             self.get_logger().error(f'配置保存失败: {e}')
 
     # ---------------- 订阅回调 ----------------
-    def on_rgb(self, msg):
-        img = self.imgmsg_to_cv(msg)
-        if img is not None:
+    def on_rgb_compressed(self, msg):
+        # 限速：超过 proc_fps 的帧直接丢，连解码都不做。
+        # 这是这个节点最省 CPU 的一刀 —— JPEG 解码本身比后面的 HSV 贵得多。
+        now = time.time()
+        fps = float(self.cfg.get('proc_fps') or 0)
+        if fps > 0 and now - self._last_dec < 1.0 / fps:
+            return
+        self._last_dec = now
+        try:
+            buf = np.frombuffer(msg.data, dtype=np.uint8)
+            pw = int(self.cfg.get('proc_width') or 640)
+            # 先按相机宽度挑一个 2 的幂做 DCT 降采样，剩下的零头再 resize
+            flag = cv2.IMREAD_COLOR
+            if self.cam_w >= pw * 8:
+                flag = cv2.IMREAD_REDUCED_COLOR_8
+            elif self.cam_w >= pw * 4:
+                flag = cv2.IMREAD_REDUCED_COLOR_4
+            elif self.cam_w >= pw * 2:
+                flag = cv2.IMREAD_REDUCED_COLOR_2
+            img = cv2.imdecode(buf, flag)
+            if img is None:
+                return
+            img = self.shrink(img)
             with self.lock:
                 self.rgb = img
+        except Exception:
+            pass
 
     def on_depth(self, msg):
         d = self.imgmsg_to_cv(msg, depth=True)
@@ -270,7 +307,17 @@ class SnackButler(Node):
                 self.depth = d
 
     def on_info(self, msg):
-        self.K = list(msg.k)
+        """内参要跟着降采样一起缩放，否则反投影会整体错位。
+        fx/fy/cx/cy 都是像素单位，等比缩放即可（畸变系数与尺度无关）。"""
+        k = list(msg.k)
+        w = int(getattr(msg, 'width', 0) or 0)
+        pw = int(self.cfg.get('proc_width') or 0)
+        if w and pw and w > pw:
+            sc = pw / float(w)
+            for i in (0, 2, 4, 5):
+                k[i] *= sc
+        self.K = k
+        self.cam_w = w
 
     def on_batt(self, msg):
         """电池 UInt16 是毫伏。这里只记录，判定放 tick 里做，避免在回调里跑状态机。"""
@@ -315,6 +362,14 @@ class SnackButler(Node):
     def on_servos(self, msg):
         for s in getattr(msg, 'servo_state', []):
             self.servo_pulses[int(s.id)] = float(s.position)
+
+    def shrink(self, img):
+        """把 RGB 降到 proc_width。深度图不动——它本来就是 640，而且插值会毁掉深度值。"""
+        pw = int(self.cfg.get('proc_width') or 0)
+        if not pw or img is None or img.shape[1] <= pw:
+            return img
+        h = int(round(img.shape[0] * pw / float(img.shape[1])))
+        return cv2.resize(img, (pw, h), interpolation=cv2.INTER_AREA)
 
     @staticmethod
     def imgmsg_to_cv(msg, depth=False):
@@ -964,6 +1019,10 @@ class SnackButler(Node):
 
     def publish_image(self):
         if not rclpy.ok():
+            return
+        # 没人订阅就别画也别发。标注图是 640x360 BGR，raw 一帧 1.1 MB，5 Hz 就是 5.5 MB/s，
+        # 白白占 DDS 带宽和 rosbridge 的序列化时间。web_video_server 只在有人看时才订。
+        if self.pub_img.get_subscription_count() == 0:
             return
         with self.lock:
             img = None if self.rgb is None else self.rgb.copy()

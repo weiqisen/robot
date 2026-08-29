@@ -316,5 +316,65 @@ setInterval(() => {
 .cbtn.ghost { color: #94A3B8; }
 .cbtn.danger { background: rgba(244,63,94,.1); border-color: rgba(244,63,94,.4); color: #FB7185; font-weight: 600; }
 .cbtn.danger:hover { background: rgba(244,63,94,.18); color: #FB7185; border-color: rgba(244,63,94,.6); }
-@media (max-width: 1100px) { .body { grid-template-columns: 1fr; } .center { min-height: 320px; } .kpis { display: none; } }
+/* --- 平板：三栏并两栏，3D 放中间不动 --- */
+@media (max-width: 1280px) {
+  .body {
+    grid-template-columns: minmax(0, 300px) minmax(0, 1fr);
+    /* 窄屏放不下就整块滚。关键是这两行：默认 grid 会把列拉伸到行高(stretch)、
+       行高又被容器钉死，内容一超出就溢出来盖住上一块面板。改成行按内容取高、
+       列顶端对齐，超出部分交给 .body 自己滚。 */
+    grid-auto-rows: min-content;
+    align-items: start;
+    overflow-y: auto; -webkit-overflow-scrolling: touch;
+  }
+  .body > .col:last-child { grid-column: 1 / -1; flex-direction: row; flex-wrap: wrap; }
+  .body > .col:last-child > .panel { flex: 1 1 300px; }
+  .panel.grow { flex: none; }
+  .pb, .pb.metrics { overflow: visible; }
+  .viewport { min-height: 420px; }
+  .kpis { display: none; }
+}
+
+/* --- 手机：不再用 grid，直接一列 flex 从上到下排，整块可滚。
+       原来是 position:absolute 的定屏三栏，手机上 grid 行高和 flex 方向互相打架，
+       面板会重叠、右栏还横着溢出屏幕。这里把布局模型换掉，比一条条覆盖干净。 --- */
+@media (max-width: 820px) {
+  .topbar { height: 44px; padding: 0 12px; gap: 10px; }
+  .clock { font-size: 13px; letter-spacing: .5px; }
+  .clock .date { display: none; }
+
+  .body {
+    display: flex; flex-direction: column;
+    gap: 8px; padding: 8px;
+    overflow-y: auto; -webkit-overflow-scrolling: touch;
+  }
+  /* 覆盖平板那条：手机上每一栏都只是普通的一段 */
+  .body > .col,
+  .body > .col:last-child {
+    display: flex; flex-direction: column; flex: none;
+    grid-column: auto; min-height: 0; gap: 8px;
+  }
+  .body > .col:last-child > .panel { flex: none; }
+  .panel, .panel.grow { flex: none; }
+  .pb, .pb.metrics { overflow: visible; }
+
+  /* 3D 给固定高度：太小看不清，太大把下面的面板全挤出屏幕 */
+  .center { min-height: 0; }
+  .viewport { flex: none; height: 44vh; min-height: 230px; }
+
+  .mg-grid { gap: 6px; }
+
+  /* 底控栏：换行 + 加大触摸目标（44px 是拇指的下限） */
+  .ctrlbar { height: auto; min-height: 44px; padding: 8px 10px; flex-wrap: wrap; gap: 8px; }
+  .cb { flex-wrap: wrap; gap: 8px; }
+  .cb.r { margin-left: auto; }
+  .cbtn { min-height: 40px; padding: 0 14px; }
+
+  /* 关节滑块：手指比鼠标粗，滑块头和轨道都要放大 */
+  .jrow { gap: 10px; }
+  .jrow input[type=range] { height: 6px; }
+  .jrow input[type=range]::-webkit-slider-thumb { width: 20px; height: 20px; }
+  .jrow input[type=range]::-moz-range-thumb { width: 20px; height: 20px; }
+  .jl { width: 56px; }
+}
 </style>

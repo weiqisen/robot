@@ -2,7 +2,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, markRaw } from 'vue'
 import {
   DashboardOutlined, LineChartOutlined, DeploymentUnitOutlined, RadarChartOutlined,
-  ThunderboltOutlined, ApiOutlined, EnvironmentOutlined, ScanOutlined, ApartmentOutlined,
+  ThunderboltOutlined, ApiOutlined, ProfileOutlined, EnvironmentOutlined, ScanOutlined, ApartmentOutlined,
   UnorderedListOutlined, SearchOutlined, ControlOutlined, AimOutlined, FileTextOutlined,
   RobotOutlined, MenuOutlined, FundProjectionScreenOutlined, ShoppingOutlined,
 } from '@ant-design/icons-vue'
@@ -16,6 +16,7 @@ import Arm from './views/Arm.vue'
 import Sensors from './views/Sensors.vue'
 import Jetson from './views/Jetson.vue'
 import Board from './views/Board.vue'
+import Bom from './views/Bom.vue'
 import NavMap from './views/NavMap.vue'
 import Detect from './views/Detect.vue'
 import SystemView from './views/SystemView.vue'
@@ -38,6 +39,7 @@ const MENU = [
   { key: 'sensors', icon: RadarChartOutlined, label: '传感器', comp: markRaw(Sensors) },
   { key: 'jetson', icon: ThunderboltOutlined, label: 'Jetson 开发者套件', comp: markRaw(Jetson) },
   { key: 'board', icon: ApiOutlined, label: '扩展板 · 控制器', comp: markRaw(Board) },
+  { key: 'bom', icon: ProfileOutlined, label: '物料清单 BOM', comp: markRaw(Bom) },
   { group: '感知 · 导航' },
   { key: 'nav', icon: EnvironmentOutlined, label: '导航建图', comp: markRaw(NavMap) },
   { key: 'detect', icon: ScanOutlined, label: '目标检测', comp: markRaw(Detect) },
