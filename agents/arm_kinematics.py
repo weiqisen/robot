@@ -30,6 +30,16 @@ L1 = 0.129416446394797               # joint2 -> joint3
 L2 = 0.129444631186569               # joint3 -> joint4
 L3 = 0.0544833339503674 + 0.08       # joint4 -> end_effector_link = 0.1344833
 
+# URDF 的 end_effector_link 不是指尖，是夹爪手指的根部：
+#   gripper_link = link5 + 0.0054388，l_in_link = +0.046019，l_out_link = +0.028999
+#   → 手指那节的原点在 link5 + 0.0805，而 l_out_link.STL 自身沿 z 还要再伸 +0.0363
+#   → 指尖在 link5 + 0.1168，比 end_effector_link(link5 + 0.08) 远 0.0368 m
+# 抓取要对准的是指尖，不是这个根部 frame。少算这 37 mm 的后果：
+#   竖直下抓时直接往地里扎 37 mm（舵机堵转，能把车顶起来）；
+#   pitch 偏离竖直 θ 时还额外横向偏 0.0368·sinθ（θ=20° 就是 13 mm，稳定空抓）。
+# 所以 fk/ik 都收一个 tool 参数：沿工具轴把末端往外延长这么多。
+TOOL_LEN = 0.0368                    # end_effector_link -> 指尖
+
 JOINT_LIMIT = 2.09                   # URDF 每个关节 ±2.09 rad（±119.8°）
 JOINT_NAMES = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5']
 SERVO_IDS = [1, 2, 3, 4, 5]
@@ -45,12 +55,16 @@ def clamp(v, lo, hi):
 
 
 # ---------------- 正运动学 ----------------
-def fk(q):
-    """q = [q1..q5] (rad) -> 末端在 base_link 系的 (x, y, z) 与 pitch(rad)"""
+def fk(q, tool=0.0):
+    """q = [q1..q5] (rad) -> 末端在 base_link 系的 (x, y, z) 与 pitch(rad)
+
+    tool: 沿工具轴从 end_effector_link 再往外延长多少（指尖用 TOOL_LEN）。
+    默认 0 = 老行为，算到 end_effector_link。"""
     q1, q2, q3, q4 = q[0], q[1], q[2], q[3]
     a1, a2, a3 = q2, q2 + q3, q2 + q3 + q4
-    r = L1 * math.sin(a1) + L2 * math.sin(a2) + L3 * math.sin(a3)
-    z = Z_SHOULDER + L1 * math.cos(a1) + L2 * math.cos(a2) + L3 * math.cos(a3)
+    l3 = L3 + tool
+    r = L1 * math.sin(a1) + L2 * math.sin(a2) + l3 * math.sin(a3)
+    z = Z_SHOULDER + L1 * math.cos(a1) + L2 * math.cos(a2) + l3 * math.cos(a3)
     # joint1 轴是 (0,0,-1)：关节值 q1 让手臂平面指向方位角 -q1
     psi = -q1
     x = BASE_X + r * math.cos(psi)
@@ -69,8 +83,9 @@ def fk_wrist(q):
 
 
 # ---------------- 逆运动学 ----------------
-def ik(x, y, z, pitch, elbow='up', wrist_roll=0.0, limit=JOINT_LIMIT):
+def ik(x, y, z, pitch, elbow='up', wrist_roll=0.0, limit=JOINT_LIMIT, tool=0.0):
     """闭式解。pitch = 末端轴与 +Z 的夹角（pi = 垂直向下抓）。
+    (x,y,z) 是「工具尖」要到的点，tool 含义同 fk()。
     返回 [q1..q5]（rad），不可达/超限返回 None。"""
     dx, dy = x - BASE_X, y
     psi = math.atan2(dy, dx)
@@ -78,9 +93,10 @@ def ik(x, y, z, pitch, elbow='up', wrist_roll=0.0, limit=JOINT_LIMIT):
     zs = z - Z_SHOULDER
     q1 = -psi
 
-    # 腕心（joint4）位置：从末端沿 pitch 方向退 L3
-    rw = r - L3 * math.sin(pitch)
-    zw = zs - L3 * math.cos(pitch)
+    # 腕心（joint4）位置：从工具尖沿 pitch 方向退 L3 + tool
+    l3 = L3 + tool
+    rw = r - l3 * math.sin(pitch)
+    zw = zs - l3 * math.cos(pitch)
 
     d2 = rw * rw + zw * zw
     d = math.sqrt(d2)
@@ -101,10 +117,10 @@ def ik(x, y, z, pitch, elbow='up', wrist_roll=0.0, limit=JOINT_LIMIT):
     return q
 
 
-def ik_best(x, y, z, pitch, seed=None, wrist_roll=0.0):
+def ik_best(x, y, z, pitch, seed=None, wrist_roll=0.0, tool=0.0):
     """两种肘型都试，选可达且离 seed 最近的那个"""
-    cands = [c for c in (ik(x, y, z, pitch, 'up', wrist_roll),
-                         ik(x, y, z, pitch, 'down', wrist_roll)) if c]
+    cands = [c for c in (ik(x, y, z, pitch, 'up', wrist_roll, tool=tool),
+                         ik(x, y, z, pitch, 'down', wrist_roll, tool=tool)) if c]
     if not cands:
         return None
     if seed is None:
@@ -112,7 +128,7 @@ def ik_best(x, y, z, pitch, seed=None, wrist_roll=0.0):
     return min(cands, key=lambda c: sum((a - b) ** 2 for a, b in zip(c[:4], seed[:4])))
 
 
-def ik_auto_pitch(x, y, z, pitches=None, seed=None, wrist_roll=0.0):
+def ik_auto_pitch(x, y, z, pitches=None, seed=None, wrist_roll=0.0, tool=0.0):
     """按优先级尝试一串 pitch，返回 (q, pitch)。
     默认从「竖直向下」开始，逐步放平——离底座太近时纯垂直抓是够不着的。"""
     if pitches is None:
@@ -121,7 +137,7 @@ def ik_auto_pitch(x, y, z, pitches=None, seed=None, wrist_roll=0.0):
         pitches = [math.radians(a) for a in
                    (180, 190, 170, 200, 160, 210, 150, 220, 140, 130, 120, 110, 100, 90)]
     for p in pitches:
-        q = ik_best(x, y, z, p, seed, wrist_roll)
+        q = ik_best(x, y, z, p, seed, wrist_roll, tool=tool)
         if q:
             return q, p
     return None, None
