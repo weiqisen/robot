@@ -148,6 +148,56 @@ function runXYZ() {
 }
 const sbPitch = computed(() => (state.snack && state.snack.ee ? state.snack.ee.pitch_deg : null))
 
+// 动作组中英文映射：幻尔预设动作的常见名称
+const ACTION_NAMES = {
+  // 基础动作
+  'stand': '立正',
+  'relax': '放松',
+  'home': '回正',
+  'zero': '零位',
+  'init': '初始化',
+  // 移动
+  'go_forward': '前进',
+  'go_back': '后退',
+  'turn_left': '左转',
+  'turn_right': '右转',
+  'move_left': '左移',
+  'move_right': '右移',
+  // 手势/动作
+  'wave': '挥手',
+  'nod': '点头',
+  'shake_head': '摇头',
+  'bow': '鞠躬',
+  'salute': '敬礼',
+  'clap': '鼓掌',
+  'thumbs_up': '点赞',
+  'ok': 'OK手势',
+  'victory': '胜利手势',
+  // 抓取相关
+  'pick': '抓取',
+  'pick_up': '拾起',
+  'place': '放下',
+  'grab': '夹取',
+  'release': '松开',
+  'hold': '保持',
+  'grasp': '握住',
+  // 舞蹈/表演
+  'dance': '跳舞',
+  'dance1': '舞蹈1',
+  'dance2': '舞蹈2',
+  'twist': '扭动',
+  'swing': '摇摆',
+  // 功能动作
+  'calibrate': '标定',
+  'test': '测试',
+  'demo': '演示',
+  'patrol': '巡逻',
+  'search': '搜索',
+}
+function actionLabel(name) {
+  return ACTION_NAMES[name] || name
+}
+
 loadGroups()
 onBeforeUnmount(() => { stopFlag = true })
 </script>
@@ -243,7 +293,7 @@ onBeforeUnmount(() => { stopFlag = true })
         <div class="bg">
           <select v-model="group" class="sel">
             <option value="">选择动作组…</option>
-            <option v-for="g in groups" :key="g" :value="g">{{ g }}</option>
+            <option v-for="g in groups" :key="g" :value="g">{{ actionLabel(g) }} ({{ g }})</option>
           </select>
           <button class="btn" @click="openGroup">打开</button>
           <button class="btn" @click="saveGroup">另存</button>
