@@ -104,6 +104,9 @@ function init() {
     info.jointN = Object.keys(robot.joints).filter(n => robot.joints[n].jointType !== 'fixed').length + ' 关节'
     makeJointTags()
     makeScreen()
+    // 给 scripts/shot.mjs 的场景探针用：改完能直接查对象在不在、位姿对不对，
+    // 不用靠肉眼看图猜。只是几个引用，不额外占资源。
+    window.__twin = { scene, robot, camera, renderer, world, THREE, get screenMesh() { return screenMesh } }
   }, undefined, e => { loadErr.value = String(e); loading.value = false })
 }
 // ---- 车身显示屏：把 #jetson 那页的核心遥测画上去 ----
@@ -132,7 +135,9 @@ function makeScreen() {
   const yAx = new THREE.Vector3(0.4116, 0, 0.9113).normalize()    // 屏幕向上
   const xAx = new THREE.Vector3().crossVectors(yAx, zAx).normalize()
   screenMesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(xAx, yAx, zAx))
-  screenMesh.position.set(-0.1469, 0.0002, 0.1136).addScaledVector(zAx, 0.0008)
+  // 玻璃面在 +0.1733，但外面还有两圈边框伸到 +0.1789 —— 只抬 0.8mm 会被埋掉 4.8mm，
+  // 屏幕位置朝向纹理全对却什么都看不见。抬 6.5mm，露出边框约 0.9mm。
+  screenMesh.position.set(-0.1469, 0.0002, 0.1136).addScaledVector(zAx, 0.0065)
   parent.add(screenMesh)
   drawScreen()
   screenTimer = setInterval(drawScreen, 500)   // 遥测约 1Hz，500ms 足够跟上
@@ -204,7 +209,19 @@ function drawScreen() {
   screenTex.needsUpdate = true
 }
 
-function fit() { const el = host.value; renderer.setSize(el.clientWidth, el.clientHeight); camera.aspect = el.clientWidth / el.clientHeight; camera.updateProjectionMatrix() }
+// 容器尺寸变化就重新适配。原来只在 init() 里调一次 + 听 window resize，
+// 而 init() 跑的时候布局还没稳定，clientHeight 可能只有十几像素；
+// 此后窗口不再变化，画布就永远停在那个高度 —— 模型照画（draw call 正常），
+// 只是被挤成顶部一条缝，看着像「3D 没渲染」。改成盯容器本身。
+function fit() {
+  const el = host.value
+  if (!el || !renderer) return
+  const w = el.clientWidth, h = el.clientHeight
+  if (w < 2 || h < 2) return          // 还没布局好，等下一次回调
+  renderer.setSize(w, h)
+  camera.aspect = w / h
+  camera.updateProjectionMatrix()
+}
 function loop() { raf = requestAnimationFrame(loop); controls.update(); renderer.render(scene, camera) }
 
 // 关节反馈 -> 模型
@@ -348,10 +365,27 @@ function toggleTool(k) {
   if (k === 'tags') setTagsVisible(tools.tags)
   if (k === 'ik') { if (tools.ik) { if (!ikTarget) makeTarget(); ikTarget.visible = true; ikTarget.position.copy(eeWorld()) } else if (ikTarget) ikTarget.visible = false }
 }
-function resetView() { camera.position.set(0.9, 0.8, 0.9); controls.target.set(0, 0.2, 0) }
+// 屏幕在车尾，默认机位在车前 —— 不给个入口就永远看不到它。
+// 机位按屏幕的实际世界位姿现算：车会随 /odom 转，写死的坐标转两下就偏了。
+const viewIdx = ref(0)
+function resetView() {
+  viewIdx.value ^= 1
+  if (viewIdx.value === 1 && screenMesh) {
+    const p = screenMesh.getWorldPosition(new THREE.Vector3())
+    const n = screenMesh.getWorldDirection(new THREE.Vector3())
+    camera.position.copy(p).addScaledVector(n, 0.38)
+    controls.target.copy(p)
+  } else {
+    viewIdx.value = 0
+    camera.position.set(0.9, 0.8, 0.9); controls.target.set(0, 0.2, 0)
+  }
+}
 
+let hostRO = null
 onMounted(() => {
   init()
+  hostRO = new ResizeObserver(fit)
+  hostRO.observe(host.value)
   window.addEventListener('resize', fit)
   renderer.domElement.addEventListener('pointerdown', ptrDown)
   renderer.domElement.addEventListener('pointermove', ptrMove)
@@ -359,6 +393,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   cancelAnimationFrame(raf)
+  if (hostRO) hostRO.disconnect()
   window.removeEventListener('resize', fit); window.removeEventListener('pointerup', ptrUp)
   if (screenTimer) clearInterval(screenTimer)
   if (screenMesh) { screenMesh.geometry.dispose(); screenMesh.material.dispose() }
@@ -376,7 +411,8 @@ onBeforeUnmount(() => {
     <div class="tools">
       <div v-for="t in [['lidar', '雷达'], ['grid', '网格'], ['points', '点云'], ['tags', '标注'], ['ik', 'IK']]" :key="t[0]"
         :class="['glass tbtn', { on: tools[t[0]] }]" @click="toggleTool(t[0])">{{ t[1] }}</div>
-      <div class="glass tbtn" @click="resetView">视角</div>
+      <div class="glass tbtn" :title="viewIdx ? '切回默认视角' : '看车尾屏幕'"
+        @click="resetView">{{ viewIdx ? '车头' : '视角' }}</div>
     </div>
 
     <div v-if="!bare" class="glass panel tele">
