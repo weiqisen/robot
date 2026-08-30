@@ -31,7 +31,32 @@ echo "== 推送网页"
 ( cd "$HERE/studio-vue" && npm run build >/dev/null )
 tar -C "$HERE/studio-vue/dist" -czf /tmp/webctl.tgz .
 $SCP /tmp/webctl.tgz "$USER_@$ROBOT:/tmp/"
-$SSH "$USER_@$ROBOT" 'mkdir -p ~/web_control && tar -C ~/web_control -xzf /tmp/webctl.tgz && rm /tmp/webctl.tgz'
+# 先删旧 assets 再解包：文件名带 hash，不删就会越堆越多
+$SSH "$USER_@$ROBOT" 'mkdir -p ~/web_control && rm -rf ~/web_control/assets && tar -C ~/web_control -xzf /tmp/webctl.tgz && rm /tmp/webctl.tgz'
+
+# 静态服务：必须用我们自己那个会发 Cache-Control 的，不能用 python3 -m http.server。
+# 后者一个缓存头都不发，浏览器把 index.html 和旧 assets 一起缓存住，
+# 新包推上去了刷新还是旧界面，且不报错 —— 排查起来非常费时间。
+$SCP "$HERE/agents/webctl_server.py" "$USER_@$ROBOT:~/"
+$SSH "$USER_@$ROBOT" "sudo tee /etc/systemd/system/webctl.service >/dev/null <<'EOF'
+[Unit]
+Description=JetRover Studio
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$USER_
+WorkingDirectory=/home/$USER_/web_control
+ExecStart=/usr/bin/python3 /home/$USER_/webctl_server.py
+Restart=on-failure
+RestartSec=4
+
+[Install]
+WantedBy=multi-user.target
+EOF"
+$SSH "$USER_@$ROBOT" 'sudo systemctl daemon-reload && sudo systemctl enable --now webctl && sudo systemctl restart webctl'
+echo "== webctl 已重启"
 [ -n "${WEB_ONLY:-}" ] && { echo "== 只推网页，完成"; exit 0; }
 
 echo "== 推送 agents"
