@@ -96,7 +96,7 @@ const volt = computed(() => (state.batt != null ? (state.batt / 1000).toFixed(2)
   <BigScreen v-if="current === 'bigscreen'" @open-admin="current = 'overview'" />
 
   <!-- 管理系统外壳 -->
-  <a-layout v-else style="height:100vh">
+  <a-layout v-else class="shell">
     <div v-if="isMobile && !collapsed" class="mask" @click="collapsed = true" />
     <a-layout-sider
       v-model:collapsed="collapsed" :collapsed-width="isMobile ? 0 : 80" :trigger="null"
@@ -151,10 +151,21 @@ const volt = computed(() => (state.batt != null ? (state.batt / 1000).toFixed(2)
 
 <style>
 .mask { position: fixed; inset: 0; background: var(--text-3); z-index: 90; }
-.sider.mobile { position: fixed; height: 100vh; z-index: 100; left: 0; top: 0; box-shadow: 2px 0 12px rgba(0,0,0,.3); }
+/* 100vh 在移动端是「地址栏收起后」的高度，比初始可视区大 —— 用它撑外壳，
+   页面就能往下拉出一条比视口还长的尾巴。dvh 跟着可视区走，没有这条缝。 */
+.shell { height: 100vh; height: 100dvh; }
+.sider.mobile { position: fixed; height: 100vh; height: 100dvh; z-index: 100; left: 0; top: 0; box-shadow: 2px 0 12px rgba(0,0,0,.3); }
 /* 侧栏两个主题下都保持深色 */
 .sider, .sider .ant-layout-sider-children { background: var(--side-bg) !important; }
-.sider .ant-menu.ant-menu-dark { background: transparent; font-size: 14px; }
+/* 菜单 18 项 + 4 个分组标题约 880px，视口一矮就顶出去：
+   溢出的那几行落在 sider-children 的背景之外，露出底下的浅色页面 = 「最下面几行白屏」，
+   而且它们还点不到。让菜单在侧栏内部自己滚，背景就永远盖满。 */
+.sider .ant-layout-sider-children { display: flex; flex-direction: column; min-height: 0; }
+.sider .ant-menu.ant-menu-dark { background: transparent; font-size: 14px;
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.sider .ant-menu.ant-menu-dark::-webkit-scrollbar { width: 6px; }
+.sider .ant-menu.ant-menu-dark::-webkit-scrollbar-thumb { background: var(--side-border); border-radius: 3px; }
+.sider .ant-menu.ant-menu-dark::-webkit-scrollbar-track { background: transparent; }
 .sider .ant-menu-item { height: 38px !important; line-height: 38px !important; font-size: 14px; }
 .sider .ant-menu-item .ant-menu-title-content { font-size: 14px; letter-spacing: .2px; }
 .sider .ant-menu-item-group-title { color: var(--side-group) !important; font-size: 11px; letter-spacing: 1.6px; text-transform: uppercase; padding-top: 14px; }

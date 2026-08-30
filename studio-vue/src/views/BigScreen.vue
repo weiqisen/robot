@@ -26,29 +26,25 @@ const status = computed(() => [
 // 眼睛没有落点。改成一律中性，只有真越阈值的指标才着色。
 const exc = (v, warn, bad) => (v == null ? null : (bad != null && v >= bad) ? 'bad'
   : (warn != null && v >= warn) ? 'warn' : null)
-const metricGroups = computed(() => [
-  { name: '运动', items: [
-    { v: vx.value.toFixed(2), l: '前进速度', u: 'm/s' },
-    { v: wz.value.toFixed(2), l: '转向角速度', u: 'rad/s' },
-  ]},
-  { name: '姿态', items: [
-    { v: deg(euler.value.roll).toFixed(1), l: '横滚', u: '°' },
-    { v: deg(euler.value.pitch).toFixed(1), l: '俯仰', u: '°' },
-    { v: deg(euler.value.yaw).toFixed(1), l: '航向', u: '°' },
-  ]},
-  { name: '算力', items: [
-    { v: cpuAvg.value, l: 'CPU 负载', u: '%', p: cpuAvg.value, e: exc(cpuAvg.value, 90) },
-    { v: gpu.value, l: 'GPU 负载', u: '%', p: gpu.value, e: exc(gpu.value, 90) },
-    { v: maxTemp.value.toFixed(1), l: '核心温度', u: '℃', p: Math.min(100, maxTemp.value),
-      e: exc(maxTemp.value, 75, 85) },
-    { v: ramPct.value, l: '内存占用', u: '%', p: ramPct.value, e: exc(ramPct.value, 90) },
-  ]},
-  { name: '系统', items: [
-    { v: state.counts.nodes, l: 'ROS 节点', u: '' },
-    { v: state.counts.topics, l: '活动话题', u: '' },
-    { v: state.servos.length, l: '在线舵机', u: '' },
-    { v: scanN.value, l: '雷达点数', u: '', e: scanN.value ? null : 'bad' },
-  ]},
+// 指标分两档，因为它们该长得不一样：
+// 「有量程」的四个（占比/温度）配进度条，值本身要跟阈值比 —— 给卡片。
+// 「读数」类的（速度、姿态角、点数）没有量程，配条毫无意义 —— 给一条紧凑数值带。
+// 原来 13 个格子 + 4 个分组标题挤在左栏中间那块，必须靠滚动条才看得全；
+// 砍掉 ROS 节点 / 活动话题（右栏告警表和概览页都有）后正好排得下。
+const loadMetrics = computed(() => [
+  { v: cpuAvg.value, l: 'CPU 负载', u: '%', p: cpuAvg.value, e: exc(cpuAvg.value, 90) },
+  { v: gpu.value, l: 'GPU 负载', u: '%', p: gpu.value, e: exc(gpu.value, 90) },
+  { v: maxTemp.value.toFixed(1), l: '核心温度', u: '℃', p: Math.min(100, maxTemp.value),
+    e: exc(maxTemp.value, 75, 85) },
+  { v: ramPct.value, l: '内存占用', u: '%', p: ramPct.value, e: exc(ramPct.value, 90) },
+])
+const readMetrics = computed(() => [
+  { v: vx.value.toFixed(2), l: '前进', u: 'm/s' },
+  { v: wz.value.toFixed(2), l: '转向', u: 'rad/s' },
+  { v: deg(euler.value.yaw).toFixed(1), l: '航向', u: '°' },
+  { v: deg(euler.value.roll).toFixed(1), l: '横滚', u: '°' },
+  { v: deg(euler.value.pitch).toFixed(1), l: '俯仰', u: '°' },
+  { v: scanN.value, l: '雷达点', u: '', bad: !scanN.value },
 ])
 const alarms = computed(() => [
   { n: '电池低压', bad: volt.value != null && volt.value < BATT_WARN },
@@ -131,17 +127,18 @@ setInterval(() => {
         <section class="panel grow">
           <div class="ph"><i class="tick" />实时指标<span class="ph-r">REAL-TIME</span></div>
           <div class="pb metrics">
-            <div v-for="g in metricGroups" :key="g.name" class="mgroup">
-              <div class="mg-h">{{ g.name }}<i class="mg-line" /></div>
-              <div class="mg-grid">
-                <div v-for="m in g.items" :key="m.l" class="metric">
-                  <div :class="['mcard', m.e]">
-                    <div class="mtop"><span class="ml">{{ m.l }}</span>
-                      <span v-if="m.e" class="mtag">{{ m.e === 'bad' ? '故障' : '告警' }}</span></div>
-                    <div class="mv"><span class="num">{{ m.v }}</span><span v-if="m.u" class="mu">{{ m.u }}</span></div>
-                    <div v-if="m.p != null" class="mbar"><i :style="{ width: Math.min(100, m.p) + '%' }" /></div>
-                  </div>
-                </div>
+            <div class="mcards">
+              <div v-for="m in loadMetrics" :key="m.l" :class="['mcard', m.e]">
+                <div class="mtop"><span class="ml">{{ m.l }}</span>
+                  <span v-if="m.e" class="mtag">{{ m.e === 'bad' ? '故障' : '告警' }}</span></div>
+                <div class="mv"><span class="num">{{ m.v }}</span><span v-if="m.u" class="mu">{{ m.u }}</span></div>
+                <div class="mbar"><i :style="{ width: Math.min(100, m.p) + '%' }" /></div>
+              </div>
+            </div>
+            <div class="mstrip">
+              <div v-for="m in readMetrics" :key="m.l" class="sitem">
+                <span class="sl">{{ m.l }}</span>
+                <b :class="['sv', { bad: m.bad }]">{{ m.v }}<em v-if="m.u">{{ m.u }}</em></b>
               </div>
             </div>
           </div>
@@ -203,7 +200,7 @@ setInterval(() => {
         <button class="cbtn" @click="beep">蜂鸣提示</button>
       </div>
       <div class="cb r">
-        <button class="cbtn ghost" @click="emit('open-admin')">管理系统</button>
+        <button class="cbtn ghost" @click="emit('open-admin')">控制台</button>
         <button class="cbtn danger" @click="estop">急停 · STOP</button>
       </div>
     </footer>
@@ -269,18 +266,17 @@ setInterval(() => {
 .dot { width: 7px; height: 7px; border-radius: 50%; background: #334155; }
 .dot.on { background: #34D399; box-shadow: 0 0 7px rgba(52,211,153,.7); }
 .dot.bad { background: #F43F5E; box-shadow: 0 0 7px rgba(244,63,94,.7); }
-/* 指标分组 */
-/* 左栏现在有三块面板（电源/实时指标/关节控制），实时指标放不下时要能滚，
-   写 overflow:hidden 会把最后一组「系统」直接裁掉。 */
-.pb.metrics { overflow-y: auto; padding: 9px 12px; }
-.mgroup { margin-bottom: 6px; }
-.mgroup:last-child { margin-bottom: 0; }
-.mg-h { display: flex; align-items: center; gap: 9px; font-size: 10px; line-height: 1; font-weight: 600; letter-spacing: 1.8px; color: #64748B; text-transform: uppercase; margin-bottom: 5px; }
-.mg-line { flex: 1; height: 1px; background: linear-gradient(90deg, rgba(255,255,255,.12), transparent); }
-.mg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
-.metric { min-width: 0; }
+/* 实时指标：结构上不允许出现滚动条。
+   .mcards 用 grid-auto-rows: minmax(0,1fr) 把面板剩余高度均分给两行卡片，
+   视口再矮也是卡片自己压扁，不会溢出 —— 所以这里能安心写 overflow:hidden。
+   数值带是固定高度的一小条，不参与伸缩。 */
+.pb.metrics { overflow: hidden; padding: 10px 12px; display: flex; flex-direction: column;
+  gap: 9px; min-height: 0; }
+.mcards { display: grid; grid-template-columns: 1fr 1fr; grid-auto-rows: minmax(0, 1fr);
+  gap: 7px; flex: 1 1 auto; min-height: 0; }
 /* 卡片一律扁平中性；越阈值的才描边着色 */
-.mcard { position: relative; padding: 5px 9px 6px; border-radius: 8px;
+.mcard { position: relative; padding: 6px 9px 7px; border-radius: 8px; min-width: 0;
+  display: flex; flex-direction: column; justify-content: center;
   border: 1px solid rgba(255,255,255,.07); background: rgba(255,255,255,.02); overflow: hidden; }
 .mcard.warn { border-color: rgba(245,158,11,.45); }
 .mcard.bad { border-color: rgba(244,63,94,.45); }
@@ -297,8 +293,19 @@ setInterval(() => {
   font: 600 15px/1.15 Inter, monospace; color: #F8FAFC; font-variant-numeric: tabular-nums; letter-spacing: -.5px; }
 .num { font-variant-numeric: tabular-nums; }
 .mu { font-size: 8px; color: #64748B; font-weight: 400; flex-shrink: 0; }
-.mbar { margin-top: 4px; height: 2px; border-radius: 2px; background: rgba(255,255,255,.07); overflow: hidden; }
+.mbar { margin-top: 5px; height: 2px; border-radius: 2px; background: rgba(255,255,255,.07);
+  overflow: hidden; flex-shrink: 0; }
 .mbar i { display: block; height: 100%; border-radius: 2px; background: #38BDF8; transition: width .45s ease; }
+/* 数值带：没有量程的读数，标签在上、数字在下，三列两行 */
+.mstrip { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px 10px; flex: 0 0 auto;
+  padding-top: 9px; border-top: 1px solid rgba(255,255,255,.07); }
+.sitem { min-width: 0; }
+.sl { display: block; font-size: 9px; line-height: 1; color: #94A3B8; letter-spacing: .5px;
+  margin-bottom: 3px; }
+.sv { display: block; font: 600 14px/1.15 Inter, monospace; color: #F8FAFC;
+  font-variant-numeric: tabular-nums; letter-spacing: -.4px; white-space: nowrap; overflow: hidden; }
+.sv.bad { color: #F43F5E; }
+.sv em { font-style: normal; font-size: 8px; color: #64748B; font-weight: 400; margin-left: 3px; }
 /* 告警表 */
 .alarm { width: 100%; border-collapse: collapse; font-size: 13px; }
 .alarm th { color: #556072; font-weight: 500; text-align: left; padding: 6px; font-size: 11px; letter-spacing: 1px;
@@ -362,7 +369,7 @@ setInterval(() => {
   .center { min-height: 0; }
   .viewport { flex: none; height: 44vh; min-height: 230px; }
 
-  .mg-grid { gap: 6px; }
+  .mcards { gap: 6px; grid-auto-rows: auto; }
 
   /* 底控栏：换行 + 加大触摸目标（44px 是拇指的下限） */
   .ctrlbar { height: auto; min-height: 44px; padding: 8px 10px; flex-wrap: wrap; gap: 8px; }
