@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, reactive, watch, onUnmounted } from 'vue'
-import { message } from 'ant-design-vue'
+import { message, Modal } from 'ant-design-vue'
 import { useRos, videoUrl } from '../composables/useRos'
 import { useStreamWatch } from '../composables/useStreamWatch'
 import { useMjpegGate } from '../composables/useMjpeg'
@@ -59,6 +59,21 @@ function onPick(e) {
 function send(obj, tip) {
   if (!actions.snackCmd(obj)) return message.error('rosbridge 未连接')
   if (tip) message.success(tip)
+}
+
+// ---- 低压保护开关 ----
+// 开着是默认，关掉有真实代价：欠压时舵机失力，臂直接砸下来，正夹着的东西也摔。
+// 所以只有「关」这一侧要确认一次，「开」直接下发。
+const lowVoltOn = computed(() => cfg.value.low_volt_enabled !== false)
+function setLowVolt(on) {
+  if (on) return send({ action: 'set_config', patch: { low_volt_enabled: true } }, '低压保护已开启')
+  Modal.confirm({
+    title: '关闭低压保护？',
+    content: '关掉之后电池再低也不会自动收臂。欠压时舵机会失力，机械臂直接砸下来，'
+      + '正夹着的东西一起摔。只有接了稳压电源调试时才建议关。',
+    okText: '确认关闭', okType: 'danger', cancelText: '取消',
+    onOk: () => send({ action: 'set_config', patch: { low_volt_enabled: false } }, '低压保护已关闭'),
+  })
 }
 
 // ---- 参数编辑：本地暂存，点保存才下发 ----
@@ -224,8 +239,14 @@ const detRows = computed(() => dets.value.map((d, i) => ({ key: i, ...d })))
               <a-tag v-if="sb?.cm" color="green">驱动换算角度</a-tag>
               <a-tag v-else :color="sb?.calibrated ? 'green' : 'orange'">
                 舵机{{ sb?.calibrated ? '已标定' : '未标定' }}</a-tag>
-              <a-tag :color="sb?.low_volt ? 'red' : 'blue'">
+              <a-tag :color="sb?.low_volt ? 'red' : (lowVoltOn ? 'blue' : 'orange')">
                 电池 {{ sb?.batt_v ?? '--' }} V</a-tag>
+              <a-tooltip :title="lowVoltOn
+                ? `低于 ${cfg.low_volt_park} V 连续 ${cfg.low_volt_hold} 次自动收臂，回到 ${cfg.low_volt_clear} V 以上解除`
+                : '保护已关闭：欠压时不再自动收臂，机械臂会砸下来'">
+                <a-switch :checked="lowVoltOn" :disabled="!online" size="small"
+                  checked-children="低压保护" un-checked-children="保护已关" @change="setLowVolt" />
+              </a-tooltip>
               <a-tag :color="sb?.cam_fix ? 'green' : 'orange'">
                 地面{{ sb?.cam_fix ? '已标定' : '未标定' }}</a-tag>
             </a-space>
@@ -233,7 +254,18 @@ const detRows = computed(() => dets.value.map((d, i) => ({ key: i, ...d })))
         </a-descriptions>
         <a-alert v-if="sb?.low_volt" type="error" show-icon banner style="margin-top:12px"
           :message="`低压保护已触发 · 电池 ${sb.batt_v ?? '--'} V`"
-          :description="`已自动收臂并停止抓取。低于 ${cfg.low_volt_park} V 触发，回到 ${cfg.low_volt_clear} V 以上自动解除。断电时机械臂会直接砸下来，所以宁可早收。`" />
+          :description="`已自动收臂并停止抓取。低于 ${cfg.low_volt_park} V 触发，回到 ${cfg.low_volt_clear} V 以上自动解除。断电时机械臂会直接砸下来，所以宁可早收。`">
+          <template #action>
+            <a-button size="small" danger :disabled="!online" @click="setLowVolt(false)">关闭保护</a-button>
+          </template>
+        </a-alert>
+        <a-alert v-else-if="online && !lowVoltOn" type="warning" show-icon style="margin-top:12px"
+          message="低压保护已关闭"
+          description="电池再低也不会自动收臂。欠压时舵机失力，机械臂会直接砸下来 —— 调试完记得开回去。">
+          <template #action>
+            <a-button size="small" @click="setLowVolt(true)">开启保护</a-button>
+          </template>
+        </a-alert>
         <a-alert v-if="sb?.error" type="error" show-icon style="margin-top:12px" :message="sb.error" />
       </a-card>
 

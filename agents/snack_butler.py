@@ -329,7 +329,17 @@ class SnackButler(Node):
         except Exception:
             return
         c = self.cfg
-        if not c.get('low_volt_enabled', True) or self.batt_v <= 0.1:
+        if not c.get('low_volt_enabled', True):
+            # 关掉保护时必须把 latch 一起解掉。否则已经触发过的那一次会一直卡在
+            # _blocked_lowvolt 里，界面上开关明明关了却还是抓不了，看着像开关坏了。
+            if self.low_volt:
+                self.low_volt = False
+                self.last_error = ''
+                self.step = '低压保护已关闭，拦截解除'
+                self.get_logger().warn('低压保护被关闭：欠压时不再自动收臂')
+            self._low_n = 0
+            return
+        if self.batt_v <= 0.1:
             return
         if self.low_volt:
             # 迟滞：要回到更高的 clear 阈值才解除，不然会在阈值附近反复横跳
