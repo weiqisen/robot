@@ -20,6 +20,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.expanduser('~/web_control')
@@ -36,6 +37,32 @@ MAX_BODY = 64 * 1024        # 这份配置只有几百字节，给足余量后�
 DESKTOP_MIN_INTERVAL = 0.9
 _desk = {'ts': 0.0, 'jpg': None}
 _desk_lock = threading.Lock()
+
+# 相机快照代理。web_video_server 在 :8080，和控制台的 :8000 不同源，
+# 而它 GET 时并不发 Access-Control-Allow-Origin（HEAD 时发，很有迷惑性）。
+# 前端要把画面画进 canvas 再当 WebGL 纹理，跨源图片会污染画布、上传纹理时抛
+# SecurityError。所以从这里同源转发一道。width/quality 它是支持的
+# （实测 width=800 约 126KB，不带参数 745KB），不用自己转码。
+CAM_TOPIC = '/depth_cam/rgb/image_raw'
+CAM_URL = ('http://127.0.0.1:8080/snapshot?topic=%s&width=800&quality=60' % CAM_TOPIC)
+CAM_MIN_INTERVAL = 0.25
+_cam = {'ts': 0.0, 'jpg': None}
+_cam_lock = threading.Lock()
+
+
+def grab_camera():
+    with _cam_lock:
+        if _cam['jpg'] is not None and time.time() - _cam['ts'] < CAM_MIN_INTERVAL:
+            return _cam['jpg']
+        try:
+            with urllib.request.urlopen(CAM_URL, timeout=5) as r:
+                jpg = r.read()
+            if jpg:
+                _cam['jpg'] = jpg
+                _cam['ts'] = time.time()
+        except Exception:
+            pass            # 相机没起来：保留上一帧，前端显示"无信号"
+        return _cam['jpg']
 
 
 def grab_desktop():
@@ -69,16 +96,20 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _jpeg(self, jpg, what):
+        if not jpg:
+            return self._json(503, {'error': f'{what} unavailable'})
+        self.send_response(200)
+        self.send_header('Content-Type', 'image/jpeg')
+        self.send_header('Content-Length', str(len(jpg)))
+        self.end_headers()
+        return self.wfile.write(jpg)
+
     def do_GET(self):
+        if self.path.split('?', 1)[0] == '/api/camera.jpg':
+            return self._jpeg(grab_camera(), 'camera')
         if self.path.split('?', 1)[0] == '/api/desktop.jpg':
-            jpg = grab_desktop()
-            if not jpg:
-                return self._json(503, {'error': 'desktop capture unavailable'})
-            self.send_response(200)
-            self.send_header('Content-Type', 'image/jpeg')
-            self.send_header('Content-Length', str(len(jpg)))
-            self.end_headers()
-            return self.wfile.write(jpg)
+            return self._jpeg(grab_desktop(), 'desktop capture')
         if self.path.split('?', 1)[0] == '/api/look':
             try:
                 with open(LOOK, encoding='utf-8') as f:
@@ -119,6 +150,9 @@ class Handler(SimpleHTTPRequestHandler):
         path = self.path.split('?', 1)[0]
         if path.startswith('/api/'):
             self.send_header('Cache-Control', 'no-store')
+            # 从 Mac 的 vite dev server 打开时这些是跨源请求，没这个头
+            # 图片画进 canvas 会污染画布
+            self.send_header('Access-Control-Allow-Origin', '*')
         elif path.startswith('/assets/'):
             self.send_header('Cache-Control', 'public, max-age=31536000, immutable')
         else:

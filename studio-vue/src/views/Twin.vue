@@ -227,7 +227,7 @@ function makeScreen() {
   // 屏幕位置朝向纹理全对却什么都看不见。抬 6.5mm，露出边框约 0.9mm。
   screenMesh.position.set(-0.1469, 0.0002, 0.1136).addScaledVector(zAx, 0.0065)
   parent.add(screenMesh)
-  syncSources()
+  startPolling()
   drawScreen()
   restartScreenTimer()
 }
@@ -243,39 +243,41 @@ const SCREEN_BLOCKS = [
 const SCREEN_DEFAULT = { block: 'telemetry' }
 const screenCfg = reactive(clone(SCREEN_DEFAULT))
 
-// 相机/桌面这两块要外部图源。跨源图片画进 canvas 会污染画布，
-// 而被污染的 canvas 当 WebGL 纹理会直接抛 SecurityError ——
-// 所以必须 crossOrigin='anonymous'，两边服务器也都确认发了 CORS 头。
-let camImg = null, deskImg = null
-function syncSources() {
-  const wantCam = screenCfg.block === 'camera'
-  if (wantCam && !camImg) {
-    camImg = new Image(); camImg.crossOrigin = 'anonymous'
-    camImg.src = `http://${HOST}:8080/stream?topic=/depth_cam/rgb/image_raw&type=mjpeg&t=${Date.now()}`
-  } else if (!wantCam && camImg) { camImg.src = ''; camImg = null }
+// 相机和桌面都从控制台自己的 :8000 同源取单帧 JPEG。
+// 相机不能直连 web_video_server 的 :8080：那是跨源，而它 GET 时并不发
+// Access-Control-Allow-Origin（HEAD 时发，很有迷惑性）—— 实测带
+// crossOrigin 的 <img> 永远加载不出来，不带又会污染画布，
+// 而被污染的 canvas 当 WebGL 纹理会抛 SecurityError。所以服务端转发一道。
+//
+// 双缓冲：新帧先加载到一个临时 Image，onload 之后才换上去。
+// 直接复用同一个 Image 改 src 的话，加载期间 naturalWidth 会归零，
+// 正好被定时重绘撞上 —— 那就是桌面"断断续续黑屏"的原因。
+const frames = { camera: null, desktop: null }
+const POLL_GAP = { camera: 350, desktop: 900 }
+let pollSeq = 0
+function startPolling() {
+  const kind = screenCfg.block
+  pollSeq++                       // 让上一轮轮询自然退出
+  if (kind !== 'camera' && kind !== 'desktop') return
+  const my = pollSeq
+  const step = () => {
+    if (my !== pollSeq || screenCfg.block !== kind) return
+    const im = new Image()
+    im.crossOrigin = 'anonymous'
+    im.onload = () => { frames[kind] = im; setTimeout(step, POLL_GAP[kind]) }
+    im.onerror = () => setTimeout(step, 1500)
+    im.src = `http://${HOST}:8000/api/${kind}.jpg?t=${Date.now()}`
+  }
+  step()
+}
 
-  const wantDesk = screenCfg.block === 'desktop'
-  if (wantDesk && !deskImg) {
-    deskImg = new Image(); deskImg.crossOrigin = 'anonymous'; pollDesktop()
-  } else if (!wantDesk && deskImg) { deskImg.src = ''; deskImg = null }
-}
-// 桌面是一帧一帧拉的（服务端 ffmpeg 抓一次 300~440ms 并做了节流），
-// 拉完再排下一次，不用定时器硬打，避免堆积。
-function pollDesktop() {
-  const im = deskImg
-  if (!im || screenCfg.block !== 'desktop') return
-  im.onload = im.onerror = () => setTimeout(pollDesktop, 900)
-  im.src = `http://${HOST}:8000/api/desktop.jpg?t=${Date.now()}`
-}
-// 相机是连续流，要跟得上；遥测约 1Hz；桌面由 pollDesktop 自己排队，画快了也没新帧
-const SCREEN_FPS = { camera: 130, desktop: 500, telemetry: 500, snack: 500 }
+// 重绘节奏跟着内容走：相机要跟上流，其余 1Hz 的数据 500ms 足够
+const SCREEN_FPS = { camera: 160, desktop: 500, telemetry: 500, snack: 500 }
 function restartScreenTimer() {
   if (screenTimer) clearInterval(screenTimer)
-  if (camImg) camImg.src = ''
-  if (deskImg) deskImg.src = ''
   screenTimer = setInterval(drawScreen, SCREEN_FPS[screenCfg.block] || 500)
 }
-watch(() => screenCfg.block, () => { syncSources(); restartScreenTimer(); drawScreen() })
+watch(() => screenCfg.block, () => { startPolling(); restartScreenTimer(); drawScreen() })
 
 const pad2 = n => String(n).padStart(2, '0')
 function drawFit(g, img, W, H) {
@@ -422,9 +424,9 @@ function drawScreen() {
   const g = screenCv.getContext('2d'), W = SCREEN_W, H = SCREEN_H
   g.fillStyle = SC.bg; g.fillRect(0, 0, W, H)
   if (screenCfg.block === 'camera') {
-    if (!drawFit(g, camImg, W, H)) drawNoSignal(g, W, H, '相机无信号')
+    if (!drawFit(g, frames.camera, W, H)) drawNoSignal(g, W, H, '相机无信号')
   } else if (screenCfg.block === 'desktop') {
-    if (!drawFit(g, deskImg, W, H)) drawNoSignal(g, W, H, '桌面无信号')
+    if (!drawFit(g, frames.desktop, W, H)) drawNoSignal(g, W, H, '桌面无信号')
   } else if (screenCfg.block === 'snack') {
     drawSnack(g, W, H)
   } else {
