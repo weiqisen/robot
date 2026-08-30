@@ -4,7 +4,7 @@ import {
   DashboardOutlined, LineChartOutlined, DeploymentUnitOutlined, RadarChartOutlined,
   ThunderboltOutlined, ApiOutlined, ProfileOutlined, EnvironmentOutlined, ScanOutlined, ApartmentOutlined,
   UnorderedListOutlined, SearchOutlined, ControlOutlined, AimOutlined, FileTextOutlined,
-  RobotOutlined, MenuOutlined, FundProjectionScreenOutlined, ShoppingOutlined,
+  RobotOutlined, MenuOutlined, FundProjectionScreenOutlined, ShoppingOutlined, DesktopOutlined,
 } from '@ant-design/icons-vue'
 import { useRos, ROBOT_HOST, battPct, BATT_WARN } from './composables/useRos'
 import { useTheme } from './composables/useTheme'
@@ -26,6 +26,7 @@ import Logs from './views/Logs.vue'
 import Control from './views/Control.vue'
 import Twin from './views/Twin.vue'
 import Snack from './views/Snack.vue'
+import Remote from './views/Remote.vue'
 
 const { state } = useRos()
 const { isDark, antdTheme, toggle } = useTheme()
@@ -52,6 +53,7 @@ const MENU = [
   { group: '操作' },
   { key: 'control', icon: ControlOutlined, label: '实时控制', comp: markRaw(Control), full: true },
   { key: 'twin', icon: AimOutlined, label: '数字孪生', comp: markRaw(Twin), full: true },
+  { key: 'remote', icon: DesktopOutlined, label: '远程桌面', comp: markRaw(Remote), full: true },
 ]
 const items = MENU.filter(m => m.key)
 const menuItems = MENU.map((m, i) =>

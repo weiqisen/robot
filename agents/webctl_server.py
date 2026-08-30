@@ -14,8 +14,13 @@
 顺带换成 ThreadingHTTPServer：单线程版一个连接卡住(比如浏览器开着长连接)
 就会把所有人挡在外面。
 """
+import base64
+import hashlib
 import json
 import os
+import select
+import socket
+import struct
 import subprocess
 import tempfile
 import threading
@@ -23,12 +28,13 @@ import time
 import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
-ROOT = os.path.expanduser('~/web_control')
-PORT = 8000
+# 都可用环境变量覆盖，方便本地起一份做联调/自测
+ROOT = os.environ.get('WEBCTL_ROOT') or os.path.expanduser('~/web_control')
+PORT = int(os.environ.get('WEBCTL_PORT') or 8000)
 
 # 数字孪生的材质/光照参数。放在 web_control 外面 —— 部署时那个目录会被
 # rm -rf assets + 解包覆盖，配置放里面迟早被抹掉。
-LOOK = os.path.expanduser('~/twin_look.json')
+LOOK = os.environ.get('WEBCTL_LOOK') or os.path.expanduser('~/twin_look.json')
 MAX_BODY = 64 * 1024        # 这份配置只有几百字节，给足余量后直接拒绝
 
 # 桌面抓屏：给数字孪生模型的屏幕当画面用。实测一帧 300~440ms、约 33KB，
@@ -46,6 +52,12 @@ _desk_lock = threading.Lock()
 CAM_TOPIC = '/depth_cam/rgb/image_raw'
 CAM_URL = ('http://127.0.0.1:8080/snapshot?topic=%s&width=800&quality=60' % CAM_TOPIC)
 CAM_MIN_INTERVAL = 0.25
+
+# --- VNC 桥：浏览器只能走 WebSocket，x11vnc 是裸 TCP(5900) ---
+# 不依赖 x11vnc 自己有没有编进 libvncserver 的 ws 支持，也不用在车上装 websockify，
+# 这里直接做一层 RFC6455 <-> TCP 转发。顺带同源(:8000)，省掉跨源那堆事。
+VNC_ADDR = (os.environ.get('VNC_HOST') or '127.0.0.1', int(os.environ.get('VNC_PORT') or 5900))
+WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
 _cam = {'ts': 0.0, 'jpg': None}
 _cam_lock = threading.Lock()
 
@@ -105,7 +117,114 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         return self.wfile.write(jpg)
 
+    # ---- WebSocket 帧 ----
+    @staticmethod
+    def _ws_frame(payload, opcode=0x2):
+        """服务端发的帧不掩码。只用到二进制(0x2)和关闭(0x8)。"""
+        n = len(payload)
+        if n < 126:
+            head = struct.pack('!BB', 0x80 | opcode, n)
+        elif n < 65536:
+            head = struct.pack('!BBH', 0x80 | opcode, 126, n)
+        else:
+            head = struct.pack('!BBQ', 0x80 | opcode, 127, n)
+        return head + payload
+
+    def _ws_read_exact(self, sock, n):
+        buf = b''
+        while len(buf) < n:
+            c = sock.recv(n - len(buf))
+            if not c:
+                return None
+            buf += c
+        return buf
+
+    def _ws_recv(self, sock):
+        """读一帧，返回 (opcode, payload)；连接断了返回 (None, None)。"""
+        h = self._ws_read_exact(sock, 2)
+        if not h:
+            return None, None
+        b0, b1 = h[0], h[1]
+        opcode = b0 & 0x0F
+        masked = b1 & 0x80
+        n = b1 & 0x7F
+        if n == 126:
+            e = self._ws_read_exact(sock, 2)
+            if not e:
+                return None, None
+            n = struct.unpack('!H', e)[0]
+        elif n == 127:
+            e = self._ws_read_exact(sock, 8)
+            if not e:
+                return None, None
+            n = struct.unpack('!Q', e)[0]
+        mask = self._ws_read_exact(sock, 4) if masked else None
+        if masked and mask is None:
+            return None, None
+        data = self._ws_read_exact(sock, n) if n else b''
+        if data is None:
+            return None, None
+        if mask:
+            data = bytes(c ^ mask[i % 4] for i, c in enumerate(data))
+        return opcode, data
+
+    def _vnc_bridge(self):
+        """握手后把这条连接变成 VNC 的双向管道。"""
+        key = self.headers.get('Sec-WebSocket-Key')
+        if not key or 'websocket' not in (self.headers.get('Upgrade') or '').lower():
+            return self._json(400, {'error': 'expected websocket upgrade'})
+        accept = base64.b64encode(
+            hashlib.sha1((key + WS_GUID).encode()).digest()).decode()
+        try:
+            vnc = socket.create_connection(VNC_ADDR, timeout=5)
+        except Exception as e:
+            return self._json(502, {'error': f'cannot reach vnc: {e}'})
+
+        proto = (self.headers.get('Sec-WebSocket-Protocol') or '').split(',')
+        proto = [p.strip() for p in proto if p.strip()]
+        lines = ['HTTP/1.1 101 Switching Protocols', 'Upgrade: websocket',
+                 'Connection: Upgrade', f'Sec-WebSocket-Accept: {accept}']
+        if 'binary' in proto:
+            lines.append('Sec-WebSocket-Protocol: binary')
+        self.wfile.write(('\r\n'.join(lines) + '\r\n\r\n').encode())
+        self.wfile.flush()
+        self.close_connection = True      # 之后这条连接归我们，别再当 HTTP 用
+
+        ws = self.connection
+        vnc.setblocking(False)
+        ws.setblocking(True)
+        try:
+            while True:
+                r, _, _ = select.select([ws, vnc], [], [], 0.2)
+                if ws in r:
+                    op, data = self._ws_recv(ws)
+                    if op is None or op == 0x8:
+                        break
+                    if op in (0x1, 0x2) and data:
+                        vnc.sendall(data)
+                if vnc in r:
+                    try:
+                        chunk = vnc.recv(65536)
+                    except BlockingIOError:
+                        chunk = b''
+                    if chunk == b'':
+                        try:
+                            vnc.getpeername()
+                        except OSError:
+                            break
+                    if chunk:
+                        ws.sendall(self._ws_frame(chunk))
+        except Exception:
+            pass          # 掉线是常态，不值得刷日志
+        finally:
+            try:
+                vnc.close()
+            except Exception:
+                pass
+
     def do_GET(self):
+        if self.path.split('?', 1)[0] == '/api/vnc':
+            return self._vnc_bridge()
         if self.path.split('?', 1)[0] == '/api/camera.jpg':
             return self._jpeg(grab_camera(), 'camera')
         if self.path.split('?', 1)[0] == '/api/desktop.jpg':
