@@ -35,10 +35,22 @@ $SSH "$USER_@$ROBOT" 'mkdir -p ~/web_control && tar -C ~/web_control -xzf /tmp/w
 [ -n "${WEB_ONLY:-}" ] && { echo "== 只推网页，完成"; exit 0; }
 
 echo "== 推送 agents"
-$SCP "$HERE"/agents/{snack_butler.py,arm_kinematics.py,vision_geometry.py,snack_detector.py,llm_agent.py} \
+# jetson_agent / webrtc_agent 的 systemd 单元是早先手工装的，这里只更新脚本本身：
+# 网页的 BOM / 服务监控 / 运行日志页全靠 jetson_agent 推 topic，漏推就是一直空转。
+$SCP "$HERE"/agents/{snack_butler.py,arm_kinematics.py,vision_geometry.py,snack_detector.py,llm_agent.py,jetson_agent.py,webrtc_agent.py} \
      "$USER_@$ROBOT:~/"
 # 配置文件已存在就不覆盖——上面标定出来的参数在里面
 $SSH "$USER_@$ROBOT" 'test -f ~/snack_butler_config.json || echo "{}" > ~/snack_butler_config.json'
+
+# 装过的才重启；没装的不在这儿建单元，只提示一声，免得掩盖「这台车压根没部署过」
+for unit in jetson-agent webrtc-agent; do
+  if $SSH "$USER_@$ROBOT" "systemctl list-unit-files $unit.service --no-legend | grep -q ." ; then
+    $SSH "$USER_@$ROBOT" "sudo systemctl restart $unit"
+    echo "== $unit 已重启"
+  else
+    echo "== $unit 未安装（跳过重启）"
+  fi
+done
 
 echo "== 安装 systemd 服务"
 # Hiwonder 的 ROS 环境变量(need_compile/HOST/MASTER)只在 ~/.zshrc 里设，
