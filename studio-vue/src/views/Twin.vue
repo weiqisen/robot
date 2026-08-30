@@ -8,7 +8,7 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import URDFLoader from 'urdf-loader'
 import { useRos, quatToEuler, deg } from '../composables/useRos'
 const props = defineProps({ bare: { type: Boolean, default: false } })
-const { state, actions } = useRos()
+const { state, actions, HOST } = useRos()
 
 const host = ref(null)
 const loading = ref(true), loadErr = ref('')
@@ -30,14 +30,64 @@ const LS_KEY = 'twin.look.v1'
 const clone = o => JSON.parse(JSON.stringify(o))
 const mat = reactive(clone(MAT_DEFAULT))
 const lit = reactive(clone(LIGHT_DEFAULT))
-try {
-  const saved = JSON.parse(localStorage.getItem(LS_KEY) || 'null')
-  if (saved) {
-    // 逐字段合并，不整体覆盖 —— 以后加了新材质档位，旧存档也不会把它抹掉
-    for (const k in mat) if (saved.mat && saved.mat[k]) Object.assign(mat[k], saved.mat[k])
-    if (saved.lit) Object.assign(lit, saved.lit)
-  }
-} catch (e) { /* 存档坏了就用默认值，不值得报错 */ }
+
+// 三层来源，后面的盖前面的：
+//   代码默认值 → 车上保存的那份(所有设备共用) → 本机未保存的草稿
+// 走机器人 IP 而不是相对路径：从 Mac 的 vite dev server 打开时，
+// 相对路径会打到 :5273 上去，拿不到车上的配置。
+const LOOK_API = `http://${HOST}:8000/api/look`
+const look = reactive({ dirty: false, saving: false, msg: '', onRobot: false })
+let serverLook = null
+let quiet = false           // 程序化写入时别触发 watch 里的"标脏 + 存草稿"
+
+function mergeLook(src) {
+  if (!src) return
+  // 逐字段合并，不整体覆盖 —— 以后加了新材质档位，旧存档也不会把它抹掉
+  for (const k in mat) if (src.mat && src.mat[k]) Object.assign(mat[k], src.mat[k])
+  if (src.lit) Object.assign(lit, src.lit)
+}
+
+async function loadLook() {
+  quiet = true
+  try {
+    const r = await fetch(LOOK_API, { cache: 'no-store' })
+    if (r.ok) { serverLook = await r.json(); mergeLook(serverLook); look.onRobot = true }
+  } catch (e) { /* 车没在线 / dev server 没这个接口，退回本地 */ }
+  let draft = null
+  try { draft = JSON.parse(localStorage.getItem(LS_KEY) || 'null') } catch (e) { /* 存档坏了就忽略 */ }
+  if (draft) { mergeLook(draft); look.dirty = true; look.msg = '有未保存的本机改动' }
+  quiet = false
+  applyLook()
+}
+
+async function saveLook() {
+  look.saving = true; look.msg = ''
+  try {
+    const r = await fetch(LOOK_API, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mat, lit }),
+    })
+    const j = await r.json().catch(() => ({}))
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    serverLook = JSON.parse(JSON.stringify({ mat, lit }))
+    try { localStorage.removeItem(LS_KEY) } catch (e) { /* 无痕模式 */ }
+    look.dirty = false; look.onRobot = true; look.msg = '已保存到机器人'
+  } catch (e) {
+    look.msg = '保存失败：' + e.message
+  } finally { look.saving = false }
+}
+
+// 放弃本机改动，回到车上那份（没保存过就回代码默认值）
+function revertLook() {
+  quiet = true
+  for (const k in MAT_DEFAULT) Object.assign(mat[k], MAT_DEFAULT[k])
+  Object.assign(lit, LIGHT_DEFAULT)
+  mergeLook(serverLook)
+  try { localStorage.removeItem(LS_KEY) } catch (e) { /* 无痕模式 */ }
+  look.dirty = false; look.msg = ''
+  quiet = false
+  applyLook()
+}
 
 const matOpen = ref(false)
 const matGroups = {}          // 档位名 -> 这一档下所有 material，改参数时批量刷
@@ -136,6 +186,7 @@ function init() {
                       get screenMesh() { return screenMesh } }
   }
   mgr.onLoad = onRobotReady
+  loadLook()
 
   loader.load('model/robot.web.urdf', rb => {
     robot = rb
@@ -266,6 +317,9 @@ function applyLook() {
 }
 watch([mat, lit], () => {
   applyLook()
+  if (quiet) return
+  look.dirty = true; look.msg = ''
+  // 草稿留在本机，刷新不丢；点「保存到机器人」才成为所有设备共用的那份
   try { localStorage.setItem(LS_KEY, JSON.stringify({ mat, lit })) } catch (e) { /* 无痕模式等 */ }
 }, { deep: true })
 
@@ -502,6 +556,15 @@ onBeforeUnmount(() => {
       <h4>材质与光照
         <span class="lk-act" @click="resetLook">恢复默认</span>
       </h4>
+      <div class="lk-save">
+        <button class="lk-btn primary" :disabled="look.saving || !look.dirty" @click="saveLook">
+          {{ look.saving ? '保存中…' : '保存到机器人' }}</button>
+        <button class="lk-btn" :disabled="look.saving || !look.dirty" @click="revertLook">放弃改动</button>
+      </div>
+      <div class="lk-msg" :class="{ warn: look.dirty, bad: look.msg.startsWith('保存失败') }">
+        {{ look.msg || (look.dirty ? '有未保存的改动（仅存在本机）'
+            : look.onRobot ? '当前为车上保存的版本' : '当前为代码默认值') }}
+      </div>
       <div v-for="(c, k) in mat" :key="k" class="lk-grp">
         <div class="lk-h">
           <input type="color" v-model="c.color" />
@@ -537,8 +600,9 @@ onBeforeUnmount(() => {
           <span class="lk-act" @click="copyCode">{{ copied ? '已复制 ✓' : '复制代码' }}</span>
         </div>
         <textarea readonly :value="exportCode" @focus="$event.target.select()" />
-        <div class="hint">贴回 Twin.vue 顶部的 MAT_DEFAULT / LIGHT_DEFAULT 即成为新默认值。
-          在这里调的参数只存在你这台机器的浏览器里。</div>
+        <div class="hint">「保存到机器人」写在车上（~/twin_look.json），换设备、清缓存都还在，
+          所有人打开看到的都是这份。下面这段代码是给「想让它进代码库当默认值」用的：
+          贴回 Twin.vue 顶部的 MAT_DEFAULT / LIGHT_DEFAULT 即可。</div>
       </div>
     </div>
 
@@ -628,6 +692,14 @@ onBeforeUnmount(() => {
 .lk-r input[type=range] { flex: 1; min-width: 0; }
 .lk-r i { font-style: normal; font-size: 10px; width: 30px; text-align: right;
   color: rgba(255,255,255,.6); font-variant-numeric: tabular-nums; }
+.lk-save { display: flex; gap: 8px; margin: 2px 0 6px; }
+.lk-btn { flex: 1; height: 27px; border-radius: 8px; cursor: pointer; font-size: 11px;
+  border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.06); color: #eef2f6; }
+.lk-btn.primary { border-color: #2e9bff; background: rgba(46,155,255,.18); color: #cfe3ff; }
+.lk-btn:disabled { opacity: .38; cursor: default; }
+.lk-msg { font-size: 10px; color: rgba(255,255,255,.4); line-height: 1.5; margin-bottom: 2px; }
+.lk-msg.warn { color: #F59E0B; }
+.lk-msg.bad { color: #F43F5E; }
 .lk-out { padding-top: 8px; border-top: 1px solid rgba(255,255,255,.1); }
 .lk-out textarea { width: 100%; height: 104px; background: rgba(0,0,0,.35); color: #cfe3ff;
   border: 1px solid rgba(255,255,255,.12); border-radius: 8px; padding: 7px 8px; font-size: 10px;
