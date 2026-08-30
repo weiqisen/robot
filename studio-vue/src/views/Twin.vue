@@ -103,8 +103,106 @@ function init() {
     world.add(robot); loading.value = false
     info.jointN = Object.keys(robot.joints).filter(n => robot.joints[n].jointType !== 'fixed').length + ' 关节'
     makeJointTags()
+    makeScreen()
   }, undefined, e => { loadErr.value = String(e); loading.value = false })
 }
+// ---- 车身显示屏：把 #jetson 那页的核心遥测画上去 ----
+// URDF 里没有「屏幕」这个 link，那块面板是 back_shell_black_link 网格的一部分。
+// 位姿是从 STL 解出来的，不是目测：把三角面按法向+平面深度分组，取面积最大且朝外的
+// 那一族 —— 法向 (-0.9113, 0, 0.4116)（朝车后上方，离竖直 24.3°），
+// 面 165x114mm，base_link 系中心 (-0.1454, 0, 0.1038)。
+// 贴一个略小的平面盖在上面当屏幕，沿法向抬 2mm 避免 z-fighting。
+const SCREEN_W = 740, SCREEN_H = 512      // canvas 像素，比例贴合 150:103.5 的屏幕
+let screenCv = null, screenTex = null, screenMesh = null, screenTimer = null
+
+function makeScreen() {
+  const parent = (robot.links && robot.links.base_link) || robot   // 根 link 是 base_footprint，差 0.116m
+  screenCv = document.createElement('canvas')
+  screenCv.width = SCREEN_W; screenCv.height = SCREEN_H
+  screenTex = new THREE.CanvasTexture(screenCv)
+  screenTex.colorSpace = THREE.SRGBColorSpace
+  screenTex.anisotropy = renderer.capabilities.getMaxAnisotropy()
+  // 屏幕是自发光的 UI，不该被 ACES 压暗，也不该吃环境反射 —— 所以用 Basic + toneMapped:false
+  screenMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.150, 0.1035),
+    new THREE.MeshBasicMaterial({ map: screenTex, toneMapped: false }))
+  // 用三根轴显式搭基，不用 setFromUnitVectors —— 后者绕法向的滚转是任意的，画面会歪
+  const zAx = new THREE.Vector3(-0.9113, 0, 0.4116).normalize()   // 屏幕朝外
+  const yAx = new THREE.Vector3(0.4116, 0, 0.9113).normalize()    // 屏幕向上
+  const xAx = new THREE.Vector3().crossVectors(yAx, zAx).normalize()
+  screenMesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(xAx, yAx, zAx))
+  screenMesh.position.set(-0.1454, 0, 0.1038).addScaledVector(zAx, 0.002)
+  parent.add(screenMesh)
+  drawScreen()
+  screenTimer = setInterval(drawScreen, 500)   // 遥测约 1Hz，500ms 足够跟上
+}
+
+const SC = { bg: '#070b10', line: 'rgba(255,255,255,.09)', dim: '#7b8798',
+             fg: '#F1F5F9', ok: '#34D399', warn: '#F59E0B', bad: '#F43F5E', acc: '#38BDF8' }
+
+function drawScreen() {
+  if (!screenCv) return
+  const g = screenCv.getContext('2d'), W = SCREEN_W, H = SCREEN_H
+  const j = state.jetson
+  const cpu = j && j.cpu && j.cpu.length ? Math.round(j.cpu.reduce((a, c) => a + c.load, 0) / j.cpu.length) : 0
+  const gpu = j && j.gpu != null ? j.gpu : 0
+  const temp = j && j.temps ? Math.max(...Object.values(j.temps)) : 0
+  const ram = j && j.ram_total ? Math.round(j.ram_used / j.ram_total * 100) : 0
+  const volt = state.batt != null ? state.batt / 1000 : null
+  const lv = (v, w, b) => (v >= b ? SC.bad : v >= w ? SC.warn : SC.acc)
+
+  g.fillStyle = SC.bg; g.fillRect(0, 0, W, H)
+
+  // 顶栏
+  g.fillStyle = 'rgba(56,189,248,.07)'; g.fillRect(0, 0, W, 66)
+  g.fillStyle = SC.line; g.fillRect(0, 65, W, 1)
+  g.font = '600 27px Inter, system-ui, sans-serif'; g.fillStyle = SC.fg
+  g.textBaseline = 'middle'; g.textAlign = 'left'
+  g.fillText('JETSON ORIN NANO', 26, 34)
+  g.textAlign = 'right'
+  g.font = '400 21px Inter, system-ui, sans-serif'; g.fillStyle = SC.dim
+  g.fillText((j && j.power_mode) || '--', W - 52, 34)
+  g.beginPath(); g.arc(W - 28, 34, 8, 0, 6.284)
+  g.fillStyle = j ? SC.ok : SC.bad; g.fill()
+
+  // 2x2 四块：有量程的才配条
+  const tiles = [
+    { l: 'CPU', v: cpu, u: '%', p: cpu, c: lv(cpu, 75, 90) },
+    { l: 'GPU', v: gpu, u: '%', p: gpu, c: lv(gpu, 75, 90) },
+    { l: '温度', v: temp.toFixed(1), u: '℃', p: Math.min(100, temp), c: lv(temp, 75, 85) },
+    { l: '内存', v: ram, u: '%', p: ram, c: lv(ram, 80, 92) },
+  ]
+  const gx = 26, gy = 90, gw = (W - 52 - 18) / 2, gh = 138
+  tiles.forEach((t, i) => {
+    const x = gx + (i % 2) * (gw + 18), y = gy + Math.floor(i / 2) * (gh + 16)
+    g.fillStyle = 'rgba(255,255,255,.035)'; g.fillRect(x, y, gw, gh)
+    g.textAlign = 'left'; g.textBaseline = 'middle'
+    g.font = '500 21px Inter, system-ui, sans-serif'; g.fillStyle = SC.dim
+    g.fillText(t.l, x + 18, y + 27)
+    g.font = '600 60px Inter, system-ui, sans-serif'; g.fillStyle = t.c
+    g.fillText(String(t.v), x + 18, y + 76)
+    const tw = g.measureText(String(t.v)).width
+    g.font = '400 23px Inter, system-ui, sans-serif'; g.fillStyle = SC.dim
+    g.fillText(t.u, x + 24 + tw, y + 88)
+    g.fillStyle = 'rgba(255,255,255,.09)'; g.fillRect(x + 18, y + gh - 26, gw - 36, 6)
+    g.fillStyle = t.c; g.fillRect(x + 18, y + gh - 26, (gw - 36) * Math.min(100, t.p) / 100, 6)
+  })
+
+  // 底栏：电压 + 内存绝对值
+  const by = gy + 2 * gh + 16 + 18
+  g.fillStyle = SC.line; g.fillRect(26, by - 14, W - 52, 1)
+  g.textAlign = 'left'; g.font = '500 22px Inter, system-ui, sans-serif'; g.fillStyle = SC.dim
+  g.fillText('电池', 26, by + 22)
+  g.font = '600 32px Inter, system-ui, sans-serif'
+  g.fillStyle = volt == null ? SC.dim : volt < 10.6 ? SC.bad : volt < 11 ? SC.warn : SC.ok
+  g.fillText(volt == null ? '--.-' : volt.toFixed(2) + ' V', 92, by + 22)
+  g.textAlign = 'right'; g.font = '500 22px Inter, system-ui, sans-serif'; g.fillStyle = SC.dim
+  g.fillText(j && j.ram_total ? (j.ram_used / 1024).toFixed(1) + ' / ' + (j.ram_total / 1024).toFixed(1) + ' GB' : '--',
+    W - 26, by + 22)
+
+  screenTex.needsUpdate = true
+}
+
 function fit() { const el = host.value; renderer.setSize(el.clientWidth, el.clientHeight); camera.aspect = el.clientWidth / el.clientHeight; camera.updateProjectionMatrix() }
 function loop() { raf = requestAnimationFrame(loop); controls.update(); renderer.render(scene, camera) }
 
@@ -258,7 +356,14 @@ onMounted(() => {
   renderer.domElement.addEventListener('pointermove', ptrMove)
   window.addEventListener('pointerup', ptrUp)
 })
-onBeforeUnmount(() => { cancelAnimationFrame(raf); window.removeEventListener('resize', fit); window.removeEventListener('pointerup', ptrUp); renderer && renderer.dispose() })
+onBeforeUnmount(() => {
+  cancelAnimationFrame(raf)
+  window.removeEventListener('resize', fit); window.removeEventListener('pointerup', ptrUp)
+  if (screenTimer) clearInterval(screenTimer)
+  if (screenMesh) { screenMesh.geometry.dispose(); screenMesh.material.dispose() }
+  if (screenTex) screenTex.dispose()
+  renderer && renderer.dispose()
+})
 </script>
 
 <template>
