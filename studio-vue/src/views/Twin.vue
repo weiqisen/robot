@@ -108,11 +108,12 @@ function init() {
 }
 // ---- 车身显示屏：把 #jetson 那页的核心遥测画上去 ----
 // URDF 里没有「屏幕」这个 link，那块面板是 back_shell_black_link 网格的一部分。
-// 位姿是从 STL 解出来的，不是目测：把三角面按法向+平面深度分组，取面积最大且朝外的
-// 那一族 —— 法向 (-0.9113, 0, 0.4116)（朝车后上方，离竖直 24.3°），
-// 面 165x114mm，base_link 系中心 (-0.1454, 0, 0.1038)。
-// 贴一个略小的平面盖在上面当屏幕，沿法向抬 2mm 避免 z-fighting。
-const SCREEN_W = 740, SCREEN_H = 512      // canvas 像素，比例贴合 150:103.5 的屏幕
+// 位姿是从 STL 解出来的：法向 (-0.9113, 0, 0.4116)（朝车后上方，离竖直 24.3°）。
+// 沿这个法向按面积分层后，玻璃面是深度 +0.1733 处那个「只有 2 个三角形」的大矩形 ——
+// 138.7 x 87.0mm、长宽比 1.594(16:10)，base_link 系中心 (-0.1469, 0.0002, 0.1136)；
+// 它外面 +0.178/+0.179 还有两圈边框，所以贴图只抬 0.8mm，正好嵌在边框里。
+// （最初取的是面积最大的共面组 +0.1680，那是面板底板，被边框埋掉 8.9mm 才不显示。）
+const SCREEN_W = 800, SCREEN_H = 502      // canvas 像素，1.594 贴合玻璃面长宽比
 let screenCv = null, screenTex = null, screenMesh = null, screenTimer = null
 
 function makeScreen() {
@@ -124,14 +125,14 @@ function makeScreen() {
   screenTex.anisotropy = renderer.capabilities.getMaxAnisotropy()
   // 屏幕是自发光的 UI，不该被 ACES 压暗，也不该吃环境反射 —— 所以用 Basic + toneMapped:false
   screenMesh = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.150, 0.1035),
+    new THREE.PlaneGeometry(0.1366, 0.0857),
     new THREE.MeshBasicMaterial({ map: screenTex, toneMapped: false }))
   // 用三根轴显式搭基，不用 setFromUnitVectors —— 后者绕法向的滚转是任意的，画面会歪
   const zAx = new THREE.Vector3(-0.9113, 0, 0.4116).normalize()   // 屏幕朝外
   const yAx = new THREE.Vector3(0.4116, 0, 0.9113).normalize()    // 屏幕向上
   const xAx = new THREE.Vector3().crossVectors(yAx, zAx).normalize()
   screenMesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(xAx, yAx, zAx))
-  screenMesh.position.set(-0.1454, 0, 0.1038).addScaledVector(zAx, 0.002)
+  screenMesh.position.set(-0.1469, 0.0002, 0.1136).addScaledVector(zAx, 0.0008)
   parent.add(screenMesh)
   drawScreen()
   screenTimer = setInterval(drawScreen, 500)   // 遥测约 1Hz，500ms 足够跟上
@@ -172,7 +173,7 @@ function drawScreen() {
     { l: '温度', v: temp.toFixed(1), u: '℃', p: Math.min(100, temp), c: lv(temp, 75, 85) },
     { l: '内存', v: ram, u: '%', p: ram, c: lv(ram, 80, 92) },
   ]
-  const gx = 26, gy = 90, gw = (W - 52 - 18) / 2, gh = 138
+  const gx = 26, gy = 88, gw = (W - 52 - 18) / 2, gh = 134
   tiles.forEach((t, i) => {
     const x = gx + (i % 2) * (gw + 18), y = gy + Math.floor(i / 2) * (gh + 16)
     g.fillStyle = 'rgba(255,255,255,.035)'; g.fillRect(x, y, gw, gh)
@@ -189,7 +190,7 @@ function drawScreen() {
   })
 
   // 底栏：电压 + 内存绝对值
-  const by = gy + 2 * gh + 16 + 18
+  const by = gy + 2 * gh + 16 + 16
   g.fillStyle = SC.line; g.fillRect(26, by - 14, W - 52, 1)
   g.textAlign = 'left'; g.font = '500 22px Inter, system-ui, sans-serif'; g.fillStyle = SC.dim
   g.fillText('电池', 26, by + 22)

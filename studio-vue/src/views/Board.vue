@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useRos, deg, battPct, BATT_MIN, BATT_MAX, BATT_WARN } from '../composables/useRos'
 import MiniChart from '../components/MiniChart.vue'
+import InfoNote from '../components/InfoNote.vue'
 const { state, actions } = useRos()
 
 const volt = computed(() => (state.batt == null ? null : state.batt / 1000))
@@ -52,21 +53,12 @@ function beep() { actions.buzzer(1900, 0.15, 0.05, 1) }
 </script>
 
 <template>
-  <!-- 这段说明只在第一次看这页时有用，常驻占一整条太吵：收进 ? 里，点开才浮出来 -->
-  <div class="intro">
-    <a-popover trigger="click" placement="bottomLeft" overlay-class-name="intro-pop">
-      <template #content>
-        <div class="intro-body">
-          <p><b>这是机器人上的第二块板子：幻尔 ros_robot_controller 扩展板（STM32），Jetson 通过串口跟它通信。</b></p>
-          <p>电池采样、板载 IMU、按键、手柄/航模接收机、蜂鸣器/LED/OLED、总线舵机与电机驱动都挂在它上面。</p>
-          <p class="warn">注意：总线舵机的电压和温度读不到 —— 唯一的接口 <code>bus_servo/get_state</code>
-            有厂商 bug（调用不存在的 <code>Board.bus_servo_read_voltage</code>），一调用整个节点就崩，所以这里不提供。</p>
-        </div>
-      </template>
-      <button class="qmark" aria-label="这块板子是什么">?</button>
-    </a-popover>
-    <span class="intro-hint">幻尔 ros_robot_controller 扩展板 · STM32</span>
-  </div>
+  <InfoNote title="幻尔 ros_robot_controller 扩展板 · STM32">
+    <p><b>这是机器人上的第二块板子：幻尔 ros_robot_controller 扩展板（STM32），Jetson 通过串口跟它通信。</b></p>
+    <p>电池采样、板载 IMU、按键、手柄/航模接收机、蜂鸣器/LED/OLED、总线舵机与电机驱动都挂在它上面。</p>
+    <p class="warn">注意：总线舵机的电压和温度读不到 —— 唯一的接口 <code>bus_servo/get_state</code>
+      有厂商 bug（调用不存在的 <code>Board.bus_servo_read_voltage</code>），一调用整个节点就崩，所以这里不提供。</p>
+  </InfoNote>
 
   <a-row :gutter="[16, 16]">
     <a-col :xs="24" :lg="10">
@@ -151,22 +143,4 @@ function beep() { actions.buzzer(1900, 0.15, 0.05, 1) }
 .cv { color: var(--text-2); font-variant-numeric: tabular-nums; }
 .ex { color: var(--text-3); font-size: 13px; }
 
-/* 说明入口：一个 18px 的 ? 圆钮 + 一行灰字，不抢版面 */
-.intro { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
-.qmark { width: 18px; height: 18px; flex-shrink: 0; border-radius: 50%; cursor: pointer;
-  border: 1px solid var(--border); background: var(--surface-2); color: var(--text-3);
-  font-size: 12px; font-weight: 600; line-height: 1; display: flex; align-items: center;
-  justify-content: center; padding: 0; }
-.qmark:hover { color: var(--accent); border-color: var(--accent); }
-.intro-hint { font-size: 12px; color: var(--text-4); }
-</style>
-
-<style>
-/* popover 内容挂在 body 上，scoped 选择器够不着 */
-.intro-pop { max-width: min(440px, calc(100vw - 32px)); }
-.intro-pop .intro-body p { margin: 0 0 8px; font-size: 13px; line-height: 1.75; color: var(--text-2); }
-.intro-pop .intro-body p:last-child { margin-bottom: 0; }
-.intro-pop .intro-body .warn { color: var(--text-3); }
-.intro-pop .intro-body code { font-family: var(--font-code); font-size: 12px;
-  background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
 </style>

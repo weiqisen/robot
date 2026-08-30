@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from 'vue'
 import { useRos, deg } from '../composables/useRos'
+import InfoNote from '../components/InfoNote.vue'
 const { state, actions } = useRos()
 
 // 舵机 ↔ 关节 ↔ URDF 的对照。尺寸/限位都是从 jetrover_description 的 URDF 读出来的实测值。
@@ -54,9 +55,14 @@ function grip(open) { actions.setServos([{ id: 10, position: open ? 200 : 620 }]
 </script>
 
 <template>
-  <a-alert type="warning" show-icon style="margin-bottom:16px"
-    message="这里的「当前脉冲 / 关节角」是驱动的开环回显，不是真实反馈"
-    description="幻尔 servo_manager 的 get_position() 只返回它自己最后一次下发的值，不读总线（servo_controller.py: ServoState.position 初值 500，只在 set_position 里被写）。所以：绕过 /servo_controller 直发总线时臂会动但这里不动；手推机械臂这里也不会变。" />
+  <InfoNote title="「当前脉冲 / 关节角」是开环回显，不是真实反馈">
+    <p><b>这里的「当前脉冲 / 关节角」是驱动的开环回显，不是真实反馈。</b></p>
+    <p>幻尔 <code>servo_manager</code> 的 <code>get_position()</code> 只返回它自己最后一次下发的值，
+      不读总线（<code>servo_controller.py</code>：<code>ServoState.position</code> 初值 500，
+      只在 <code>set_position</code> 里被写）。</p>
+    <p class="warn">所以：绕过 <code>/servo_controller</code> 直发总线时臂会动但这里不动；
+      手推机械臂这里也不会变。</p>
+  </InfoNote>
 
   <div class="kpis">
     <div class="kpi"><div class="lbl">在线舵机</div><div class="num">{{ online }}<i class="unit">/ 6</i></div></div>
