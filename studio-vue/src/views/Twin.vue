@@ -73,20 +73,28 @@ function init() {
       const mname = (o.material.name || '').toLowerCase()
       let std
       if (mname === 'green') {
-        // 车身/机械臂是喷漆(阳极氧化)的金属，不是裸金属也不是塑料。
-        // 这种「金属漆」PBR 里的关键是 clearcoat：底下高 metalness 的有色金属层，
-        // 上面一层几乎无粗糙度的清漆 —— 清漆那道白高光和底层的绿色反射分离开，
-        // 才是金属漆该有的样子。MeshStandardMaterial 没有这个参数，必须用 Physical。
-        // 底色要比记忆里的绿更深：metalness 高的材质本来就没多少漫反射，
-        // 亮底色会被环境反射抬得发白发粉。
-        std = new THREE.MeshPhysicalMaterial({
-          color: 0x0f7a41, metalness: .92, roughness: .3,
-          clearcoat: 1, clearcoatRoughness: .07, envMapIntensity: 1.5,
+        // 车身/机械臂是「亮绿阳极氧化铝」，不是喷漆也不是塑料。取色自官网图
+        // jetrover.webp：中调 #41A553~#67B973、亮面 #70F682，色相 131°(偏黄的鲜绿)，
+        // 明度 0.65~0.83 —— 是个又亮又饱和的绿，不是深祖母绿。
+        // 阳极氧化 = 染色氧化层直接长在铝上，没有清漆层，所以不能加 clearcoat；
+        // 观感是缎面(satin)：高光清脆但不「湿」，粗糙度中等。
+        // metalness 留在 .6 而不是拉满：氧化层本身有色，实物暗部仍是明确的绿，
+        // 拉到 .9 以上暗部只剩环境反射，绿会掉成灰黑。
+        std = new THREE.MeshStandardMaterial({
+          color: 0x45c95e, metalness: .6, roughness: .33, envMapIntensity: 1.25,
         })
       } else if (mname === 'black') {
-        std = new THREE.MeshStandardMaterial({ color: 0x0a0c0f, metalness: .35, roughness: .62, envMapIntensity: 1.1 })
-      } else if (mname === 'gray' || mname === 'darkgray' || mname === 'white') {
-        std = new THREE.MeshStandardMaterial({ color: 0x3a444d, metalness: .55, roughness: .42, envMapIntensity: 1.25 })
+        // 显示屏外壳/雷达罩/夹爪：实测 #171815，很暗且几乎不反光，是哑光件
+        std = new THREE.MeshStandardMaterial({ color: 0x15171a, metalness: .25, roughness: .68, envMapIntensity: 1.05 })
+      } else if (mname === 'white') {
+        std = new THREE.MeshStandardMaterial({ color: 0xd2d6d8, metalness: .5, roughness: .38, envMapIntensity: 1.25 })
+      } else if (mname === 'gray' || mname === 'darkgray') {
+        std = new THREE.MeshStandardMaterial({ color: 0x6e7478, metalness: .55, roughness: .4, envMapIntensity: 1.25 })
+      } else if (!mname && o.material.color) {
+        // URDF 里有一个匿名材质(深度相机外壳，rgba 0.753 银灰)。以前它掉进 else
+        // 被刷成深蓝灰，实物是 #CCCECE 的银色件 —— 匿名的就尊重 URDF 自己写的颜色。
+        std = new THREE.MeshStandardMaterial({ metalness: .55, roughness: .35, envMapIntensity: 1.25 })
+        std.color.copy(o.material.color)
       } else {
         std = new THREE.MeshStandardMaterial({ color: 0x2b333a, metalness: .45, roughness: .5, envMapIntensity: 1.15 })
       }
