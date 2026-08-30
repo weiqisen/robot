@@ -71,7 +71,10 @@ async function connect() {
     })
     rfb.addEventListener('securityfailure', e => {
       status.value = 'error'
-      err.value = '认证失败：' + ((e.detail && e.detail.reason) || '密码不对')
+      const r = (e.detail && e.detail.reason) || ''
+      err.value = /password/i.test(r)
+        ? 'VNC 密码不对。用的是设置 VNC 时那个密码（~/.vnc/passwd），不是 SSH 密码。'
+        : '认证失败：' + (r || '未知原因')
     })
   } catch (e) {
     status.value = 'error'; err.value = String(e && e.message || e)
@@ -103,6 +106,9 @@ onBeforeUnmount(disconnect)
         <p><b>这一页是真的 VNC，不是截图。</b>鼠标、键盘、触控都能用，可以开终端跑命令。</p>
         <p>车上 <code>x11vnc</code> 常驻在 5900，带 <code>-rfbauth ~/.vnc/passwd</code>，所以要密码
           （就是你设 VNC 时那个，不是 SSH 密码）。</p>
+        <p>控制台是纯 HTTP，浏览器里 <code>crypto.subtle</code> 不可用，noVNC 会打印
+          「requires a secure context」。经典 VNC 密码认证不受影响（实测可用），
+          只有 RSA-AES 认证和剪贴板同步会受限。</p>
         <p class="warn">x11vnc 是裸 TCP，浏览器只能走 WebSocket，所以走
           <code>webctl_server</code> 里的桥 <code>/api/vnc</code> 转一道 ——
           不依赖 x11vnc 的编译选项，也不用装 websockify。地址栏可以改，方便连别的机器。</p>
