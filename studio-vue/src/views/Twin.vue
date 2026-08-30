@@ -40,14 +40,22 @@ function init() {
   renderer = new THREE.WebGLRenderer({ antialias: true })
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
   renderer.setClearColor(0x070a0e, 1)
+  // 不做色调映射的话，金属高光会直接削顶成一块平的饱和色 —— 看着就是塑料。
+  // ACES 把高光滚降下来，反射的明暗过渡才留得住。曝光补一点，抵消 ACES 整体压暗。
+  renderer.toneMapping = THREE.ACESFilmicToneMapping
+  renderer.toneMappingExposure = 1.15
   el.appendChild(renderer.domElement)
   scene = new THREE.Scene(); scene.fog = new THREE.Fog(0x070a0e, 4, 14)
   const pmrem = new THREE.PMREMGenerator(renderer)
   scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture
   camera = new THREE.PerspectiveCamera(48, 1, 0.01, 100); camera.position.set(0.9, 0.8, 0.9)
   controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping = true; controls.target.set(0, 0.2, 0)
-  scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x1a1f26, 1.1))
-  const key = new THREE.DirectionalLight(0xffffff, 1.3); key.position.set(2, 4, 3); scene.add(key)
+  // 金属的样子来自「反射环境」，不是「被灯照亮」。半球光给的是均匀漫反射，
+  // 开大了等于往模型上糊一层平光，反射全被冲淡 —— 所以压到很低，只用来托暗部，
+  // 主要交给上面那张 RoomEnvironment。再加一盏背侧轮廓光，金属边缘要有那道亮线。
+  scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x1a1f26, 0.28))
+  const key = new THREE.DirectionalLight(0xffffff, 1.5); key.position.set(2, 4, 3); scene.add(key)
+  const rim = new THREE.DirectionalLight(0x9fc4ff, 0.9); rim.position.set(-2.5, 1.5, -2); scene.add(rim)
   world = new THREE.Group(); world.rotation.x = -Math.PI / 2; scene.add(world)
   grid = new THREE.GridHelper(10, 40, 0x2a3340, 0x161b22); grid.rotation.x = Math.PI / 2; world.add(grid)
   fit(); loop()
@@ -63,11 +71,25 @@ function init() {
     robot.traverse(o => {
       if (!o.isMesh || !o.material) return
       const mname = (o.material.name || '').toLowerCase()
-      const std = new THREE.MeshStandardMaterial({ metalness: .5, roughness: .42 })
-      if (mname === 'green') { std.color.set(0x1fa55c); std.metalness = .62; std.roughness = .34 }        // 车身/机械臂·金属绿
-      else if (mname === 'black') { std.color.set(0x0a0c0f); std.metalness = .28; std.roughness = .72 }   // 轮子/夹爪/电子件·纯黑
-      else if (mname === 'gray' || mname === 'darkgray' || mname === 'white') { std.color.set(0x3a444d); std.metalness = .45; std.roughness = .5 }
-      else { std.color.set(0x2b333a); std.metalness = .4; std.roughness = .55 }
+      let std
+      if (mname === 'green') {
+        // 车身/机械臂是喷漆(阳极氧化)的金属，不是裸金属也不是塑料。
+        // 这种「金属漆」PBR 里的关键是 clearcoat：底下高 metalness 的有色金属层，
+        // 上面一层几乎无粗糙度的清漆 —— 清漆那道白高光和底层的绿色反射分离开，
+        // 才是金属漆该有的样子。MeshStandardMaterial 没有这个参数，必须用 Physical。
+        // 底色要比记忆里的绿更深：metalness 高的材质本来就没多少漫反射，
+        // 亮底色会被环境反射抬得发白发粉。
+        std = new THREE.MeshPhysicalMaterial({
+          color: 0x0f7a41, metalness: .92, roughness: .3,
+          clearcoat: 1, clearcoatRoughness: .07, envMapIntensity: 1.5,
+        })
+      } else if (mname === 'black') {
+        std = new THREE.MeshStandardMaterial({ color: 0x0a0c0f, metalness: .35, roughness: .62, envMapIntensity: 1.1 })
+      } else if (mname === 'gray' || mname === 'darkgray' || mname === 'white') {
+        std = new THREE.MeshStandardMaterial({ color: 0x3a444d, metalness: .55, roughness: .42, envMapIntensity: 1.25 })
+      } else {
+        std = new THREE.MeshStandardMaterial({ color: 0x2b333a, metalness: .45, roughness: .5, envMapIntensity: 1.15 })
+      }
       o.material = std
     })
     world.add(robot); loading.value = false
