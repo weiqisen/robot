@@ -47,8 +47,9 @@ console.log(ready ? '场景就绪' : `等了 ${WAIT}ms 仍未就绪（继续截�
 await new Promise(r => setTimeout(r, 2500))   // 留时间让 rosbridge 送一轮数据
 
 if (probe) {
-  const v = await page.evaluate(p => {
-    try { return JSON.stringify(eval(p)) } catch (e) { return 'ERR: ' + e.message }
+  // 支持 async 表达式：点了按钮要等 Vue 重渲染，同步读 DOM 会扑空
+  const v = await page.evaluate(async p => {
+    try { return JSON.stringify(await eval(p)) } catch (e) { return 'ERR: ' + e.message }
   }, probe)
   console.log('探针', probe, '=>', v)
 }

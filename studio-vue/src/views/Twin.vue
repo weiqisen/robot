@@ -13,6 +13,36 @@ const { state, actions } = useRos()
 const host = ref(null)
 const loading = ref(true), loadErr = ref('')
 const tools = reactive({ lidar: true, grid: true, points: false, ik: false, tags: true })
+
+// ---- 外观参数：集中一份，材质面板直接改它，改完实时生效并存 localStorage ----
+// 默认值来自官网实物图 jetrover.webp 取色（见 git log fix(twin) 那几条）。
+const MAT_DEFAULT = {
+  green:  { cn: '车身绿（阳极氧化铝）', color: '#45c95e', metalness: 0.60, roughness: 0.33, env: 1.25 },
+  black:  { cn: '黑色件（屏壳/雷达/夹爪）', color: '#15171a', metalness: 0.25, roughness: 0.68, env: 1.05 },
+  silver: { cn: '深度相机外壳', color: '#c0c0c0', metalness: 0.55, roughness: 0.35, env: 1.25 },
+  white:  { cn: '白色件', color: '#d2d6d8', metalness: 0.50, roughness: 0.38, env: 1.25 },
+  gray:   { cn: '灰色件', color: '#6e7478', metalness: 0.55, roughness: 0.40, env: 1.25 },
+  other:  { cn: '其它', color: '#2b333a', metalness: 0.45, roughness: 0.50, env: 1.15 },
+}
+const LIGHT_DEFAULT = { exposure: 1.15, hemi: 0.28, key: 1.50, rim: 0.90 }
+const LS_KEY = 'twin.look.v1'
+
+const clone = o => JSON.parse(JSON.stringify(o))
+const mat = reactive(clone(MAT_DEFAULT))
+const lit = reactive(clone(LIGHT_DEFAULT))
+try {
+  const saved = JSON.parse(localStorage.getItem(LS_KEY) || 'null')
+  if (saved) {
+    // 逐字段合并，不整体覆盖 —— 以后加了新材质档位，旧存档也不会把它抹掉
+    for (const k in mat) if (saved.mat && saved.mat[k]) Object.assign(mat[k], saved.mat[k])
+    if (saved.lit) Object.assign(lit, saved.lit)
+  }
+} catch (e) { /* 存档坏了就用默认值，不值得报错 */ }
+
+const matOpen = ref(false)
+const matGroups = {}          // 档位名 -> 这一档下所有 material，改参数时批量刷
+let hemiL = null, keyL = null, rimL = null
+let robotReady = false
 const info = reactive({ ox: '0.000', oy: '0.000', yaw: '0.0', scanN: '—', pcN: '—', jointN: '—',
                         eex: '—', eey: '—', eez: '—' })
 
@@ -43,7 +73,7 @@ function init() {
   // 不做色调映射的话，金属高光会直接削顶成一块平的饱和色 —— 看着就是塑料。
   // ACES 把高光滚降下来，反射的明暗过渡才留得住。曝光补一点，抵消 ACES 整体压暗。
   renderer.toneMapping = THREE.ACESFilmicToneMapping
-  renderer.toneMappingExposure = 1.15
+  renderer.toneMappingExposure = lit.exposure
   el.appendChild(renderer.domElement)
   scene = new THREE.Scene(); scene.fog = new THREE.Fog(0x070a0e, 4, 14)
   const pmrem = new THREE.PMREMGenerator(renderer)
@@ -53,60 +83,66 @@ function init() {
   // 金属的样子来自「反射环境」，不是「被灯照亮」。半球光给的是均匀漫反射，
   // 开大了等于往模型上糊一层平光，反射全被冲淡 —— 所以压到很低，只用来托暗部，
   // 主要交给上面那张 RoomEnvironment。再加一盏背侧轮廓光，金属边缘要有那道亮线。
-  scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x1a1f26, 0.28))
-  const key = new THREE.DirectionalLight(0xffffff, 1.5); key.position.set(2, 4, 3); scene.add(key)
-  const rim = new THREE.DirectionalLight(0x9fc4ff, 0.9); rim.position.set(-2.5, 1.5, -2); scene.add(rim)
+  hemiL = new THREE.HemisphereLight(0xbfd4ff, 0x1a1f26, lit.hemi); scene.add(hemiL)
+  keyL = new THREE.DirectionalLight(0xffffff, lit.key); keyL.position.set(2, 4, 3); scene.add(keyL)
+  rimL = new THREE.DirectionalLight(0x9fc4ff, lit.rim); rimL.position.set(-2.5, 1.5, -2); scene.add(rimL)
   world = new THREE.Group(); world.rotation.x = -Math.PI / 2; scene.add(world)
   grid = new THREE.GridHelper(10, 40, 0x2a3340, 0x161b22); grid.rotation.x = Math.PI / 2; world.add(grid)
   fit(); loop()
-  const loader = new URDFLoader()
-  loader.loadMeshCb = (path, mgr, done) => {
+  // urdf-loader 的 load() 回调在 URDF **解析完**就触发，而 STL 网格是异步加载的。
+  // 在那个回调里 traverse 根本遍历不到网格 —— 网格随后带着 loader 默认的
+  // MeshPhongMaterial 进来，而 Phong 压根不吃 metalness/roughness/envMap，
+  // 于是所有材质设置全部空转、模型永远是塑料感。必须等 LoadingManager 全部完成再上材质。
+  const mgr = new THREE.LoadingManager()
+  const loader = new URDFLoader(mgr)
+  loader.loadMeshCb = (path, m, done) => {
     const ext = path.split('.').pop().toLowerCase()
-    if (ext === 'stl') new STLLoader(mgr).load(path, g => { g.computeVertexNormals(); done(new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0xcfd6de, metalness: .25, roughness: .65 }))) }, undefined, () => done(null))
-    else if (ext === 'dae') new ColladaLoader(mgr).load(path, r => done(r.scene), undefined, () => done(null))
+    if (ext === 'stl') new STLLoader(m).load(path, g => { g.computeVertexNormals(); done(new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0xcfd6de, metalness: .25, roughness: .65 }))) }, undefined, () => done(null))
+    else if (ext === 'dae') new ColladaLoader(m).load(path, r => done(r.scene), undefined, () => done(null))
     else done(null)
   }
-  loader.load('model/robot.web.urdf', rb => {
-    robot = rb
+
+  // 把 URDF 材质名映射到可编辑的档位，并登记进 matGroups 供面板批量刷。
+  // 可重入：重复调用会先清空登记表，不会越积越多。
+  function skinRobot() {
+    for (const k in matGroups) delete matGroups[k]
     robot.traverse(o => {
       if (!o.isMesh || !o.material) return
       const mname = (o.material.name || '').toLowerCase()
-      let std
-      if (mname === 'green') {
-        // 车身/机械臂是「亮绿阳极氧化铝」，不是喷漆也不是塑料。取色自官网图
-        // jetrover.webp：中调 #41A553~#67B973、亮面 #70F682，色相 131°(偏黄的鲜绿)，
-        // 明度 0.65~0.83 —— 是个又亮又饱和的绿，不是深祖母绿。
-        // 阳极氧化 = 染色氧化层直接长在铝上，没有清漆层，所以不能加 clearcoat；
-        // 观感是缎面(satin)：高光清脆但不「湿」，粗糙度中等。
-        // metalness 留在 .6 而不是拉满：氧化层本身有色，实物暗部仍是明确的绿，
-        // 拉到 .9 以上暗部只剩环境反射，绿会掉成灰黑。
-        std = new THREE.MeshStandardMaterial({
-          color: 0x45c95e, metalness: .6, roughness: .33, envMapIntensity: 1.25,
-        })
-      } else if (mname === 'black') {
-        // 显示屏外壳/雷达罩/夹爪：实测 #171815，很暗且几乎不反光，是哑光件
-        std = new THREE.MeshStandardMaterial({ color: 0x15171a, metalness: .25, roughness: .68, envMapIntensity: 1.05 })
-      } else if (mname === 'white') {
-        std = new THREE.MeshStandardMaterial({ color: 0xd2d6d8, metalness: .5, roughness: .38, envMapIntensity: 1.25 })
-      } else if (mname === 'gray' || mname === 'darkgray') {
-        std = new THREE.MeshStandardMaterial({ color: 0x6e7478, metalness: .55, roughness: .4, envMapIntensity: 1.25 })
-      } else if (!mname && o.material.color) {
-        // URDF 里有一个匿名材质(深度相机外壳，rgba 0.753 银灰)。以前它掉进 else
-        // 被刷成深蓝灰，实物是 #CCCECE 的银色件 —— 匿名的就尊重 URDF 自己写的颜色。
-        std = new THREE.MeshStandardMaterial({ metalness: .55, roughness: .35, envMapIntensity: 1.25 })
-        std.color.copy(o.material.color)
-      } else {
-        std = new THREE.MeshStandardMaterial({ color: 0x2b333a, metalness: .45, roughness: .5, envMapIntensity: 1.15 })
-      }
+      // 绿=车身/机械臂(阳极氧化铝)；空名的那个是深度相机外壳(URDF 里 rgba 0.753)
+      const key = mname === 'green' ? 'green'
+        : mname === 'black' ? 'black'
+        : mname === 'white' ? 'white'
+        : (mname === 'gray' || mname === 'darkgray') ? 'gray'
+        : !mname ? 'silver' : 'other'
+      const c = mat[key]
+      const std = new THREE.MeshStandardMaterial({
+        color: c.color, metalness: c.metalness, roughness: c.roughness, envMapIntensity: c.env,
+      })
+      ;(matGroups[key] || (matGroups[key] = [])).push(std)
       o.material = std
     })
-    world.add(robot); loading.value = false
-    info.jointN = Object.keys(robot.joints).filter(n => robot.joints[n].jointType !== 'fixed').length + ' 关节'
+  }
+
+  function onRobotReady() {
+    if (!robot || robotReady) return
+    robotReady = true
+    skinRobot()
     makeJointTags()
     makeScreen()
-    // 给 scripts/shot.mjs 的场景探针用：改完能直接查对象在不在、位姿对不对，
-    // 不用靠肉眼看图猜。只是几个引用，不额外占资源。
-    window.__twin = { scene, robot, camera, renderer, world, THREE, get screenMesh() { return screenMesh } }
+    loading.value = false
+    // 给 scripts/shot.mjs 的场景探针用：改完能直接查对象在不在、位姿对不对
+    window.__twin = { scene, robot, camera, renderer, world, THREE, matGroups,
+                      get screenMesh() { return screenMesh } }
+  }
+  mgr.onLoad = onRobotReady
+
+  loader.load('model/robot.web.urdf', rb => {
+    robot = rb
+    world.add(robot)
+    info.jointN = Object.keys(robot.joints).filter(n => robot.joints[n].jointType !== 'fixed').length + ' 关节'
+    // 兜底：万一这台车的 URDF 没有任何外部网格，onLoad 可能已经先触发过了
+    if (mgr.itemsLoaded >= mgr.itemsTotal) onRobotReady()
   }, undefined, e => { loadErr.value = String(e); loading.value = false })
 }
 // ---- 车身显示屏：把 #jetson 那页的核心遥测画上去 ----
@@ -213,6 +249,50 @@ function drawScreen() {
 // 而 init() 跑的时候布局还没稳定，clientHeight 可能只有十几像素；
 // 此后窗口不再变化，画布就永远停在那个高度 —— 模型照画（draw call 正常），
 // 只是被挤成顶部一条缝，看着像「3D 没渲染」。改成盯容器本身。
+// 面板改一个值就整档刷一遍。材质数量很少（6 档几十个 mesh），不值得做增量。
+function applyLook() {
+  for (const k in mat) {
+    const c = mat[k]
+    for (const m of matGroups[k] || []) {
+      m.color.set(c.color)
+      m.metalness = c.metalness; m.roughness = c.roughness; m.envMapIntensity = c.env
+      m.needsUpdate = true
+    }
+  }
+  if (renderer) renderer.toneMappingExposure = lit.exposure
+  if (hemiL) hemiL.intensity = lit.hemi
+  if (keyL) keyL.intensity = lit.key
+  if (rimL) rimL.intensity = lit.rim
+}
+watch([mat, lit], () => {
+  applyLook()
+  try { localStorage.setItem(LS_KEY, JSON.stringify({ mat, lit })) } catch (e) { /* 无痕模式等 */ }
+}, { deep: true })
+
+function resetLook() {
+  for (const k in MAT_DEFAULT) Object.assign(mat[k], MAT_DEFAULT[k])
+  Object.assign(lit, LIGHT_DEFAULT)
+}
+
+// 导出成可直接粘回本文件 MAT_DEFAULT / LIGHT_DEFAULT 的代码
+const exportCode = computed(() => {
+  const n = (v, d = 2) => Number(v).toFixed(d)
+  const lines = Object.entries(mat).map(([k, c]) =>
+    `  ${k.padEnd(7)}{ cn: '${c.cn}', color: '${c.color}', ` +
+    `metalness: ${n(c.metalness)}, roughness: ${n(c.roughness)}, env: ${n(c.env)} },`)
+    .map(l => l.replace(/^(\s{2}\w+)(\s+)\{/, '$1:$2{'))
+  return 'const MAT_DEFAULT = {\n' + lines.join('\n') + '\n}\n' +
+    `const LIGHT_DEFAULT = { exposure: ${n(lit.exposure)}, hemi: ${n(lit.hemi)}, ` +
+    `key: ${n(lit.key)}, rim: ${n(lit.rim)} }`
+})
+const copied = ref(false)
+function copyCode() {
+  const t = exportCode.value
+  const done = () => { copied.value = true; setTimeout(() => (copied.value = false), 1600) }
+  if (navigator.clipboard) navigator.clipboard.writeText(t).then(done, done)
+  else done()
+}
+
 function fit() {
   const el = host.value
   if (!el || !renderer) return
@@ -413,6 +493,53 @@ onBeforeUnmount(() => {
         :class="['glass tbtn', { on: tools[t[0]] }]" @click="toggleTool(t[0])">{{ t[1] }}</div>
       <div class="glass tbtn" :title="viewIdx ? '切回默认视角' : '看车尾屏幕'"
         @click="resetView">{{ viewIdx ? '车头' : '视角' }}</div>
+      <div :class="['glass tbtn', { on: matOpen }]" title="材质与光照，实时生效"
+        @click="matOpen = !matOpen">材质</div>
+    </div>
+
+    <!-- 材质面板：拖滑块实时看效果，自动存本机，调好一键导出成代码贴回本文件 -->
+    <div v-if="matOpen" class="glass panel look">
+      <h4>材质与光照
+        <span class="lk-act" @click="resetLook">恢复默认</span>
+      </h4>
+      <div v-for="(c, k) in mat" :key="k" class="lk-grp">
+        <div class="lk-h">
+          <input type="color" v-model="c.color" />
+          <span>{{ c.cn }}</span>
+        </div>
+        <div class="lk-r"><span>金属度</span>
+          <input type="range" min="0" max="1" step="0.01" v-model.number="c.metalness" />
+          <i>{{ c.metalness.toFixed(2) }}</i></div>
+        <div class="lk-r"><span>粗糙度</span>
+          <input type="range" min="0.02" max="1" step="0.01" v-model.number="c.roughness" />
+          <i>{{ c.roughness.toFixed(2) }}</i></div>
+        <div class="lk-r"><span>反射</span>
+          <input type="range" min="0" max="3" step="0.05" v-model.number="c.env" />
+          <i>{{ c.env.toFixed(2) }}</i></div>
+      </div>
+      <div class="lk-grp">
+        <div class="lk-h"><span>光照</span></div>
+        <div class="lk-r"><span>曝光</span>
+          <input type="range" min="0.2" max="3" step="0.05" v-model.number="lit.exposure" />
+          <i>{{ lit.exposure.toFixed(2) }}</i></div>
+        <div class="lk-r"><span>环境光</span>
+          <input type="range" min="0" max="3" step="0.02" v-model.number="lit.hemi" />
+          <i>{{ lit.hemi.toFixed(2) }}</i></div>
+        <div class="lk-r"><span>主光</span>
+          <input type="range" min="0" max="4" step="0.05" v-model.number="lit.key" />
+          <i>{{ lit.key.toFixed(2) }}</i></div>
+        <div class="lk-r"><span>轮廓光</span>
+          <input type="range" min="0" max="4" step="0.05" v-model.number="lit.rim" />
+          <i>{{ lit.rim.toFixed(2) }}</i></div>
+      </div>
+      <div class="lk-out">
+        <div class="lk-h"><span>导出</span>
+          <span class="lk-act" @click="copyCode">{{ copied ? '已复制 ✓' : '复制代码' }}</span>
+        </div>
+        <textarea readonly :value="exportCode" @focus="$event.target.select()" />
+        <div class="hint">贴回 Twin.vue 顶部的 MAT_DEFAULT / LIGHT_DEFAULT 即成为新默认值。
+          在这里调的参数只存在你这台机器的浏览器里。</div>
+      </div>
     </div>
 
     <div v-if="!bare" class="glass panel tele">
@@ -480,6 +607,31 @@ onBeforeUnmount(() => {
 .jr { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .jr span { font-size: 11px; color: rgba(255,255,255,.6); width: 34px; }
 .hint { font-size: 10px; color: rgba(255,255,255,.35); margin-top: 8px; line-height: 1.6; }
+/* 材质面板 */
+/* 高度必须收住：左下角还有「实时遥测」面板，伸到底就会压在它上面。
+   60% + 内部滚动，两块面板各占各的。 */
+.panel.look { position: absolute; left: 14px; top: 14px; width: 264px; padding: 12px 14px;
+  border-radius: 14px; max-height: 60%; overflow-y: auto; z-index: 7; }
+.panel.look::-webkit-scrollbar { width: 6px; }
+.panel.look::-webkit-scrollbar-thumb { background: rgba(255,255,255,.18); border-radius: 3px; }
+.panel.look h4 { justify-content: space-between; }
+.lk-act { cursor: pointer; color: #2e9bff; font-size: 11px; font-weight: 400; letter-spacing: 0; }
+.lk-act:hover { text-decoration: underline; }
+.lk-grp { padding: 8px 0; border-top: 1px solid rgba(255,255,255,.1); }
+.lk-h { display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+  font-size: 11px; color: rgba(255,255,255,.72); justify-content: space-between; }
+.lk-h > span:first-child { flex: 1; }
+.lk-h input[type=color] { width: 22px; height: 18px; padding: 0; border: 1px solid rgba(255,255,255,.2);
+  border-radius: 4px; background: none; cursor: pointer; flex-shrink: 0; }
+.lk-r { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+.lk-r > span { font-size: 10px; color: rgba(255,255,255,.5); width: 38px; flex-shrink: 0; }
+.lk-r input[type=range] { flex: 1; min-width: 0; }
+.lk-r i { font-style: normal; font-size: 10px; width: 30px; text-align: right;
+  color: rgba(255,255,255,.6); font-variant-numeric: tabular-nums; }
+.lk-out { padding-top: 8px; border-top: 1px solid rgba(255,255,255,.1); }
+.lk-out textarea { width: 100%; height: 104px; background: rgba(0,0,0,.35); color: #cfe3ff;
+  border: 1px solid rgba(255,255,255,.12); border-radius: 8px; padding: 7px 8px; font-size: 10px;
+  line-height: 1.5; font-family: ui-monospace, monospace; resize: vertical; }
 @media (max-width: 820px) { .tele { width: 150px; } .ctrl { width: 190px; } }
 @media (max-width: 560px) { .tele { display: none; } }
 </style>
