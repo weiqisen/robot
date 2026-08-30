@@ -62,7 +62,7 @@ echo "== webctl 已重启"
 echo "== 推送 agents"
 # jetson_agent / webrtc_agent 的 systemd 单元是早先手工装的，这里只更新脚本本身：
 # 网页的 BOM / 服务监控 / 运行日志页全靠 jetson_agent 推 topic，漏推就是一直空转。
-$SCP "$HERE"/agents/{snack_butler.py,arm_kinematics.py,vision_geometry.py,snack_detector.py,llm_agent.py,jetson_agent.py,webrtc_agent.py} \
+$SCP "$HERE"/agents/{snack_butler.py,arm_kinematics.py,vision_geometry.py,snack_detector.py,llm_agent.py,jetson_agent.py,webrtc_agent.py,gpu_bench.py} \
      "$USER_@$ROBOT:~/"
 # 配置文件已存在就不覆盖——上面标定出来的参数在里面
 $SSH "$USER_@$ROBOT" 'test -f ~/snack_butler_config.json || echo "{}" > ~/snack_butler_config.json'

@@ -28,6 +28,7 @@ import Twin from './views/Twin.vue'
 import Snack from './views/Snack.vue'
 import Remote from './views/Remote.vue'
 import ArmStudio from './views/ArmStudio.vue'
+import GpuBench from './views/GpuBench.vue'
 
 const { state } = useRos()
 const { isDark, antdTheme, toggle } = useTheme()
@@ -40,6 +41,7 @@ const MENU = [
   { key: 'arm', icon: DeploymentUnitOutlined, label: '机械臂舵机', comp: markRaw(Arm) },
   { key: 'sensors', icon: RadarChartOutlined, label: '传感器', comp: markRaw(Sensors) },
   { key: 'jetson', icon: ThunderboltOutlined, label: 'Jetson 开发者套件', comp: markRaw(Jetson) },
+  { key: 'gpubench', icon: ThunderboltOutlined, label: 'GPU 压测', comp: markRaw(GpuBench) },
   { key: 'board', icon: ApiOutlined, label: '扩展板 · 控制器', comp: markRaw(Board) },
   { key: 'bom', icon: ProfileOutlined, label: '物料清单 BOM', comp: markRaw(Bom) },
   { group: '感知 · 导航' },

@@ -68,6 +68,11 @@ ACT_DIR = os.environ.get('ACTION_DIR') or os.path.expanduser('~/software/arm_pc/
 ACT_NAME = re.compile(r'^[A-Za-z0-9_\-]{1,48}$')      # 文件名白名单，挡目录穿越
 ACT_COLS = ['Servo%d' % i for i in range(1, 7)]
 
+# GPU 压测。脚本后台跑、状态写 JSON，这里只负责转发读/起/停。
+GB_STATUS = os.environ.get('GPU_BENCH_STATUS') or os.path.expanduser('~/gpu_bench_status.json')
+GB_STOP = os.environ.get('GPU_BENCH_STOP') or os.path.expanduser('~/gpu_bench.stop')
+GB_SCRIPT = os.path.expanduser('~/gpu_bench.py')
+
 
 def act_path(name):
     if not ACT_NAME.match(name or ''):
@@ -294,6 +299,14 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split('?', 1)[0]
+        if path == '/api/gpu_bench':
+            try:
+                with open(GB_STATUS, encoding='utf-8') as f:
+                    return self._json(200, json.load(f))
+            except FileNotFoundError:
+                return self._json(404, {'error': 'no benchmark yet'})
+            except Exception as e:
+                return self._json(500, {'error': str(e)})
         if path == '/api/actions':
             return self._json(200, {'groups': act_list()})
         if path.startswith('/api/actions/'):
@@ -321,6 +334,10 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(500, {'error': str(e)})
         return super().do_GET()
 
+    def do_POST(self):
+        # 起/停压测用 POST 语义更自然，和 do_PUT 同一套写逻辑
+        return self.do_PUT()
+
     def do_PUT(self):
         path = self.path.split('?', 1)[0]
         if path.startswith('/api/actions/'):
@@ -333,6 +350,28 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(400, {'error': 'expected {rows: [...]}'})
             err = act_write(path[len('/api/actions/'):], body['rows'])
             return self._json(400 if err else 200, {'error': err} if err else {'ok': True})
+        if path == '/api/gpu_bench/start':
+            try:
+                n = int(self.headers.get('Content-Length') or 0)
+                body = json.loads(self.rfile.read(n).decode('utf-8')) if n else {}
+            except Exception as e:
+                return self._json(400, {'error': f'bad json: {e}'})
+            seconds = float(body.get('seconds') or 60)
+            size = int(body.get('size') or 4096)
+            dtype = 'fp16' if body.get('dtype') == 'fp16' else 'fp32'
+            if os.path.exists(GB_STOP):
+                os.remove(GB_STOP)      # 清掉上次没被消费的停止标记
+            cmd = ['/usr/bin/python3', GB_SCRIPT, '--seconds', str(seconds),
+                   '--size', str(size), '--dtype', dtype]
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+            return self._json(200, {'ok': True, 'seconds': seconds, 'size': size, 'dtype': dtype})
+        if path == '/api/gpu_bench/stop':
+            try:
+                open(GB_STOP, 'a').close()
+            except OSError as e:
+                return self._json(500, {'error': str(e)})
+            return self._json(200, {'ok': True})
         if path != '/api/look':
             return self._json(405, {'error': 'method not allowed'})
         try:
