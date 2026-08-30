@@ -3,6 +3,7 @@ import { ref, computed, reactive, watch, onUnmounted } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import { useRos, videoUrl } from '../composables/useRos'
 import { useStreamWatch } from '../composables/useStreamWatch'
+import InfoNote from '../components/InfoNote.vue'
 import { useMjpegGate } from '../composables/useMjpeg'
 
 const { state, actions, HOST, VIDEO_PORT } = useRos()
@@ -121,9 +122,13 @@ const detRows = computed(() => dets.value.map((d, i) => ({ key: i, ...d })))
 </script>
 
 <template>
-  <a-alert v-if="!online" type="warning" show-icon style="margin-bottom:16px"
-    message="视觉引导抓取节点未运行"
-    description="机器人上执行： sudo systemctl start snack-butler  （或 zsh -c 'source ~/.zshrc; python3 ~/snack_butler.py'）。节点会在 /snack_butler/state 播报状态。" />
+  <a-alert v-if="!online" type="warning" show-icon style="margin-bottom:16px">
+    <template #message>视觉引导抓取节点未运行<InfoNote inline>
+      <p>机器人上执行：<code>sudo systemctl start snack-butler</code></p>
+      <p>或 <code>zsh -c 'source ~/.zshrc; python3 ~/snack_butler.py'</code>。</p>
+      <p class="warn">节点会在 <code>/snack_butler/state</code> 播报状态。</p>
+    </InfoNote></template>
+  </a-alert>
 
   <a-row :gutter="16">
     <!-- 左：画面 + 动作 -->
@@ -252,16 +257,21 @@ const detRows = computed(() => dets.value.map((d, i) => ({ key: i, ...d })))
             </a-space>
           </a-descriptions-item>
         </a-descriptions>
-        <a-alert v-if="sb?.low_volt" type="error" show-icon banner style="margin-top:12px"
-          :message="`低压保护已触发 · 电池 ${sb.batt_v ?? '--'} V`"
-          :description="`已自动收臂并停止抓取。低于 ${cfg.low_volt_park} V 触发，回到 ${cfg.low_volt_clear} V 以上自动解除。断电时机械臂会直接砸下来，所以宁可早收。`">
+        <a-alert v-if="sb?.low_volt" type="error" show-icon banner style="margin-top:12px">
+          <template #message>低压保护已触发 · 电池 {{ sb.batt_v ?? '--' }} V<InfoNote inline>
+            <p><b>已自动收臂并停止抓取。</b></p>
+            <p>低于 {{ cfg.low_volt_park }} V 触发，回到 {{ cfg.low_volt_clear }} V 以上自动解除。</p>
+            <p class="warn">断电时机械臂会直接砸下来，所以宁可早收。</p>
+          </InfoNote></template>
           <template #action>
             <a-button size="small" danger :disabled="!online" @click="setLowVolt(false)">关闭保护</a-button>
           </template>
         </a-alert>
-        <a-alert v-else-if="online && !lowVoltOn" type="warning" show-icon style="margin-top:12px"
-          message="低压保护已关闭"
-          description="电池再低也不会自动收臂。欠压时舵机失力，机械臂会直接砸下来 —— 调试完记得开回去。">
+        <a-alert v-else-if="online && !lowVoltOn" type="warning" show-icon style="margin-top:12px">
+          <template #message>低压保护已关闭<InfoNote inline>
+            <p>电池再低也不会自动收臂。</p>
+            <p class="warn">欠压时舵机失力，机械臂会直接砸下来 —— 调试完记得开回去。</p>
+          </InfoNote></template>
           <template #action>
             <a-button size="small" @click="setLowVolt(true)">开启保护</a-button>
           </template>
@@ -270,16 +280,30 @@ const detRows = computed(() => dets.value.map((d, i) => ({ key: i, ...d })))
       </a-card>
 
       <a-card size="small" title="标定" style="margin-top:16px">
-        <a-alert v-if="online && sb?.cm" type="success" show-icon style="margin-bottom:12px"
-          message="不用标定：指令走 /servo_controller，弧度→脉冲由机器人自带驱动换算"
-          description="这条路顺带让 /controller_manager/joint_states 跟着动——eye-in-hand 相机位姿就是靠它算的。直发总线虽然臂也会动，但 joint_states 不变，物体坐标会全错、一律显示「够不着」。" />
-        <a-alert v-if="online && !sb?.cam_fix" type="warning" show-icon style="margin-bottom:12px"
-          message="地面还没标定：物体高度会系统性偏高"
-          description="joint_states 是驱动的开环回显（它不读总线），真实关节角有零位/下垂误差，算出来的相机俯仰和高度就带偏——实测地面被算高了约 3 cm，远近还差 1.5 cm。清空机器人前方地面，点「地面标定」，它会拟合整片地面并把它摆平到桌面高度。" />
+        <InfoNote v-if="online && sb?.cm" title="不用标定：指令走 /servo_controller">
+          <p><b>弧度→脉冲由机器人自带驱动换算，不需要我们自己标。</b></p>
+          <p>这条路顺带让 <code>/controller_manager/joint_states</code> 跟着动 ——
+            eye-in-hand 相机位姿就是靠它算的。</p>
+          <p class="warn">直发总线虽然臂也会动，但 joint_states 不变，
+            物体坐标会全错、一律显示「够不着」。</p>
+        </InfoNote>
+        <a-alert v-if="online && !sb?.cam_fix" type="warning" show-icon style="margin-bottom:12px">
+          <template #message>地面还没标定：物体高度会系统性偏高<InfoNote inline>
+            <p><code>joint_states</code> 是驱动的开环回显（它不读总线），真实关节角有零位/下垂误差，
+              算出来的相机俯仰和高度就带偏。</p>
+            <p>实测地面被算高了约 3 cm，远近还差 1.5 cm。</p>
+            <p class="warn">清空机器人前方地面，点「地面标定」，它会拟合整片地面并摆平到桌面高度。</p>
+          </InfoNote></template>
+        </a-alert>
         <a-alert v-if="online && !sb?.cm && !sb?.calibrated" :type="cfg.require_calibration ? 'error' : 'warning'"
-          show-icon style="margin-bottom:12px"
-          :message="cfg.require_calibration ? '舵机未标定，抓取已被拦截' : '舵机脉冲↔弧度尚未标定'"
-          description="上电第一次必须先做。节点会自己小幅活动 5 次，用驱动发的 joint_states 拟合出每个关节的方向与零位——不然 IK 算得再准，下发的脉冲方向可能是反的。做之前请清空机械臂周围。" />
+          show-icon style="margin-bottom:12px">
+          <template #message>{{ cfg.require_calibration ? '舵机未标定，抓取已被拦截' : '舵机脉冲↔弧度尚未标定' }}<InfoNote inline>
+            <p><b>上电第一次必须先做。</b></p>
+            <p>节点会自己小幅活动 5 次，用驱动发的 <code>joint_states</code>
+              拟合出每个关节的方向与零位 —— 不然 IK 算得再准，下发的脉冲方向可能是反的。</p>
+            <p class="warn">做之前请清空机械臂周围。</p>
+          </InfoNote></template>
+        </a-alert>
         <a-space wrap>
           <a-button type="primary" :disabled="!online"
             @click="send({ action: 'calib_floor' }, '地面标定：先把机器人前方清空')">

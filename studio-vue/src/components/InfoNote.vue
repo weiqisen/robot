@@ -1,11 +1,20 @@
 <script setup>
 // 页面顶部那种说明文字：第一次看有用，之后一直占一整条太吵。
 // 默认收起成一个 ? 圆钮，点开才浮出来。正文走默认插槽，随便写富文本。
-defineProps({ title: { type: String, default: '' } })
+// inline: 只出一个 ? 按钮，用来嵌进 a-alert 的标题里 ——
+// 告警本身要一直显眼，收起来的只是那段长解释。
+defineProps({
+  title: { type: String, default: '' },
+  inline: { type: Boolean, default: false },
+})
 </script>
 
 <template>
-  <div class="intro">
+  <a-popover v-if="inline" trigger="click" placement="bottomLeft" overlay-class-name="intro-pop">
+    <template #content><div class="intro-body"><slot /></div></template>
+    <button class="qmark inline" :aria-label="title || '说明'" @click.stop>?</button>
+  </a-popover>
+  <div v-else class="intro">
     <a-popover trigger="click" placement="bottomLeft" overlay-class-name="intro-pop">
       <template #content><div class="intro-body"><slot /></div></template>
       <button class="qmark" :aria-label="title || '说明'">?</button>
@@ -21,6 +30,9 @@ defineProps({ title: { type: String, default: '' } })
   font-size: 12px; font-weight: 600; line-height: 1; display: flex; align-items: center;
   justify-content: center; padding: 0; }
 .qmark:hover { color: var(--accent); border-color: var(--accent); }
+.qmark.inline { display: inline-flex; vertical-align: middle; margin-left: 7px;
+  background: transparent; border-color: currentColor; opacity: .55; }
+.qmark.inline:hover { opacity: 1; }
 .intro-hint { font-size: 12px; color: var(--text-4); }
 </style>
 
