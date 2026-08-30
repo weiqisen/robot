@@ -16,7 +16,10 @@
 """
 import json
 import os
+import subprocess
 import tempfile
+import threading
+import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.expanduser('~/web_control')
@@ -26,6 +29,31 @@ PORT = 8000
 # rm -rf assets + 解包覆盖，配置放里面迟早被抹掉。
 LOOK = os.path.expanduser('~/twin_look.json')
 MAX_BODY = 64 * 1024        # 这份配置只有几百字节，给足余量后直接拒绝
+
+# 桌面抓屏：给数字孪生模型的屏幕当画面用。实测一帧 300~440ms、约 33KB，
+# 对这台已经满载的 Jetson 不便宜，所以做最小间隔节流 + 结果缓存，
+# 多个页面同时看也只抓一次。只在前端真的选了「桌面」时才会有人来拉。
+DESKTOP_MIN_INTERVAL = 0.9
+_desk = {'ts': 0.0, 'jpg': None}
+_desk_lock = threading.Lock()
+
+
+def grab_desktop():
+    with _desk_lock:
+        if _desk['jpg'] is not None and time.time() - _desk['ts'] < DESKTOP_MIN_INTERVAL:
+            return _desk['jpg']
+        env = dict(os.environ, DISPLAY=':0',
+                   XAUTHORITY='/run/user/%d/gdm/Xauthority' % os.getuid())
+        cmd = ['ffmpeg', '-loglevel', 'error', '-f', 'x11grab', '-i', ':0',
+               '-frames:v', '1', '-vf', 'scale=800:-1', '-q:v', '6', '-f', 'image2', '-']
+        try:
+            r = subprocess.run(cmd, capture_output=True, env=env, timeout=6)
+            if r.returncode == 0 and r.stdout:
+                _desk['jpg'] = r.stdout
+                _desk['ts'] = time.time()
+        except Exception:
+            pass            # 桌面没起来 / ffmpeg 出错：保留上一帧，前端自己会显示"无信号"
+        return _desk['jpg']
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -42,6 +70,15 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if self.path.split('?', 1)[0] == '/api/desktop.jpg':
+            jpg = grab_desktop()
+            if not jpg:
+                return self._json(503, {'error': 'desktop capture unavailable'})
+            self.send_response(200)
+            self.send_header('Content-Type', 'image/jpeg')
+            self.send_header('Content-Length', str(len(jpg)))
+            self.end_headers()
+            return self.wfile.write(jpg)
         if self.path.split('?', 1)[0] == '/api/look':
             try:
                 with open(LOOK, encoding='utf-8') as f:

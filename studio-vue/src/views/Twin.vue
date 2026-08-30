@@ -45,6 +45,7 @@ function mergeLook(src) {
   // 逐字段合并，不整体覆盖 —— 以后加了新材质档位，旧存档也不会把它抹掉
   for (const k in mat) if (src.mat && src.mat[k]) Object.assign(mat[k], src.mat[k])
   if (src.lit) Object.assign(lit, src.lit)
+  if (src.screen) Object.assign(screenCfg, src.screen)
 }
 
 async function loadLook() {
@@ -65,11 +66,11 @@ async function saveLook() {
   try {
     const r = await fetch(LOOK_API, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mat, lit }),
+      body: JSON.stringify({ mat, lit, screen: screenCfg }),
     })
     const j = await r.json().catch(() => ({}))
     if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
-    serverLook = JSON.parse(JSON.stringify({ mat, lit }))
+    serverLook = JSON.parse(JSON.stringify({ mat, lit, screen: screenCfg }))
     try { localStorage.removeItem(LS_KEY) } catch (e) { /* 无痕模式 */ }
     look.dirty = false; look.onRobot = true; look.msg = '已保存到机器人'
   } catch (e) {
@@ -81,7 +82,7 @@ async function saveLook() {
 function revertLook() {
   quiet = true
   for (const k in MAT_DEFAULT) Object.assign(mat[k], MAT_DEFAULT[k])
-  Object.assign(lit, LIGHT_DEFAULT)
+  Object.assign(lit, LIGHT_DEFAULT); Object.assign(screenCfg, SCREEN_DEFAULT)
   mergeLook(serverLook)
   try { localStorage.removeItem(LS_KEY) } catch (e) { /* 无痕模式 */ }
   look.dirty = false; look.msg = ''
@@ -226,16 +227,108 @@ function makeScreen() {
   // 屏幕位置朝向纹理全对却什么都看不见。抬 6.5mm，露出边框约 0.9mm。
   screenMesh.position.set(-0.1469, 0.0002, 0.1136).addScaledVector(zAx, 0.0065)
   parent.add(screenMesh)
+  syncSources()
   drawScreen()
-  screenTimer = setInterval(drawScreen, 500)   // 遥测约 1Hz，500ms 足够跟上
+  restartScreenTimer()
 }
 
 const SC = { bg: '#070b10', line: 'rgba(255,255,255,.09)', dim: '#7b8798',
              fg: '#F1F5F9', ok: '#34D399', warn: '#F59E0B', bad: '#F43F5E', acc: '#38BDF8' }
 
-function drawScreen() {
-  if (!screenCv) return
-  const g = screenCv.getContext('2d'), W = SCREEN_W, H = SCREEN_H
+// 屏幕上放什么，可在材质面板里选，跟材质一起存到车上
+const SCREEN_BLOCKS = [
+  ['telemetry', 'Jetson 仪表盘'], ['snack', '抓取状态'],
+  ['camera', '相机画面'], ['desktop', 'Ubuntu 桌面'],
+]
+const SCREEN_DEFAULT = { block: 'telemetry' }
+const screenCfg = reactive(clone(SCREEN_DEFAULT))
+
+// 相机/桌面这两块要外部图源。跨源图片画进 canvas 会污染画布，
+// 而被污染的 canvas 当 WebGL 纹理会直接抛 SecurityError ——
+// 所以必须 crossOrigin='anonymous'，两边服务器也都确认发了 CORS 头。
+let camImg = null, deskImg = null
+function syncSources() {
+  const wantCam = screenCfg.block === 'camera'
+  if (wantCam && !camImg) {
+    camImg = new Image(); camImg.crossOrigin = 'anonymous'
+    camImg.src = `http://${HOST}:8080/stream?topic=/depth_cam/rgb/image_raw&type=mjpeg&t=${Date.now()}`
+  } else if (!wantCam && camImg) { camImg.src = ''; camImg = null }
+
+  const wantDesk = screenCfg.block === 'desktop'
+  if (wantDesk && !deskImg) {
+    deskImg = new Image(); deskImg.crossOrigin = 'anonymous'; pollDesktop()
+  } else if (!wantDesk && deskImg) { deskImg.src = ''; deskImg = null }
+}
+// 桌面是一帧一帧拉的（服务端 ffmpeg 抓一次 300~440ms 并做了节流），
+// 拉完再排下一次，不用定时器硬打，避免堆积。
+function pollDesktop() {
+  const im = deskImg
+  if (!im || screenCfg.block !== 'desktop') return
+  im.onload = im.onerror = () => setTimeout(pollDesktop, 900)
+  im.src = `http://${HOST}:8000/api/desktop.jpg?t=${Date.now()}`
+}
+// 相机是连续流，要跟得上；遥测约 1Hz；桌面由 pollDesktop 自己排队，画快了也没新帧
+const SCREEN_FPS = { camera: 130, desktop: 500, telemetry: 500, snack: 500 }
+function restartScreenTimer() {
+  if (screenTimer) clearInterval(screenTimer)
+  if (camImg) camImg.src = ''
+  if (deskImg) deskImg.src = ''
+  screenTimer = setInterval(drawScreen, SCREEN_FPS[screenCfg.block] || 500)
+}
+watch(() => screenCfg.block, () => { syncSources(); restartScreenTimer(); drawScreen() })
+
+const pad2 = n => String(n).padStart(2, '0')
+function drawFit(g, img, W, H) {
+  if (!img || !img.naturalWidth) return false
+  const k = Math.min(W / img.naturalWidth, H / img.naturalHeight)
+  const w = img.naturalWidth * k, h = img.naturalHeight * k
+  try { g.drawImage(img, (W - w) / 2, (H - h) / 2, w, h) } catch (e) { return false }
+  return true
+}
+function drawNoSignal(g, W, H, txt) {
+  g.textAlign = 'center'; g.textBaseline = 'middle'
+  g.font = '500 26px Inter, system-ui, sans-serif'; g.fillStyle = SC.dim
+  g.fillText(txt, W / 2, H / 2)
+}
+// 一块「标签 + 大数字 + 进度条」的瓦片
+function tile(g, x, y, w, h, label, val, unit, pct, color) {
+  g.fillStyle = 'rgba(255,255,255,.035)'; g.fillRect(x, y, w, h)
+  g.textAlign = 'left'; g.textBaseline = 'middle'
+  g.font = '500 20px Inter, system-ui, sans-serif'; g.fillStyle = SC.dim
+  g.fillText(label, x + 16, y + 24)
+  g.font = '600 52px Inter, system-ui, sans-serif'; g.fillStyle = color
+  g.fillText(String(val), x + 16, y + 66)
+  const tw = g.measureText(String(val)).width
+  g.font = '400 21px Inter, system-ui, sans-serif'; g.fillStyle = SC.dim
+  g.fillText(unit, x + 22 + tw, y + 78)
+  if (pct != null) {
+    g.fillStyle = 'rgba(255,255,255,.09)'; g.fillRect(x + 16, y + h - 20, w - 32, 5)
+    g.fillStyle = color; g.fillRect(x + 16, y + h - 20, (w - 32) * Math.min(100, pct) / 100, 5)
+  }
+}
+// 一行「小标签 + 值」，用于底部密集信息带
+function stat(g, x, y, label, val, color) {
+  g.textAlign = 'left'; g.textBaseline = 'middle'
+  g.font = '400 17px Inter, system-ui, sans-serif'; g.fillStyle = SC.dim
+  g.fillText(label, x, y)
+  g.font = '600 19px Inter, system-ui, sans-serif'; g.fillStyle = color || SC.fg
+  g.fillText(String(val), x + 74, y)
+}
+
+function drawHeader(g, W, title, right) {
+  g.fillStyle = 'rgba(56,189,248,.07)'; g.fillRect(0, 0, W, 58)
+  g.fillStyle = SC.line; g.fillRect(0, 57, W, 1)
+  g.textBaseline = 'middle'; g.textAlign = 'left'
+  g.font = '600 25px Inter, system-ui, sans-serif'; g.fillStyle = SC.fg
+  g.fillText(title, 24, 30)
+  g.textAlign = 'right'
+  g.font = '400 19px Inter, system-ui, sans-serif'; g.fillStyle = SC.dim
+  g.fillText(right, W - 48, 30)
+  const d = new Date()
+  g.fillText(`${pad2(d.getHours())}:${pad2(d.getMinutes())}`, W - 150, 30)
+}
+
+function drawTelemetry(g, W, H) {
   const j = state.jetson
   const cpu = j && j.cpu && j.cpu.length ? Math.round(j.cpu.reduce((a, c) => a + c.load, 0) / j.cpu.length) : 0
   const gpu = j && j.gpu != null ? j.gpu : 0
@@ -244,55 +337,99 @@ function drawScreen() {
   const volt = state.batt != null ? state.batt / 1000 : null
   const lv = (v, w, b) => (v >= b ? SC.bad : v >= w ? SC.warn : SC.acc)
 
-  g.fillStyle = SC.bg; g.fillRect(0, 0, W, H)
+  drawHeader(g, W, 'JETSON ORIN NANO', (j && j.power_mode) || '--')
+  g.beginPath(); g.arc(W - 26, 30, 7, 0, 6.284); g.fillStyle = j ? SC.ok : SC.bad; g.fill()
 
-  // 顶栏
-  g.fillStyle = 'rgba(56,189,248,.07)'; g.fillRect(0, 0, W, 66)
-  g.fillStyle = SC.line; g.fillRect(0, 65, W, 1)
-  g.font = '600 27px Inter, system-ui, sans-serif'; g.fillStyle = SC.fg
-  g.textBaseline = 'middle'; g.textAlign = 'left'
-  g.fillText('JETSON ORIN NANO', 26, 34)
-  g.textAlign = 'right'
-  g.font = '400 21px Inter, system-ui, sans-serif'; g.fillStyle = SC.dim
-  g.fillText((j && j.power_mode) || '--', W - 52, 34)
-  g.beginPath(); g.arc(W - 28, 34, 8, 0, 6.284)
-  g.fillStyle = j ? SC.ok : SC.bad; g.fill()
+  const gw = (W - 48 - 14) / 2, gh = 112
+  tile(g, 24, 70, gw, gh, 'CPU', cpu, '%', cpu, lv(cpu, 75, 90))
+  tile(g, 24 + gw + 14, 70, gw, gh, 'GPU', gpu, '%', gpu, lv(gpu, 75, 90))
+  tile(g, 24, 70 + gh + 12, gw, gh, '温度', temp.toFixed(1), '℃', Math.min(100, temp), lv(temp, 75, 85))
+  tile(g, 24 + gw + 14, 70 + gh + 12, gw, gh, '内存', ram, '%', ram, lv(ram, 80, 92))
 
-  // 2x2 四块：有量程的才配条
-  const tiles = [
-    { l: 'CPU', v: cpu, u: '%', p: cpu, c: lv(cpu, 75, 90) },
-    { l: 'GPU', v: gpu, u: '%', p: gpu, c: lv(gpu, 75, 90) },
-    { l: '温度', v: temp.toFixed(1), u: '℃', p: Math.min(100, temp), c: lv(temp, 75, 85) },
-    { l: '内存', v: ram, u: '%', p: ram, c: lv(ram, 80, 92) },
-  ]
-  const gx = 26, gy = 88, gw = (W - 52 - 18) / 2, gh = 134
-  tiles.forEach((t, i) => {
-    const x = gx + (i % 2) * (gw + 18), y = gy + Math.floor(i / 2) * (gh + 16)
-    g.fillStyle = 'rgba(255,255,255,.035)'; g.fillRect(x, y, gw, gh)
-    g.textAlign = 'left'; g.textBaseline = 'middle'
-    g.font = '500 21px Inter, system-ui, sans-serif'; g.fillStyle = SC.dim
-    g.fillText(t.l, x + 18, y + 27)
-    g.font = '600 60px Inter, system-ui, sans-serif'; g.fillStyle = t.c
-    g.fillText(String(t.v), x + 18, y + 76)
-    const tw = g.measureText(String(t.v)).width
-    g.font = '400 23px Inter, system-ui, sans-serif'; g.fillStyle = SC.dim
-    g.fillText(t.u, x + 24 + tw, y + 88)
-    g.fillStyle = 'rgba(255,255,255,.09)'; g.fillRect(x + 18, y + gh - 26, gw - 36, 6)
-    g.fillStyle = t.c; g.fillRect(x + 18, y + gh - 26, (gw - 36) * Math.min(100, t.p) / 100, 6)
-  })
+  // 密集信息带：这些没有量程，配进度条没意义，排成两行六项
+  const sy = 70 + 2 * gh + 12 + 26
+  g.fillStyle = SC.line; g.fillRect(24, sy - 16, W - 48, 1)
+  const up = j && j.uptime ? j.uptime : 0
+  const cw = (W - 48) / 3
+  stat(g, 24, sy + 6, '运行', up ? `${Math.floor(up / 3600)}h ${Math.floor(up % 3600 / 60)}m` : '--')
+  stat(g, 24 + cw, sy + 6, '磁盘', j && j.disk_total ? `${j.disk_used} / ${j.disk_total} G` : '--')
+  stat(g, 24 + 2 * cw, sy + 6, '内存', j && j.ram_total ? `${(j.ram_used / 1024).toFixed(1)} / ${(j.ram_total / 1024).toFixed(1)} G` : '--')
+  stat(g, 24, sy + 36, '节点', state.counts.nodes || '--')
+  stat(g, 24 + cw, sy + 36, '话题', state.counts.topics || '--')
+  stat(g, 24 + 2 * cw, sy + 36, '舵机', (state.servos || []).length || '--')
 
-  // 底栏：电压 + 内存绝对值
-  const by = gy + 2 * gh + 16 + 16
-  g.fillStyle = SC.line; g.fillRect(26, by - 14, W - 52, 1)
-  g.textAlign = 'left'; g.font = '500 22px Inter, system-ui, sans-serif'; g.fillStyle = SC.dim
-  g.fillText('电池', 26, by + 22)
-  g.font = '600 32px Inter, system-ui, sans-serif'
+  // 电池单独一行，低压是这台车最常见的故障，值得给个大字
+  const by = H - 30
+  g.fillStyle = SC.line; g.fillRect(24, by - 24, W - 48, 1)
+  g.textAlign = 'left'; g.font = '400 17px Inter, system-ui, sans-serif'; g.fillStyle = SC.dim
+  g.fillText('电池', 24, by)
+  g.font = '600 30px Inter, system-ui, sans-serif'
   g.fillStyle = volt == null ? SC.dim : volt < 10.6 ? SC.bad : volt < 11 ? SC.warn : SC.ok
-  g.fillText(volt == null ? '--.-' : volt.toFixed(2) + ' V', 92, by + 22)
-  g.textAlign = 'right'; g.font = '500 22px Inter, system-ui, sans-serif'; g.fillStyle = SC.dim
-  g.fillText(j && j.ram_total ? (j.ram_used / 1024).toFixed(1) + ' / ' + (j.ram_total / 1024).toFixed(1) + ' GB' : '--',
-    W - 26, by + 22)
+  g.fillText(volt == null ? '--.- V' : volt.toFixed(2) + ' V', 88, by)
+  const sb = state.snack
+  if (sb && sb.low_volt) {
+    g.textAlign = 'right'; g.font = '600 20px Inter, system-ui, sans-serif'; g.fillStyle = SC.bad
+    g.fillText('低压保护中', W - 24, by)
+  }
+}
 
+function drawSnack(g, W, H) {
+  const sb = state.snack
+  drawHeader(g, W, '视觉引导抓取', sb ? sb.state : '节点未运行')
+  if (!sb) return drawNoSignal(g, W, H, 'snack_butler 未运行')
+  g.textAlign = 'left'; g.textBaseline = 'middle'
+  g.font = '600 30px Inter, system-ui, sans-serif'; g.fillStyle = SC.fg
+  g.fillText(sb.step || '待命', 24, 96)
+
+  const dets = sb.detections || []
+  const reach = dets.filter(d => d.reachable).length
+  const gw = (W - 48 - 14) / 2
+  tile(g, 24, 128, gw, 104, '识别到', dets.length, '个', null, SC.acc)
+  tile(g, 24 + gw + 14, 128, gw, 104, '可抓', reach, '个', null, reach ? SC.ok : SC.dim)
+
+  const t = sb.target
+  const ty = 258
+  g.fillStyle = SC.line; g.fillRect(24, ty - 12, W - 48, 1)
+  g.font = '400 17px Inter, system-ui, sans-serif'; g.fillStyle = SC.dim
+  g.fillText('目标', 24, ty + 12)
+  g.font = '600 19px Inter, system-ui, sans-serif'; g.fillStyle = SC.fg
+  g.fillText(t && t.xyz ? `${t.label}  (${t.xyz[0]}, ${t.xyz[1]}, ${t.xyz[2]})` : '—', 98, ty + 12)
+  stat(g, 24, ty + 44, '已抓', (sb.stats && sb.stats.picked) != null ? sb.stats.picked : '--')
+  stat(g, 24 + (W - 48) / 3, ty + 44, '失败', (sb.stats && sb.stats.failed) != null ? sb.stats.failed : '--')
+  stat(g, 24 + 2 * (W - 48) / 3, ty + 44, '空跑', sb.cfg && sb.cfg.dry_run ? '开' : '关',
+    sb.cfg && sb.cfg.dry_run ? SC.warn : SC.fg)
+
+  const by = H - 30
+  g.fillStyle = SC.line; g.fillRect(24, by - 24, W - 48, 1)
+  g.font = '400 17px Inter, system-ui, sans-serif'; g.fillStyle = SC.dim
+  g.fillText('电池', 24, by)
+  g.font = '600 30px Inter, system-ui, sans-serif'
+  const v = sb.batt_v
+  g.fillStyle = v == null ? SC.dim : sb.low_volt ? SC.bad : v < 11 ? SC.warn : SC.ok
+  g.fillText(v == null ? '--.- V' : v.toFixed(2) + ' V', 88, by)
+  if (sb.low_volt) {
+    g.textAlign = 'right'; g.font = '600 20px Inter, system-ui, sans-serif'; g.fillStyle = SC.bad
+    g.fillText('低压保护中', W - 24, by)
+  }
+  if (sb.error) {
+    g.textAlign = 'left'; g.font = '400 15px Inter, system-ui, sans-serif'; g.fillStyle = SC.bad
+    g.fillText(String(sb.error).slice(0, 58), 24, by - 44)
+  }
+}
+
+function drawScreen() {
+  if (!screenCv) return
+  const g = screenCv.getContext('2d'), W = SCREEN_W, H = SCREEN_H
+  g.fillStyle = SC.bg; g.fillRect(0, 0, W, H)
+  if (screenCfg.block === 'camera') {
+    if (!drawFit(g, camImg, W, H)) drawNoSignal(g, W, H, '相机无信号')
+  } else if (screenCfg.block === 'desktop') {
+    if (!drawFit(g, deskImg, W, H)) drawNoSignal(g, W, H, '桌面无信号')
+  } else if (screenCfg.block === 'snack') {
+    drawSnack(g, W, H)
+  } else {
+    drawTelemetry(g, W, H)
+  }
   screenTex.needsUpdate = true
 }
 
@@ -315,17 +452,17 @@ function applyLook() {
   if (keyL) keyL.intensity = lit.key
   if (rimL) rimL.intensity = lit.rim
 }
-watch([mat, lit], () => {
+watch([mat, lit, screenCfg], () => {
   applyLook()
   if (quiet) return
   look.dirty = true; look.msg = ''
   // 草稿留在本机，刷新不丢；点「保存到机器人」才成为所有设备共用的那份
-  try { localStorage.setItem(LS_KEY, JSON.stringify({ mat, lit })) } catch (e) { /* 无痕模式等 */ }
+  try { localStorage.setItem(LS_KEY, JSON.stringify({ mat, lit, screen: screenCfg })) } catch (e) { /* 无痕模式等 */ }
 }, { deep: true })
 
 function resetLook() {
   for (const k in MAT_DEFAULT) Object.assign(mat[k], MAT_DEFAULT[k])
-  Object.assign(lit, LIGHT_DEFAULT)
+  Object.assign(lit, LIGHT_DEFAULT); Object.assign(screenCfg, SCREEN_DEFAULT)
 }
 
 // 导出成可直接粘回本文件 MAT_DEFAULT / LIGHT_DEFAULT 的代码
@@ -565,6 +702,13 @@ onBeforeUnmount(() => {
         {{ look.msg || (look.dirty ? '有未保存的改动（仅存在本机）'
             : look.onRobot ? '当前为车上保存的版本' : '当前为代码默认值') }}
       </div>
+      <div class="lk-grp" style="border-top:0;padding-top:2px">
+        <div class="lk-h"><span>屏幕内容</span></div>
+        <div class="lk-seg">
+          <button v-for="b in SCREEN_BLOCKS" :key="b[0]"
+            :class="{ on: screenCfg.block === b[0] }" @click="screenCfg.block = b[0]">{{ b[1] }}</button>
+        </div>
+      </div>
       <div v-for="(c, k) in mat" :key="k" class="lk-grp">
         <div class="lk-h">
           <input type="color" v-model="c.color" />
@@ -692,6 +836,10 @@ onBeforeUnmount(() => {
 .lk-r input[type=range] { flex: 1; min-width: 0; }
 .lk-r i { font-style: normal; font-size: 10px; width: 30px; text-align: right;
   color: rgba(255,255,255,.6); font-variant-numeric: tabular-nums; }
+.lk-seg { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+.lk-seg button { height: 26px; border-radius: 7px; cursor: pointer; font-size: 11px;
+  border: 1px solid rgba(255,255,255,.16); background: rgba(255,255,255,.05); color: rgba(255,255,255,.72); }
+.lk-seg button.on { border-color: #2e9bff; background: rgba(46,155,255,.2); color: #cfe3ff; }
 .lk-save { display: flex; gap: 8px; margin: 2px 0 6px; }
 .lk-btn { flex: 1; height: 27px; border-radius: 8px; cursor: pointer; font-size: 11px;
   border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.06); color: #eef2f6; }
