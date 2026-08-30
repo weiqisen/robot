@@ -133,6 +133,14 @@ const actions = {
     topic('/ros_robot_controller/bus_servo/set_position', 'ros_robot_controller_msgs/msg/ServosPosition')
       .publish(new ROSLIB.Message({ duration, position }))
   },
+  // 走 /servo_controller 而不是直发总线：这条路由驱动自己换算，
+  // 顺带让 /controller_manager/joint_states 跟着动，数字孪生和 eye-in-hand
+  // 相机位姿才不会用到一份不动的关节角（直发总线时臂会动但 joint_states 不变）。
+  setServosCtl(position, duration = 1.0, unit = 'pulse') {
+    if (!state.connected) return
+    topic('/servo_controller', 'servo_controller_msgs/msg/ServosPosition')
+      .publish(new ROSLIB.Message({ duration, position_unit: unit, position }))
+  },
   buzzer(freq, on_time, off_time, repeat) {
     if (!state.connected) return
     topic('/ros_robot_controller/set_buzzer', 'ros_robot_controller_msgs/msg/BuzzerState')

@@ -18,8 +18,10 @@ import base64
 import hashlib
 import json
 import os
+import re
 import select
 import socket
+import sqlite3
 import struct
 import subprocess
 import tempfile
@@ -57,6 +59,74 @@ CAM_MIN_INTERVAL = 0.25
 # 不依赖 x11vnc 自己有没有编进 libvncserver 的 ws 支持，也不用在车上装 websockify，
 # 这里直接做一层 RFC6455 <-> TCP 转发。顺带同源(:8000)，省掉跨源那堆事。
 VNC_ADDR = (os.environ.get('VNC_HOST') or '127.0.0.1', int(os.environ.get('VNC_PORT') or 5900))
+
+# 动作组。幻尔桌面端 arm_pc 的 .d6a 其实就是 SQLite：
+#   ActionGroup(Index INTEGER PK, Time INT, Servo1..Servo6 INT)
+#   Servo1..5 -> 舵机 ID 1..5，Servo6 -> ID 10(夹爪)
+# 直接读写这批文件，网页和桌面程序就共用同一份动作组，不用另立一套格式。
+ACT_DIR = os.environ.get('ACTION_DIR') or os.path.expanduser('~/software/arm_pc/ActionGroups')
+ACT_NAME = re.compile(r'^[A-Za-z0-9_\-]{1,48}$')      # 文件名白名单，挡目录穿越
+ACT_COLS = ['Servo%d' % i for i in range(1, 7)]
+
+
+def act_path(name):
+    if not ACT_NAME.match(name or ''):
+        return None
+    return os.path.join(ACT_DIR, name + '.d6a')
+
+
+def act_list():
+    try:
+        return sorted(f[:-4] for f in os.listdir(ACT_DIR) if f.endswith('.d6a'))
+    except OSError:
+        return []
+
+
+def act_read(name):
+    p = act_path(name)
+    if not p or not os.path.exists(p):
+        return None
+    con = sqlite3.connect(p)
+    try:
+        # 各文件的舵机列数并不一致（有的只有 Servo1..Servo5），
+        # 所以按实际表结构取列，不能写死 6 个。少的补 500(中位)。
+        cols = [r[1] for r in con.execute('PRAGMA table_info(ActionGroup)')]
+        sv = [c for c in cols if c.lower().startswith('servo')]
+        rows = con.execute('SELECT [Index], Time%s FROM ActionGroup ORDER BY [Index]'
+                           % (''.join(', ' + c for c in sv))).fetchall()
+    finally:
+        con.close()
+    out = []
+    for r in rows:
+        vals = [500 if v is None else int(v) for v in r[2:]]
+        out.append({'index': r[0], 'time': r[1], 'servos': (vals + [500] * 6)[:6]})
+    return out
+
+
+def act_write(name, rows):
+    p = act_path(name)
+    if not p:
+        return 'bad name'
+    os.makedirs(ACT_DIR, exist_ok=True)
+    # 整表重建：动作组通常只有几十行，比逐行 diff 简单可靠得多。
+    # 先写临时库再 rename，中途出错不会毁掉原文件。
+    tmp = p + '.tmp'
+    if os.path.exists(tmp):
+        os.remove(tmp)
+    con = sqlite3.connect(tmp)
+    try:
+        con.execute('CREATE TABLE ActionGroup([Index] INTEGER PRIMARY KEY AUTOINCREMENT '
+                    'NOT NULL ON CONFLICT FAIL UNIQUE ON CONFLICT ABORT, Time INT, '
+                    + ', '.join('%s INT' % c for c in ACT_COLS) + ')')
+        for r in rows:
+            sv = (list(r.get('servos') or [])[:6] + [500] * 6)[:6]
+            con.execute('INSERT INTO ActionGroup (Time, %s) VALUES (?,?,?,?,?,?,?)' % ','.join(ACT_COLS),
+                        [int(r.get('time') or 1000)] + [int(v) for v in sv])
+        con.commit()
+    finally:
+        con.close()
+    os.replace(tmp, p)
+    return None
 WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
 _cam = {'ts': 0.0, 'jpg': None}
 _cam_lock = threading.Lock()
@@ -223,6 +293,18 @@ class Handler(SimpleHTTPRequestHandler):
                 pass
 
     def do_GET(self):
+        path = self.path.split('?', 1)[0]
+        if path == '/api/actions':
+            return self._json(200, {'groups': act_list()})
+        if path.startswith('/api/actions/'):
+            try:
+                rows = act_read(path[len('/api/actions/'):])
+            except Exception as e:
+                # 单个坏文件不该把整条连接打断（会表现成前端的 HTTP 000）
+                return self._json(500, {'error': f'{type(e).__name__}: {e}'})
+            if rows is None:
+                return self._json(404, {'error': 'no such action group'})
+            return self._json(200, {'rows': rows})
         if self.path.split('?', 1)[0] == '/api/vnc':
             return self._vnc_bridge()
         if self.path.split('?', 1)[0] == '/api/camera.jpg':
@@ -240,7 +322,18 @@ class Handler(SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def do_PUT(self):
-        if self.path.split('?', 1)[0] != '/api/look':
+        path = self.path.split('?', 1)[0]
+        if path.startswith('/api/actions/'):
+            try:
+                n = int(self.headers.get('Content-Length') or 0)
+                body = json.loads(self.rfile.read(n).decode('utf-8')) if n else None
+            except Exception as e:
+                return self._json(400, {'error': f'bad json: {e}'})
+            if not isinstance(body, dict) or not isinstance(body.get('rows'), list):
+                return self._json(400, {'error': 'expected {rows: [...]}'})
+            err = act_write(path[len('/api/actions/'):], body['rows'])
+            return self._json(400 if err else 200, {'error': err} if err else {'ok': True})
+        if path != '/api/look':
             return self._json(405, {'error': 'method not allowed'})
         try:
             n = int(self.headers.get('Content-Length') or 0)
