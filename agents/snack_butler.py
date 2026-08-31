@@ -734,6 +734,10 @@ class SnackButler(Node):
             return
         cfg = self.cfg
         x, y, zs = tgt['xyz']
+        # 坐标补偿：视觉定位有系统偏差时，在界面上调这三个参数实时修正
+        x += cfg.get('x_offset_hack', 0.0)
+        y += cfg.get('y_offset_hack', 0.0)
+        zs += cfg.get('z_offset_hack', 0.0)
         gz = self.grasp_z(zs)
         # 腕部自转对齐物体长边：画面右 = base -Y，所以像素角度取负
         roll = clamp(math.radians(-tgt.get('angle_px', 0.0)), -1.5, 1.5)
@@ -1024,13 +1028,14 @@ class SnackButler(Node):
             'batt_v': None if self.batt_v is None else round(self.batt_v, 2),
             'low_volt': self.low_volt,
             'servo_map': self.smap.as_dict(),
-            'cfg': {k: self.cfg[k] for k in
+            'cfg': {k: self.cfg.get(k) for k in
                     ('table_z', 'assume_object_h', 'grasp_z_offset', 'tool_len', 'approach_h',
                      'lift_h', 'gripper_open',
                      'gripper_close', 'bins', 'route', 'enabled_colors', 'workspace_rel',
                      'pick_radius_px', 'self_body_boxes',
                      'low_volt_enabled', 'low_volt_park', 'low_volt_clear', 'low_volt_hold',
-                     'observe_deg', 'dry_run', 'min_area_px', 'require_calibration')},
+                     'observe_deg', 'dry_run', 'min_area_px', 'require_calibration',
+                     'x_offset_hack', 'y_offset_hack', 'z_offset_hack')},
             'stats': dict(self.stats, uptime=round(time.time() - self.stats['started'])),
         }, ensure_ascii=False)
         self.pub_state.publish(m)
