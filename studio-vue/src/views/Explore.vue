@@ -5,6 +5,7 @@ import { useRos, videoUrl } from '../composables/useRos'
 import { useMjpegGate } from '../composables/useMjpeg'
 import { useStreamWatch } from '../composables/useStreamWatch'
 import SpeedLimits from '../components/SpeedLimits.vue'
+import GpuTrendCard from '../components/GpuTrendCard.vue'
 
 const { state, actions, HOST, VIDEO_PORT } = useRos()
 const maxMinutes = ref(15), goalTimeout = ref(90), minFrontier = ref(8)
@@ -31,6 +32,8 @@ const checks = computed(() => [
   ['车身净空', !!st.value?.clearance_ready, st.value?.clearance_ready
     ? `正常${st.value?.safety_front_m != null ? `（前方 ${st.value.safety_front_m.toFixed(2)}m）` : ''}`
     : `不足（前方 ${st.value?.safety_front_m ?? '--'}m / 最近 ${st.value?.safety_body_m ?? '--'}m）`],
+  ['视觉防撞', st.value?.safety_vision_m == null || st.value.safety_vision_m >= .36,
+    st.value?.safety_vision_m == null ? '未见上方障碍' : `${st.value.safety_vision_m.toFixed(2)} m`],
   ['旧控制旁路', !st.value?.safety_legacy_active, st.value?.safety_legacy_active ? '检测到 /cmd_vel 非零指令' : '未发现'],
   ['地图位姿', !!st.value?.pose, st.value?.pose ? fmt(st.value.pose) : '无数据'],
   ['底盘电池', (st.value?.battery_v ?? 0) >= 10.5,
@@ -141,7 +144,7 @@ function clearHome() {
           <div class="step-text"><span>{{ st.step }}</span><b>{{ fmt(st.pose) }}</b></div>
           <div class="metrics">
             <div><span>运行</span><b>{{ elapsed }}</b></div><div><span>已到达</span><b>{{ st.visited || 0 }}</b></div>
-            <div><span>跳过</span><b>{{ st.blacklisted || 0 }}</b></div><div><span>电池</span><b>{{ st.battery_v ?? '--' }} V</b></div>
+            <div><span>已记录物品</span><b>{{ st.objects?.length || 0 }}</b></div><div><span>电池</span><b>{{ st.battery_v ?? '--' }} V</b></div>
           </div>
           <div class="home-row" :class="{ missing: !st.home }">
             <div><span>返航原点</span><b>{{ fmt(st.home) }}</b><a-tag v-if="st.home_restored" color="blue">已恢复</a-tag></div>
@@ -163,6 +166,7 @@ function clearHome() {
     </section>
 
     <aside class="right-stack">
+      <GpuTrendCard />
       <a-card title="大脑终端" size="small">
         <template #extra><a-tag color="cyan">实时决策</a-tag></template>
         <div ref="brainEl" class="brain-terminal">

@@ -22,6 +22,7 @@ const mode = ref('turn')
 const speed = ref(70)
 const tele = reactive({ vx: '0.00', vy: '0.00', wz: '0.00' })
 const rtcMode = ref('MJPEG')
+const viewMode = ref('contain')
 const drawer = ref(false)
 
 // ---- 相机 ----
@@ -60,6 +61,11 @@ function startCam() { if (camImg.value) camImg.value.style.display = 'block'; lo
 onDeactivated(() => { if (camImg.value) camImg.value.src = ''; stopRTC(); eStop() })
 onActivated(() => { startCam() })
 function onCamTopic() { startCam() }
+function cameraAction(action, tip) {
+  if (manualArmed.value) return message.warning('请先锁定底盘，再移动机械臂视角')
+  if (!actions.snackCmd({ action })) return message.error('rosbridge 未连接')
+  message.success(tip)
+}
 
 // ---- 摇杆 ----
 const joy = ref(null)
@@ -168,8 +174,8 @@ onUnmounted(() => {
 
 <template>
   <div class="viewport">
-    <img ref="camImg" class="cam" alt="" @load="onCamLoad" @error="onCamErr" />
-    <video ref="camVideo" class="cam" autoplay muted playsinline style="display:none" />
+    <img ref="camImg" :class="['cam',viewMode]" alt="" @load="onCamLoad" @error="onCamErr" />
+    <video ref="camVideo" :class="['cam',viewMode]" autoplay muted playsinline style="display:none" />
     <div v-if="showMsg" class="no-signal">{{ camMsg }}</div>
     <div class="vignette" />
     <div class="rtc-tag">{{ rtcMode }}</div>
@@ -189,6 +195,14 @@ onUnmounted(() => {
       <div><span>前方净空</span><b>{{ state.navSafety?.front_m == null ? '--' : state.navSafety.front_m.toFixed(2) + ' m' }}</b></div>
       <div><span>电池</span><b>{{ state.batt == null ? '--' : (state.batt / 1000).toFixed(2) + ' V' }}</b></div>
       <div><span>硬限速</span><b>{{ maxLinear.toFixed(2) }} m/s</b></div>
+    </div>
+    <div class="glass quick-views">
+      <span>常用视角</span>
+      <button @click="cameraAction('observe','机械臂正在前往高位观察位')">高位</button>
+      <button @click="cameraAction('home','机械臂正在收回到行驶位')">行驶位</button>
+      <button :class="{on:viewMode==='contain'}" @click="viewMode='contain'">广角全景</button>
+      <button :class="{on:viewMode==='cover'}" @click="viewMode='cover'">画面填充</button>
+      <button @click="startCam">刷新</button>
     </div>
 
     <!-- 遥测 -->
@@ -247,7 +261,8 @@ onUnmounted(() => {
 
 <style scoped>
 .viewport { position: absolute; inset: 0; overflow: hidden; background: #05070a; }
-.cam { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #05070a; }
+.cam { position: absolute; inset: 0; width: 100%; height: 100%; background: #05070a; }
+.cam.contain{object-fit:contain}.cam.cover{object-fit:cover}
 .no-signal { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,.3); font-family: ui-monospace, monospace; font-size: 13px; letter-spacing: 3px; }
 .vignette { position: absolute; inset: 0; pointer-events: none; background: radial-gradient(120% 90% at 50% 45%, transparent 55%, rgba(0,0,0,.5) 100%); }
 .rtc-tag { position: absolute; bottom: 14px; left: 14px; z-index: 6; font-family: ui-monospace, monospace; font-size: 10px; letter-spacing: 1px; padding: 4px 9px; border-radius: 6px; background: rgba(8,10,14,.55); border: 1px solid rgba(255,255,255,.12); color: rgba(255,255,255,.6); }
@@ -267,6 +282,7 @@ onUnmounted(() => {
 .safety-strip { position:absolute; top:66px; left:14px; z-index:18; border-radius:10px; display:flex; overflow:hidden; }
 .safety-strip > div { padding:8px 13px; min-width:92px; }.safety-strip > div + div { border-left:1px solid rgba(255,255,255,.1); }
 .safety-strip span { display:block; color:rgba(255,255,255,.38); font-size:9px; letter-spacing:.5px; }.safety-strip b { display:block; margin-top:2px; font:600 12px ui-monospace,monospace; }
+.quick-views{position:absolute;top:118px;left:14px;z-index:18;display:flex;align-items:center;gap:5px;padding:5px;border-radius:9px}.quick-views>span{padding:0 6px;color:rgba(255,255,255,.4);font-size:10px}.quick-views button{border:0;border-radius:6px;background:transparent;color:rgba(255,255,255,.72);padding:5px 9px;cursor:pointer;font-size:11px}.quick-views button:hover,.quick-views button.on{background:rgba(46,155,255,.22);color:#fff}
 .telebar { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 20; display: flex; border-radius: 12px; overflow: hidden; }
 .cell { padding: 8px 18px; text-align: center; }
 .cell + .cell { border-left: 1px solid rgba(255,255,255,.12); }

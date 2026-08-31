@@ -5,6 +5,7 @@ import { useRos, videoUrl } from '../composables/useRos'
 import { useStreamWatch } from '../composables/useStreamWatch'
 import InfoNote from '../components/InfoNote.vue'
 import { useMjpegGate } from '../composables/useMjpeg'
+import GpuTrendCard from '../components/GpuTrendCard.vue'
 
 const { state, actions, HOST, VIDEO_PORT } = useRos()
 
@@ -274,6 +275,7 @@ const detRows = computed(() => {
     return { key: i, ...d, xyz_offset }
   })
 })
+function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ behavior:'smooth', block:'start' }) }
 </script>
 
 <template>
@@ -287,7 +289,7 @@ const detRows = computed(() => {
 
   <a-row :gutter="16">
     <!-- 左：画面 + 动作 -->
-    <a-col :xs="24" :xl="14">
+    <a-col :xs="24" :xl="15">
       <a-card size="small" title="视觉识别">
         <template #extra>
           <a-space>
@@ -392,8 +394,12 @@ const detRows = computed(() => {
     </a-col>
 
     <!-- 右：状态 + 参数 -->
-    <a-col :xs="24" :xl="10">
-      <a-card size="small" title="运行状态">
+    <a-col :xs="24" :xl="9">
+      <GpuTrendCard style="margin-bottom:10px" />
+      <a-card size="small" class="section-nav" :body-style="{padding:'7px'}">
+        <a-segmented block :options="[{label:'状态',value:'status'},{label:'标定',value:'calib'},{label:'抓取参数',value:'params'},{label:'分拣',value:'bins'}]" @change="jump" />
+      </a-card>
+      <a-card id="snack-status" size="small" title="运行状态" style="margin-top:10px">
         <a-descriptions :column="2" size="small" bordered>
           <a-descriptions-item label="状态">{{ sb?.state || '—' }}</a-descriptions-item>
           <a-descriptions-item label="自动模式">
@@ -464,7 +470,7 @@ const detRows = computed(() => {
         <a-alert v-if="sb?.error" type="error" show-icon style="margin-top:12px" :message="sb.error" />
       </a-card>
 
-      <a-card size="small" title="标定" style="margin-top:16px">
+      <a-card id="snack-calib" size="small" title="标定" style="margin-top:10px">
         <InfoNote v-if="online && sb?.cm" title="不用标定：指令走 /servo_controller">
           <p><b>弧度→脉冲由机器人自带驱动换算，不需要我们自己标。</b></p>
           <p>这条路顺带让 <code>/controller_manager/joint_states</code> 跟着动 ——
@@ -507,7 +513,7 @@ const detRows = computed(() => {
         </div>
       </a-card>
 
-      <a-card size="small" title="抓取参数" style="margin-top:16px">
+      <a-card id="snack-params" size="small" title="抓取参数" style="margin-top:10px">
         <template #extra>
           <a-space v-if="edit.on">
             <a-button size="small" @click="resetCfg">撤销</a-button>
@@ -577,7 +583,7 @@ const detRows = computed(() => {
         <div class="tip">调夹爪时先点「张爪 / 合爪」看效果，合适了再保存。</div>
       </a-card>
 
-      <a-card size="small" title="投放区与分拣规则" style="margin-top:16px">
+      <a-card id="snack-bins" size="small" title="投放区与分拣规则" style="margin-top:10px">
         <a-descriptions :column="1" size="small" bordered>
           <a-descriptions-item v-for="(b, k) in (cfg.bins || {})" :key="k" :label="b.label || k">
             <code>{{ (b.xyz || []).map(v => v.toFixed(3)).join(', ') }}</code>
@@ -594,7 +600,7 @@ const detRows = computed(() => {
 
 <style scoped>
 .stage { position: relative; background: #000; border-radius: 8px; overflow: hidden; cursor: crosshair; }
-.stage img { width: 100%; display: block; aspect-ratio: 4/3; object-fit: contain; background: #000; }
+.stage img { width: 100%; display: block; aspect-ratio: 4/3; max-height:55vh; object-fit: contain; background: #000; }
 .overlay-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; object-fit: contain; }
 .hint { position: absolute; left: 8px; bottom: 8px; background: rgba(0,0,0,.55); color: #fff;
   font-size: 12px; padding: 3px 8px; border-radius: 4px; pointer-events: none; }
@@ -618,4 +624,5 @@ const detRows = computed(() => {
 .msg.err { color: #cf1322; }
 .cmds { margin: 4px 0 0 26px; }
 code { font-family: ui-monospace, monospace; font-size: 13px; }
+.section-nav{position:sticky;top:0;z-index:4;box-shadow:0 4px 14px rgba(0,0,0,.06)}
 </style>
