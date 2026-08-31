@@ -224,11 +224,11 @@ def t_drive(inp):
     sec = max(0.0, min(2.0, float(inp.get('seconds', 0.5))))
     end = time.time() + sec
     while time.time() < end:
-        ros.publish('/cmd_vel', 'geometry_msgs/msg/Twist',
+        ros.publish('/manual_cmd_vel', 'geometry_msgs/msg/Twist',
                     {'linear': {'x': vx, 'y': vy, 'z': 0.0},
                      'angular': {'x': 0.0, 'y': 0.0, 'z': wz}})
         time.sleep(0.1)
-    ros.publish('/cmd_vel', 'geometry_msgs/msg/Twist',
+    ros.publish('/manual_cmd_vel', 'geometry_msgs/msg/Twist',
                 {'linear': {'x': 0.0, 'y': 0.0, 'z': 0.0},
                  'angular': {'x': 0.0, 'y': 0.0, 'z': 0.0}})
     _log_cmd({'action': 'drive', 'vx': vx, 'vy': vy, 'wz': wz, 'seconds': sec})

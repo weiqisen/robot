@@ -20,11 +20,16 @@ SVC_UNITS = [
     ("webctl",        "网页服务 :8000",        "/home/ubuntu/web_control/index.html"),
     ("jetson-agent",  "遥测 / 日志 / 服务监控", "/home/ubuntu/jetson_agent.py"),
     ("snack-butler",  "视觉引导抓取",          "/home/ubuntu/snack_butler.py"),
+    ("explorer-agent", "自主避障探索 / 返航",   "/home/ubuntu/explorer_agent.py"),
+    ("exploration-nav", "在线 SLAM + Nav2",      "/home/ubuntu/exploration_bringup.launch.py"),
+    ("nav-safety",     "导航速度安全闸门",       "/home/ubuntu/nav_safety_guard.py"),
+    ("lidar-watchdog", "雷达断连自动恢复",       "/home/ubuntu/lidar_watchdog.py"),
     ("webrtc-agent",  "WebRTC 信令 :8091",     "/home/ubuntu/webrtc_agent.py"),
     ("llm-agent",     "自然语言指令 :8092",     "/home/ubuntu/llm_agent.py"),
 ]
 # 网页「运行日志」要看的服务。跟着 journalctl -f 走，不用轮询。
-LOG_UNITS = ["start_app_node", "snack-butler", "jetson-agent", "wifi"]
+# 自建服务必须全部进入日志流；start_app_node / wifi 作为关键依赖一并保留。
+LOG_UNITS = [u for u, _, _ in SVC_UNITS] + ["start_app_node", "wifi"]
 
 _WS = None
 _WS_LOCK = threading.Lock()
@@ -217,7 +222,9 @@ def services_snapshot():
 
 
 def services_thread():
-    """每 5 秒推一次服务状态。放独立线程，别拖慢 1 Hz 的 tegrastats 主循环。"""
+    """推服务状态，并产生低频心跳/状态变化事件，避免安静服务长期没有可学习日志。"""
+    previous = {}
+    last_heartbeat = 0.0
     while True:
         try:
             svcs = services_snapshot()
@@ -225,6 +232,29 @@ def services_thread():
                 ws_send({"op": "publish", "topic": SVC_TOPIC,
                          "msg": {"data": json.dumps({"ts": time.time(), "services": svcs},
                                                     ensure_ascii=False)}})
+                now = time.time()
+                lines = []
+                for s in svcs:
+                    old = previous.get(s["name"])
+                    cur = (s["state"], s["sub"], s["pid"], s["restarts"])
+                    if old is not None and old != cur:
+                        lines.append({"t": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                                      "unit": s["name"], "src": "service-monitor", "lvl": "warn",
+                                      "msg": "[state] %s/%s pid=%s restarts=%s (此前 %s/%s pid=%s restarts=%s)" %
+                                             (cur[0], cur[1], cur[2], cur[3], old[0], old[1], old[2], old[3])})
+                    previous[s["name"]] = cur
+                if now - last_heartbeat >= 60:
+                    for s in svcs:
+                        lines.append({"t": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                                      "unit": s["name"], "src": "service-monitor",
+                                      "lvl": "info" if s["state"] == "active" else "warn",
+                                      "msg": "[heartbeat] %s/%s pid=%s uptime=%ss mem=%sMB restarts=%s" %
+                                             (s["state"], s["sub"], s["pid"], s["uptime"],
+                                              s["mem_mb"], s["restarts"])})
+                    last_heartbeat = now
+                if lines:
+                    ws_send({"op": "publish", "topic": LOG_TOPIC,
+                             "msg": {"data": json.dumps({"lines": lines}, ensure_ascii=False)}})
         except Exception:
             pass
         time.sleep(15)
@@ -232,7 +262,7 @@ def services_thread():
 
 def journal_thread():
     """tail systemd 日志并推到 /system/log。断了就重来，别把主循环拖下水。"""
-    args = ["journalctl", "-f", "-n", "60", "-o", "short-iso", "--no-pager"]
+    args = ["journalctl", "-f", "-n", "120", "-o", "json", "--no-pager"]
     for u in LOG_UNITS:
         args += ["-u", u]
     while True:
@@ -244,16 +274,22 @@ def journal_thread():
                 line = line.rstrip("\n")
                 if not line or line.startswith("-- "):
                     continue
-                # 形如: 2026-08-29T20:12:03+0800 ubuntu zsh[603]: [xxx] ...
-                m = re.match(r"^(\S+)\s+\S+\s+([^:\[]+)(?:\[(\d+)\])?:\s?(.*)$", line)
-                if m:
-                    d = {"t": m.group(1), "src": m.group(2).strip(), "msg": m.group(4)}
-                else:
-                    d = {"t": "", "src": "", "msg": line}
+                try:
+                    j = json.loads(line)
+                    unit = (j.get("_SYSTEMD_UNIT") or j.get("UNIT") or "").replace(".service", "")
+                    pri = int(j.get("PRIORITY", 6))
+                    d = {"t": time.strftime("%Y-%m-%dT%H:%M:%S%z",
+                                             time.localtime(int(j.get("__REALTIME_TIMESTAMP", "0")) / 1e6)),
+                         "unit": unit, "src": j.get("SYSLOG_IDENTIFIER") or unit,
+                         "msg": str(j.get("MESSAGE", "")),
+                         "lvl": "error" if pri <= 3 else "warn" if pri == 4 else "info"}
+                except Exception:
+                    d = {"t": "", "unit": "", "src": "journal", "msg": line, "lvl": "info"}
                 low = d["msg"].lower()
-                d["lvl"] = ("error" if ("error" in low or "traceback" in low or "failed" in low
-                                        or "exception" in low)
-                            else "warn" if ("warn" in low or "died" in low) else "info")
+                if d["lvl"] == "info" and any(x in low for x in ("error", "traceback", "failed", "exception")):
+                    d["lvl"] = "error"
+                elif d["lvl"] == "info" and any(x in low for x in ("warn", "died")):
+                    d["lvl"] = "warn"
                 # 攒批：日志一忙起来一秒能有几十行，一行一条 websocket 消息会把
                 # rosbridge 的序列化压满（实测它一个人吃掉 50% 的核）。0.5 秒合并发一次。
                 buf.append(d)

@@ -1,8 +1,9 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
+import { message, Modal } from 'ant-design-vue'
 import { useRos } from '../composables/useRos'
 import MiniChart from '../components/MiniChart.vue'
-const { state } = useRos()
+const { state, HOST } = useRos()
 const j = computed(() => state.jetson)
 
 // 用 antd 的字面色值，不用我们自己的 token —— token 里的 --ok 是青绿 #0d9488、
@@ -81,6 +82,30 @@ const facts = computed(() => {
 const svcs = computed(() => (state.units?.services || []).filter(s => s.state !== 'notfound'))
 const svcMissing = computed(() => (state.units?.services || []).filter(s => s.state === 'notfound'))
 const svcBad = computed(() => svcs.value.filter(s => s.state !== 'active').length)
+const restarting = ref({})
+const NAV_SERVICES = new Set(['explorer-agent', 'exploration-nav', 'nav-safety'])
+function restartService(s) {
+  Modal.confirm({
+    title: `重启 ${s.name}？`,
+    content: NAV_SERVICES.has(s.name)
+      ? '该服务参与自主移动。重启会取消当前导航或让安全闸门短暂离线，请确认小车已经停稳。'
+      : '服务会短暂离线，通常几秒内恢复。',
+    okText: '确认重启', cancelText: '取消',
+    okButtonProps: { danger: NAV_SERVICES.has(s.name) },
+    async onOk() {
+      restarting.value[s.name] = true
+      try {
+        const r = await fetch(`http://${HOST}:8000/api/services/${s.name}/restart`, { method: 'POST' })
+        const body = await r.json().catch(() => ({}))
+        if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`)
+        message.success(`${s.name} 已提交重启，状态会自动刷新`)
+      } catch (e) {
+        message.error(`重启失败：${e.message}`)
+        throw e
+      } finally { restarting.value[s.name] = false }
+    },
+  })
+}
 const fmtTime = ts => {
   const d = new Date(ts * 1000)
   const p = n => String(n).padStart(2, '0')
@@ -202,6 +227,7 @@ const sysinfo = computed(() => {
           <span class="en">{{ s.enabled === 'enabled' ? '开机自启' : s.enabled || '' }}</span>
           <span class="en" :title="s.file">{{ s.mtime ? '部署 ' + fmtTime(s.mtime) : '' }}</span>
         </div>
+        <a-button size="small" :loading="!!restarting[s.name]" @click="restartService(s)">重启服务</a-button>
       </div>
     </div>
     <div v-if="svcMissing.length" class="miss">
@@ -270,6 +296,7 @@ const sysinfo = computed(() => {
 .smeta i { font-style: normal; }
 .smeta .warn { color: var(--warn); }
 .smeta .en { min-width: 84px; color: var(--text-4); font-size: 12px; }
+.svc > .ant-btn { flex-shrink: 0; margin-left: 4px; }
 .miss { margin-top: 10px; font-size: 12px; color: var(--text-4); }
 .sys { display: grid; gap: 10px 24px; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
 .si { border-bottom: 1px solid var(--divider); padding-bottom: 8px; }

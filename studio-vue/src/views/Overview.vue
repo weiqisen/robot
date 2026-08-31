@@ -17,7 +17,8 @@ const cpu = computed(() => (j.value && j.value.cpu && j.value.cpu.length
   ? j.value.cpu.reduce((a, c) => a + c.load, 0) / j.value.cpu.length : null))
 const gpu = computed(() => (j.value && j.value.gpu != null ? j.value.gpu : null))
 const temp = computed(() => (j.value && j.value.temps ? Math.max(...Object.values(j.value.temps)) : null))
-const scanN = computed(() => (state.scan ? state.scan.ranges.length : 0))
+const scanFresh = computed(() => !!state.scan && state.now - state.scanAt < 2000)
+const scanN = computed(() => (scanFresh.value ? state.scan.ranges.length : 0))
 
 // ---------- 历史 ----------
 const HIST = 120
@@ -61,7 +62,7 @@ const strip = computed(() => [
   { label: '活动话题', v: state.counts.topics },
   { label: '服务', v: state.counts.services },
   { label: '在线舵机', v: state.servos.length, unit: '/ 6' },
-  { label: '雷达点数', v: scanN.value, unit: 'pts', tag: state.scan ? null : 'bad' },
+  { label: '雷达点数', v: scanN.value, unit: 'pts', tag: scanFresh.value ? null : 'bad' },
 ])
 
 // ---------- 系统健康 ----------
@@ -69,7 +70,7 @@ const health = computed(() => [
   ['rosbridge', state.connected ? '已连接' : '断开', state.connected ? 'ok' : 'bad'],
   ['低压告警', volt.value == null ? '—' : (volt.value < BATT_WARN ? '是' : '否'),
     volt.value != null && volt.value < BATT_WARN ? 'bad' : 'ok'],
-  ['雷达数据', state.scan ? scanN.value + ' 点' : '无', state.scan ? 'ok' : 'warn'],
+  ['雷达数据', scanFresh.value ? scanN.value + ' 点' : '无', scanFresh.value ? 'ok' : 'warn'],
   ['惯性单元', euler.value ? '正常' : (state.imu ? '无姿态解算' : '无数据'),
     euler.value ? 'ok' : 'warn'],
   ['里程计', state.odom ? '正常' : '无数据', state.odom ? 'ok' : 'warn'],
@@ -88,8 +89,8 @@ const alarms = computed(() => [
     crit: '阈值 90 %', s: cpu.value > 90 ? 'warn' : 'ok' },
   { n: 'GPU 过载', v: gpu.value == null ? '—' : gpu.value.toFixed(1) + ' %',
     crit: '阈值 90 %', s: gpu.value > 90 ? 'warn' : 'ok' },
-  { n: '雷达数据', v: state.scan ? scanN.value + ' 点' : '无数据', crit: '/scan',
-    s: state.scan ? 'ok' : 'bad' },
+  { n: '雷达数据', v: scanFresh.value ? scanN.value + ' 点' : '无数据', crit: '/scan · 2秒超时',
+    s: scanFresh.value ? 'ok' : 'bad' },
 ])
 const badCount = computed(() => alarms.value.filter(a => a.s === 'bad').length)
 const warnCount = computed(() => alarms.value.filter(a => a.s === 'warn').length)

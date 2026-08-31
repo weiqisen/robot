@@ -9,7 +9,12 @@
 |---|---|---|
 | `agents/arm_kinematics.py` | 机器人 | 5 轴臂闭式 FK/IK + 舵机脉冲映射。纯 `math`，无依赖 |
 | `agents/vision_geometry.py` | 机器人 | 像素+深度 → base_link。含 URDF 静态外参链（tf2 不可用时兜底） |
-| `agents/snack_detector.py` | 机器人 | HSV 色块识别 + 3D 定位。不依赖 rclpy，可离线测 |
+| `agents/snack_detector.py` | 机器人 | YOLOv5s 通用物体 + HSV 色块兜底 + 3D 定位。不依赖 rclpy，可离线测 |
+
+默认 `detector_mode=hybrid`：Jetson GPU 运行机器人已有的 `yolov5s.pt`，识别
+COCO 80 个常见类别；HSV 继续识别没有通用语义类别的彩色零食。COCO 并不包含
+所有商品包装，未训练过的物品可以直接在画面上点击抓取，若要稳定识别具体品牌需
+采集该物品图片并微调自定义权重。
 | `agents/snack_butler.py` | 机器人 | ROS2 节点：状态机、命令接口、标注图输出 |
 | `agents/llm_agent.py` | 机器人 | 自然语言 → 命令（Claude tool use），HTTP :8092 |
 | `studio-vue/src/views/Snack.vue` | 网页 | 控制台：画面点选抓取、参数、标定、对话 |
@@ -113,6 +118,23 @@ pip3 install anthropic websocket-client
 
 状态在 `/snack_butler/state`（JSON），标注图在 `/snack_butler/image_result`
 （web_video_server: `http://IP:8080/stream?topic=/snack_butler/image_result&type=mjpeg`）。
+
+机械臂到达观察位且空闲时，节点默认每秒自动识别一次并更新画面标注；这个后台识别只做视觉计算，
+不会自行抓取。单次“点击即抓/抓这个/按颜色抓”成功投放后会自动回到观察位并恢复后台识别。
+
+### 抓取参数方案
+
+抓取参数页可以把桌面高度、XYZ 补偿、假设目标高度、下探/悬停/抬起高度和夹爪开合值保存成具名方案。
+每个方案记录名称、描述、创建时间、更新时间和完整参数；应用方案只改变后续抓取参数，不会立即驱动机械臂。
+方案独立持久化在机器人 `~/snack_butler_profiles.json`，日常部署不会覆盖。
+
+对应命令：
+
+```jsonc
+{"action":"profile_save","name":"木桌-糖果盒","description":"2026-08 实测","params":{"table_z":-0.116}}
+{"action":"profile_apply","id":"方案 id"}
+{"action":"profile_delete","id":"方案 id"}
+```
 
 ## 自然语言
 

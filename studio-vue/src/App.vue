@@ -4,7 +4,7 @@ import {
   DashboardOutlined, LineChartOutlined, DeploymentUnitOutlined, RadarChartOutlined,
   ThunderboltOutlined, ApiOutlined, ProfileOutlined, EnvironmentOutlined, ScanOutlined, ApartmentOutlined,
   UnorderedListOutlined, SearchOutlined, ControlOutlined, AimOutlined, FileTextOutlined,
-  RobotOutlined, MenuOutlined, FundProjectionScreenOutlined, ShoppingOutlined, DesktopOutlined, BuildOutlined,
+  RobotOutlined, MenuOutlined, FundProjectionScreenOutlined, ShoppingOutlined, DesktopOutlined, BuildOutlined, CompassOutlined,
 } from '@ant-design/icons-vue'
 import { useRos, ROBOT_HOST, battPct, BATT_WARN } from './composables/useRos'
 import { useTheme } from './composables/useTheme'
@@ -18,6 +18,7 @@ import Jetson from './views/Jetson.vue'
 import Board from './views/Board.vue'
 import Bom from './views/Bom.vue'
 import NavMap from './views/NavMap.vue'
+import Explore from './views/Explore.vue'
 import Detect from './views/Detect.vue'
 import SystemView from './views/SystemView.vue'
 import Topics from './views/Topics.vue'
@@ -46,6 +47,7 @@ const MENU = [
   { key: 'bom', icon: ProfileOutlined, label: '物料清单 BOM', comp: markRaw(Bom) },
   { group: '感知 · 导航' },
   { key: 'nav', icon: EnvironmentOutlined, label: '导航建图', comp: markRaw(NavMap) },
+  { key: 'explore', icon: CompassOutlined, label: '自主探索', comp: markRaw(Explore) },
   { key: 'detect', icon: ScanOutlined, label: '目标检测', comp: markRaw(Detect) },
   { key: 'snack', icon: ShoppingOutlined, label: '视觉引导抓取', comp: markRaw(Snack) },
   { group: 'ROS 系统' },
@@ -99,10 +101,12 @@ const volt = computed(() => (state.batt != null ? (state.batt / 1000).toFixed(2)
 <template>
   <a-config-provider :theme="antdTheme">
   <!-- 工作台：全屏大屏视图，无侧栏 -->
-  <BigScreen v-if="current === 'bigscreen'" @open-admin="current = 'overview'" />
+  <!-- 两处 Three.js 画布均保持挂载，只切换可见性。异步模型加载期间销毁
+       renderer 容器会触发 Vue 3.5 的空 vnode 卸载异常。 -->
+  <BigScreen key="bigscreen-root" v-show="current === 'bigscreen'" @open-admin="current = 'overview'" />
 
   <!-- 管理系统外壳 -->
-  <a-layout v-else class="shell">
+  <a-layout key="admin-root" v-show="current !== 'bigscreen'" class="shell">
     <div v-if="isMobile && !collapsed" class="mask" @click="collapsed = true" />
     <a-layout-sider
       v-model:collapsed="collapsed" :collapsed-width="isMobile ? 0 : 80" :trigger="null"
@@ -134,21 +138,21 @@ const volt = computed(() => (state.batt != null ? (state.batt / 1000).toFixed(2)
               <path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4" />
             </svg>
           </button>
-          <span class="stat" :class="{ off: !state.connected }"
+          <div class="robot-health" :class="[battLevel, { off: !state.connected }]"
             :title="`rosbridge ws://${ROBOT_HOST}:9090 · ${state.connected ? '已连接' : '未连接'}`">
-            <i class="dot" /><b>{{ state.connected ? '在线' : '离线' }}</b>
-          </span>
-          <span class="batt" :class="battLevel">
-            <span class="cell"><i :style="{ width: (pct == null ? 0 : pct) + '%' }" /></span>
-            <b>{{ volt }}<em>V</em></b>
-            <span class="bp">{{ pct == null ? '--' : pct }}%</span>
-          </span>
+            <span class="health-link"><i /><span><small>机器人</small><b>{{ state.connected ? '在线' : '离线' }}</b></span></span>
+            <span class="health-sep" />
+            <span class="health-batt"><span><small>底盘电源</small><b>{{ volt }} V</b></span><em>{{ pct == null ? '--' : pct }}%</em></span>
+          </div>
         </div>
       </a-layout-header>
       <a-layout-content :class="['content', { full: isFull }]">
-        <keep-alive>
+        <div v-show="current === 'twin'" key="twin-host" class="page-host full-host">
+          <Twin />
+        </div>
+        <div v-if="current !== 'twin' && currentItem.comp" :key="'page-' + current" class="page-host">
           <component :is="currentItem.comp" />
-        </keep-alive>
+        </div>
       </a-layout-content>
     </a-layout>
   </a-layout>
@@ -189,35 +193,19 @@ const volt = computed(() => (state.batt != null ? (state.batt / 1000).toFixed(2)
 .hdr-crumb { color: var(--text-4); font-size: 13px; font-family: var(--font-code); }
 .hdr-right { margin-left: auto; display: flex; gap: 10px; align-items: center; }
 
-/* 连接状态：9px 实心绿 + 3px 柔光圈，常亮不闪；离线变灰、字重也降下来。 */
-.stat { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600;
-  color: var(--live); }
-.stat .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--live); flex-shrink: 0;
-  box-shadow: 0 0 0 3px var(--live-halo); }
-.stat.off { color: var(--text-4); font-weight: 400; }
-.stat.off .dot { background: var(--live-off); box-shadow: none; }
-.hdr.dark .stat.off { color: var(--side-group); }
-
-/* 电量：一个小电池格 + 电压 + 百分比，颜色跟着电量走 */
-.batt { display: inline-flex; align-items: center; gap: 7px; font-size: 13px;
-  font-variant-numeric: tabular-nums; color: var(--text-2); }
-.batt .cell { position: relative; width: 26px; height: 13px; border-radius: 3px;
-  border: 1.5px solid currentColor; padding: 1.5px; }
-.batt .cell::after { content: ''; position: absolute; right: -4px; top: 3.5px; width: 2.5px;
-  height: 4px; border-radius: 0 1.5px 1.5px 0; background: currentColor; }
-.batt .cell i { display: block; height: 100%; border-radius: 1px; background: currentColor;
-  transition: width .4s; }
-.batt b { font-weight: 600; }
-.batt b em { font-style: normal; font-weight: 400; font-size: .82em; color: var(--text-3);
-  margin-left: 1px; }
-.batt .bp { color: var(--text-3); }
-.batt.ok { color: var(--ok); } .batt.warn { color: var(--warn); } .batt.bad { color: var(--bad); }
-.batt.na { color: var(--text-4); }
-.batt.ok b, .batt.warn b, .batt.bad b { color: var(--text-1); }
-.hdr.dark .batt b { color: var(--side-text); }
-.hdr.dark .batt .bp, .hdr.dark .batt b em { color: var(--side-group); }
+/* 右上角统一成一块设备健康胶囊，状态和电源信息不再挤成一串字符。 */
+.robot-health { height:36px; display:flex; align-items:center; gap:11px; padding:0 11px; border-radius:10px;
+  background:var(--surface-2); border:1px solid var(--border); font-variant-numeric:tabular-nums; }
+.health-link,.health-batt { display:flex; align-items:center; gap:8px; }.health-link i{width:8px;height:8px;border-radius:50%;background:var(--live);box-shadow:0 0 0 3px var(--live-halo);}
+.health-link span,.health-batt>span{display:flex;flex-direction:column;line-height:1.05}.robot-health small{font-size:9px;color:var(--text-4);font-weight:500}.robot-health b{font-size:12px;color:var(--text-1);margin-top:3px}.health-sep{width:1px;height:20px;background:var(--divider)}
+.health-batt em{font-style:normal;font:600 11px var(--font-code);padding:3px 5px;border-radius:5px;background:var(--surface);color:var(--text-3)}
+.robot-health.bad .health-batt b,.robot-health.bad .health-batt em{color:var(--bad)}.robot-health.warn .health-batt b{color:var(--warn)}.robot-health.off .health-link i{background:var(--live-off);box-shadow:none}.robot-health.off .health-link b{color:var(--text-4)}
+.hdr.dark .robot-health{background:rgba(255,255,255,.06);border-color:var(--side-border)}.hdr.dark .robot-health b{color:var(--side-text)}.hdr.dark .robot-health small{color:var(--side-group)}.hdr.dark .health-batt em{background:rgba(0,0,0,.18)}
 .theme-tgl { width: 30px; height: 26px; display: flex; align-items: center; justify-content: center; border-radius: 7px; cursor: pointer; background: var(--surface-2); border: 1px solid var(--border); color: var(--text-3); }
 .theme-tgl:hover { color: var(--accent); border-color: var(--accent); }
 .content { overflow: auto; background: var(--bg); padding: 14px; }
 .content.full { padding: 0; overflow: hidden; position: relative; }
+.page-host { min-height: 100%; }
+.content.full > .page-host { height: 100%; }
+@media(max-width:600px){.robot-health{gap:7px;padding:0 8px}.robot-health small,.health-batt em{display:none}.health-sep{height:16px}.health-link span,.health-batt>span{display:block}.robot-health b{margin:0}}
 </style>

@@ -134,8 +134,9 @@ def ik_auto_pitch(x, y, z, pitches=None, seed=None, wrist_roll=0.0, tool=0.0):
     if pitches is None:
         # 180=纯垂直下抓（最干净）。往大了走(>180)是「向后仰着下抓」，够近处；
         # 往小了走(<180)是「斜着前伸」，够远处。交替试，优先离 180 近的。
+        # 限制范围 140-200°，确保接近垂直但允许适当倾斜以够到远处
         pitches = [math.radians(a) for a in
-                   (180, 190, 170, 200, 160, 210, 150, 220, 140, 130, 120, 110, 100, 90)]
+                   (180, 190, 170, 200, 160, 195, 165, 185, 175, 150, 155, 145, 140)]
     for p in pitches:
         q = ik_best(x, y, z, p, seed, wrist_roll, tool=tool)
         if q:

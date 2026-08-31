@@ -60,6 +60,14 @@ CAM_MIN_INTERVAL = 0.25
 # 这里直接做一层 RFC6455 <-> TCP 转发。顺带同源(:8000)，省掉跨源那堆事。
 VNC_ADDR = (os.environ.get('VNC_HOST') or '127.0.0.1', int(os.environ.get('VNC_PORT') or 5900))
 
+# 服务管理接口的双重白名单之一；sudoers 里还会再次精确限制命令参数。
+SERVICE_UNITS = {
+    'webctl', 'jetson-agent', 'snack-butler', 'explorer-agent',
+    'exploration-nav', 'nav-safety', 'lidar-watchdog',
+    'webrtc-agent', 'llm-agent',
+}
+SERVICE_RESTART_PATH = re.compile(r'^/api/services/([a-z0-9-]+)/restart$')
+
 # 动作组。幻尔桌面端 arm_pc 的 .d6a 其实就是 SQLite：
 #   ActionGroup(Index INTEGER PK, Time INT, Servo1..Servo6 INT)
 #   Servo1..5 -> 舵机 ID 1..5，Servo6 -> ID 10(夹爪)
@@ -72,6 +80,21 @@ ACT_COLS = ['Servo%d' % i for i in range(1, 7)]
 GB_STATUS = os.environ.get('GPU_BENCH_STATUS') or os.path.expanduser('~/gpu_bench_status.json')
 GB_STOP = os.environ.get('GPU_BENCH_STOP') or os.path.expanduser('~/gpu_bench.stop')
 GB_SCRIPT = os.path.expanduser('~/gpu_bench.py')
+
+
+def restart_service_later(name):
+    """先回 HTTP 202；否则 webctl 重启自己会截断当前响应。"""
+    time.sleep(0.8)
+    try:
+        r = subprocess.run(
+            ['sudo', '-n', '/usr/bin/systemctl', 'restart', name + '.service'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=30)
+        if r.returncode:
+            print('[webctl] restart %s failed: %s' % (name, r.stderr.strip()), flush=True)
+        else:
+            print('[webctl] restarted %s' % name, flush=True)
+    except Exception as e:
+        print('[webctl] restart %s failed: %s' % (name, e), flush=True)
 
 
 def act_path(name):
@@ -340,6 +363,13 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_PUT(self):
         path = self.path.split('?', 1)[0]
+        match = SERVICE_RESTART_PATH.fullmatch(path)
+        if match:
+            name = match.group(1)
+            if name not in SERVICE_UNITS:
+                return self._json(403, {'error': 'service is not in restart allowlist'})
+            threading.Thread(target=restart_service_later, args=(name,), daemon=True).start()
+            return self._json(202, {'ok': True, 'service': name, 'status': 'restarting'})
         if path.startswith('/api/actions/'):
             try:
                 n = int(self.headers.get('Content-Length') or 0)

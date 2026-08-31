@@ -16,10 +16,19 @@ const maxTemp = computed(() => (state.jetson && state.jetson.temps ? Math.max(..
 const ramPct = computed(() => (state.jetson && state.jetson.ram_total ? Math.round(state.jetson.ram_used / state.jetson.ram_total * 100) : 0))
 const vx = computed(() => (state.odom ? state.odom.twist.twist.linear.x : 0))
 const wz = computed(() => (state.cmd ? state.cmd.angular.z : (state.odom ? state.odom.twist.twist.angular.z : 0)))
-const scanN = computed(() => (state.scan ? state.scan.ranges.length : 0))
+const scanFresh = computed(() => !!state.scan && state.now - state.scanAt < 2000)
+const scanN = computed(() => (scanFresh.value ? state.scan.ranges.length : 0))
+const safetyFresh = computed(() => state.now - state.navSafetyAt < 2000)
+const driveArmed = computed(() => safetyFresh.value && !!state.navSafety?.armed)
+const driveMode = computed(() => {
+  if (!safetyFresh.value) return '安全闸门离线'
+  if (!driveArmed.value) return '驱动已锁定'
+  return state.navSafety?.source === 'nav' ? 'Nav2 自动控制' : '手动控制'
+})
+const taskMode = computed(() => ({ exploring: '自主探索', returning: '正在返航', paused: '探索暂停' }[state.explorer?.mode] || '监控待机'))
 
 const status = computed(() => [
-  { k: '通信链路', on: state.connected }, { k: '激光雷达', on: !!state.scan },
+  { k: '通信链路', on: state.connected }, { k: '激光雷达', on: scanFresh.value },
   { k: '惯性单元', on: !!state.imu }, { k: '里程计', on: !!state.odom }, { k: '舵机总线', on: state.servos.length > 0 },
 ])
 // 去掉「运动=青 / 姿态=蓝 / 算力=琥珀 / 系统=紫」四色分区：13 张卡片同时亮 4 个色相，
@@ -51,9 +60,10 @@ const alarms = computed(() => [
   { n: '核心高温', bad: maxTemp.value > 75 },
   { n: '通信链路', bad: !state.connected },
   { n: 'CPU 过载', bad: cpuAvg.value > 90 },
-  { n: '雷达数据', bad: !state.scan },
+  { n: '雷达数据', bad: !scanFresh.value },
   { n: '惯性单元', bad: !state.imu },
 ])
+const activeAlarms = computed(() => alarms.value.filter(a => a.bad))
 const cpuHist = ref([]), voltHist = ref([])
 let timer = null
 onMounted(() => { timer = setInterval(() => {
@@ -62,8 +72,9 @@ onMounted(() => { timer = setInterval(() => {
 }, 1000) })
 onUnmounted(() => clearInterval(timer))
 
-function estop() { actions.cmdVel(0, 0, 0) }
+function estop() { actions.emergencyStop() }
 function beep() { actions.buzzer(1900, 0.15, 0.05, 1) }
+const armControlUnlocked = ref(false)
 // 关节控制：滑块值跟随 servo_states，拖动时本地先走、60ms 合并一次下发
 const JOINTS = [{ id: 1, l: 'J1', cn: '底座' }, { id: 2, l: 'J2', cn: '大臂' },
                 { id: 3, l: 'J3', cn: '小臂' }, { id: 4, l: 'J4', cn: '腕俯仰' },
@@ -93,19 +104,26 @@ function gripOpen() { actions.setServos([{ id: 10, position: 200 }], 1) }
 function gripClose() { actions.setServos([{ id: 10, position: 800 }], 1) }
 function armHome() { actions.setServos([1, 2, 3, 4, 5].map(id => ({ id, position: 500 })), 1.5) }
 const clock = ref(''), date = ref('')
-setInterval(() => {
+let clockTimer = null
+function updateClock() {
   const d = new Date()
   clock.value = d.toLocaleTimeString('zh-CN', { hour12: false })
   date.value = d.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short' })
-}, 1000)
+}
+onMounted(() => { updateClock(); clockTimer = setInterval(updateClock, 1000) })
+onUnmounted(() => clearInterval(clockTimer))
 </script>
 
 <template>
   <div class="scada">
     <div class="bg-grid" />
-    <!-- 顶栏：无品牌，纯功能 -->
+    <!-- 顶栏：远距离也能一眼读懂任务和安全状态 -->
     <header class="topbar">
-      <div class="conn"><span :class="['ldot', { on: state.connected }]" />{{ state.connected ? '系统在线' : '离线' }}</div>
+      <div class="brand"><span class="brand-mark">JR</span><div><b>JETROVER</b><small>工具台态势中心</small></div></div>
+      <div class="top-state"><span :class="['ldot', { on: state.connected }]" /><div><small>通信链路</small><b>{{ state.connected ? '在线' : '离线' }}</b></div></div>
+      <div class="top-state"><span :class="['mode-icon', { armed: driveArmed }]">{{ driveArmed ? '●' : '◆' }}</span><div><small>安全状态</small><b :class="{ dangerText: driveArmed }">{{ driveMode }}</b></div></div>
+      <div class="top-state"><span class="mode-icon">◎</span><div><small>任务模式</small><b>{{ taskMode }}</b></div></div>
+      <div class="top-state battery"><div><small>剩余电量</small><b :class="{ dangerText: volt != null && volt < BATT_WARN }">{{ pct }}<em>%</em></b></div></div>
       <div class="tb-sep" />
       <div class="clock">{{ clock }}<span class="date">{{ date }}</span></div>
     </header>
@@ -114,7 +132,7 @@ setInterval(() => {
       <!-- 左栏 -->
       <div class="col">
         <section class="panel">
-          <div class="ph"><i class="tick" />电源 · 运行状态</div>
+          <div class="ph"><i class="tick" />设备健康<span class="ph-r">{{ status.filter(s => s.on).length }}/{{ status.length }} ONLINE</span></div>
           <div class="pb" style="display:flex;gap:12px;align-items:center">
             <RingGauge dark :value="pct" unit="%" label="剩余电量" :size="96"
               :color="volt != null && volt < BATT_WARN ? '#F43F5E' : '#34D399'" />
@@ -144,12 +162,12 @@ setInterval(() => {
           </div>
         </section>
         <section class="panel">
-          <div class="ph"><i class="tick" />关节控制<span class="ph-r">SERVO</span></div>
+          <div class="ph"><i class="tick" />机械臂姿态<button :class="['panel-lock', { open: armControlUnlocked }]" @click="armControlUnlocked = !armControlUnlocked">{{ armControlUnlocked ? '控制已解锁' : '只读监控' }}</button></div>
           <div class="pb jctrl">
             <div v-for="j in JOINTS" :key="j.id" class="jrow">
               <span class="jl">{{ j.l }}<em v-if="j.cn">{{ j.cn }}</em></span>
               <input type="range" min="0" max="1000" step="1" :value="jval[j.id]"
-                @input="e => onJoint(j.id, e.target.value)" />
+                :disabled="!armControlUnlocked" @input="e => onJoint(j.id, e.target.value)" />
               <b class="jv">{{ jval[j.id] }}</b>
             </div>
           </div>
@@ -160,6 +178,13 @@ setInterval(() => {
       <div class="col center">
         <div class="viewport">
           <Twin :bare="true" />
+          <div class="scene-head"><span>数字孪生</span><b>实时姿态</b></div>
+          <div class="scene-status">
+            <div><small>线速度</small><b>{{ vx.toFixed(2) }} <em>m/s</em></b></div>
+            <div><small>航向</small><b>{{ deg(euler.yaw).toFixed(1) }}<em>°</em></b></div>
+            <div><small>雷达回波</small><b :class="{ dangerText: !scanN }">{{ scanN }}</b></div>
+          </div>
+          <div :class="['scene-safety', { warn: driveArmed }]"><span>{{ driveArmed ? '驱动已解锁' : '安全锁定' }}</span><small>{{ driveArmed ? '车辆可能运动' : '底盘不会响应速度指令' }}</small></div>
           <span class="vp c tl" /><span class="vp c tr" /><span class="vp c bl" /><span class="vp c br" />
         </div>
       </div>
@@ -167,20 +192,21 @@ setInterval(() => {
       <!-- 右栏 -->
       <div class="col">
         <section class="panel">
-          <div class="ph"><i class="tick" />CPU 负载趋势<span class="ph-r">120s</span></div>
+          <div class="ph"><i class="tick" />CPU 趋势<span class="chart-now">{{ cpuAvg }}<em>%</em></span><span class="ph-r">近 120s</span></div>
           <div class="pb"><MiniChart :data="cpuHist" :min="0" :max="100" :threshold="90" :height="120" /></div>
         </section>
         <section class="panel">
-          <div class="ph"><i class="tick" />电池电压趋势<span class="ph-r">120s</span></div>
+          <div class="ph"><i class="tick" />电池趋势<span class="chart-now">{{ volt?.toFixed(2) ?? '--' }}<em>V</em></span><span class="ph-r">低压线 10.0V</span></div>
           <div class="pb"><MiniChart :data="voltHist" :min="9" :max="12.6" :threshold="10" :height="120" /></div>
         </section>
         <section class="panel grow">
-          <div class="ph"><i class="tick" />告警监控</div>
-          <div class="pb">
-            <table class="alarm">
+          <div class="ph"><i class="tick" />异常事件<span :class="['alarm-count', { clear: !activeAlarms.length }]">{{ activeAlarms.length ? activeAlarms.length + ' 项告警' : '全部正常' }}</span></div>
+          <div class="pb alarm-body">
+            <div v-if="!activeAlarms.length" class="all-clear"><span>✓</span><b>系统运行正常</b><small>所有关键监控项均在阈值内</small></div>
+            <table v-else class="alarm">
               <thead><tr><th>#</th><th>监控项</th><th>状态</th></tr></thead>
               <tbody>
-                <tr v-for="(a, i) in alarms" :key="i">
+                <tr v-for="(a, i) in activeAlarms" :key="i">
                   <td class="mono">{{ String(i + 1).padStart(2, '0') }}</td><td>{{ a.n }}</td>
                   <td><span :class="['dot', { on: !a.bad, bad: a.bad }]" /><span :class="a.bad ? 'off' : 'ok'">{{ a.bad ? '告警' : '正常' }}</span></td>
                 </tr>
@@ -194,9 +220,9 @@ setInterval(() => {
     <!-- 底控栏 -->
     <footer class="ctrlbar">
       <div class="cb">
-        <button class="cbtn" @click="armHome">复位姿态</button>
-        <button class="cbtn" @click="gripOpen">夹爪张开</button>
-        <button class="cbtn" @click="gripClose">夹爪闭合</button>
+        <button class="cbtn" :disabled="!armControlUnlocked" @click="armHome">复位姿态</button>
+        <button class="cbtn" :disabled="!armControlUnlocked" @click="gripOpen">夹爪张开</button>
+        <button class="cbtn" :disabled="!armControlUnlocked" @click="gripClose">夹爪闭合</button>
         <button class="cbtn" @click="beep">蜂鸣提示</button>
       </div>
       <div class="cb r">
@@ -383,5 +409,56 @@ setInterval(() => {
   .jrow input[type=range]::-webkit-slider-thumb { width: 20px; height: 20px; }
   .jrow input[type=range]::-moz-range-thumb { width: 20px; height: 20px; }
   .jl { width: 56px; }
+}
+
+/* 态势大屏增强层：覆盖原有紧凑控制台样式 */
+.topbar { height:64px; gap:22px; }
+.brand { display:flex; align-items:center; gap:10px; min-width:160px; }
+.brand-mark { display:grid; place-items:center; width:34px; height:34px; border:1px solid rgba(56,189,248,.55); border-radius:8px; color:#7DD3FC; font:700 12px/1 Inter; box-shadow:inset 0 0 16px rgba(56,189,248,.08); }
+.brand div,.top-state div { display:flex; flex-direction:column; gap:3px; }
+.brand b { font:700 13px/1 Inter; letter-spacing:1.8px; }
+.brand small,.top-state small { color:#64748B; font-size:9px; letter-spacing:.8px; }
+.top-state { display:flex; align-items:center; gap:9px; min-width:108px; }
+.top-state b { font-size:13px; font-weight:600; color:#E2E8F0; white-space:nowrap; }
+.top-state.battery b { font:700 22px/1 Inter,monospace; color:#34D399; }
+.top-state em,.scene-status em,.chart-now em { font-style:normal; font-size:9px; color:#64748B; margin-left:3px; font-weight:500; }
+.mode-icon { color:#38BDF8; font-size:14px; }
+.mode-icon.armed { color:#F59E0B; filter:drop-shadow(0 0 5px rgba(245,158,11,.5)); }
+.dangerText { color:#FB7185 !important; }
+.panel-lock { margin-left:auto; border:1px solid rgba(255,255,255,.1); background:rgba(255,255,255,.03); color:#94A3B8; border-radius:5px; padding:4px 8px; font:500 10px/1 inherit; cursor:pointer; }
+.panel-lock.open { color:#F59E0B; border-color:rgba(245,158,11,.4); background:rgba(245,158,11,.08); }
+.jrow input[type=range]:disabled { opacity:.34; cursor:not-allowed; }
+.scene-head { position:absolute; z-index:3; top:20px; left:28px; display:flex; flex-direction:column; gap:5px; pointer-events:none; }
+.scene-head span { color:#64748B; font-size:10px; letter-spacing:2px; text-transform:uppercase; }
+.scene-head b { font-size:18px; letter-spacing:1px; }
+.scene-status { position:absolute; z-index:3; left:28px; bottom:28px; display:flex; gap:10px; pointer-events:none; }
+.scene-status>div { min-width:98px; padding:10px 12px; border:1px solid rgba(255,255,255,.08); border-radius:8px; background:rgba(8,11,18,.78); backdrop-filter:blur(8px); }
+.scene-status small { display:block; color:#64748B; font-size:9px; margin-bottom:5px; }
+.scene-status b { font:600 16px/1 Inter,monospace; }
+.scene-safety { position:absolute; z-index:3; right:28px; bottom:28px; padding:9px 12px; border:1px solid rgba(52,211,153,.28); border-radius:8px; background:rgba(6,78,59,.14); display:flex; flex-direction:column; gap:3px; pointer-events:none; }
+.scene-safety span { color:#34D399; font-size:12px; font-weight:700; }
+.scene-safety small { color:#64748B; font-size:9px; }
+.scene-safety.warn { border-color:rgba(245,158,11,.45); background:rgba(120,53,15,.16); }
+.scene-safety.warn span { color:#F59E0B; }
+.chart-now { margin-left:auto; color:#F8FAFC; font:700 17px/1 Inter,monospace; }
+.chart-now+.ph-r { margin-left:10px; }
+.alarm-count { margin-left:auto; color:#FB7185; border:1px solid rgba(244,63,94,.3); background:rgba(244,63,94,.08); border-radius:10px; padding:3px 8px; font-size:10px; }
+.alarm-count.clear { color:#34D399; border-color:rgba(52,211,153,.28); background:rgba(52,211,153,.07); }
+.alarm-body { display:flex; align-items:stretch; }
+.all-clear { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; color:#34D399; text-align:center; min-height:150px; }
+.all-clear span { display:grid; place-items:center; width:52px; height:52px; border:1px solid rgba(52,211,153,.35); border-radius:50%; background:rgba(52,211,153,.06); font-size:22px; margin-bottom:14px; }
+.all-clear b { font-size:15px; }
+.all-clear small { color:#64748B; margin-top:7px; font-size:10px; }
+.cbtn:disabled { opacity:.3; cursor:not-allowed; border-color:rgba(255,255,255,.08); color:#64748B; background:transparent; }
+@media (max-width:1280px) {
+  .brand { min-width:auto; } .brand small { display:none; }
+  .top-state { min-width:auto; } .top-state:nth-of-type(3) { display:none; }
+}
+@media (max-width:820px) {
+  .brand { display:none; }
+  .top-state { flex:1; } .top-state:nth-of-type(4) { display:none; }
+  .scene-status { left:16px; bottom:16px; }
+  .scene-status>div { min-width:70px; padding:8px; }
+  .scene-safety { display:none; }
 }
 </style>

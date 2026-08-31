@@ -37,8 +37,106 @@ function onImgError() {
 }
 onUnmounted(() => { if (retryT) clearTimeout(retryT) })
 const imgEl = ref(null)
+const canvasEl = ref(null)
+const showOffsetPreview = ref(false)  // 是否显示补偿预览绿框
 // 流卡住(web_video_server 重启等)时 <img> 不报错，只是不再更新——靠采样比对发现
 useStreamWatch(() => imgEl.value, reloadVideo)
+
+// 绘制补偿后的预览框
+function drawOffsetPreview() {
+  const canvas = canvasEl.value
+  const img = imgEl.value
+  if (!canvas || !img || !img.naturalWidth) return
+
+  // 开关关闭时清空并退出
+  if (!showOffsetPreview.value) {
+    const ctx = canvas.getContext('2d')
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    return
+  }
+
+  // canvas 尺寸匹配容器显示尺寸（而不是原图尺寸）
+  const rect = img.getBoundingClientRect()
+  const scale = Math.min(rect.width / img.naturalWidth, rect.height / img.naturalHeight)
+  const dw = img.naturalWidth * scale
+  const dh = img.naturalHeight * scale
+
+  canvas.width = dw
+  canvas.height = dh
+  canvas.style.width = dw + 'px'
+  canvas.style.height = dh + 'px'
+
+  const ctx = canvas.getContext('2d')
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+
+  const xOff = cfg.value.x_offset_hack || 0
+  const yOff = cfg.value.y_offset_hack || 0
+  const zOff = cfg.value.z_offset_hack || 0
+
+  console.log('[Offset Preview]', { xOff, yOff, zOff, dets: dets.value.length, scale, dw, dh })
+
+  if (Math.abs(xOff) < 0.001 && Math.abs(yOff) < 0.001 && Math.abs(zOff) < 0.001) return
+
+  const detections = dets.value.filter(d => d.xyz && d.u != null && d.v != null)
+  if (!detections.length) {
+    console.log('[Offset Preview] No detections with valid u,v,xyz')
+    return
+  }
+
+  detections.forEach(d => {
+    // 原始像素坐标转换到显示坐标
+    const u = d.u * scale
+    const v = d.v * scale
+
+    // 补偿后的位置（粗略估算：x轴 0.01m ≈ 15px * scale）
+    const offsetXpx = xOff * 1500 * scale
+    const offsetYpx = -yOff * 1500 * scale
+
+    const newU = u + offsetXpx
+    const newV = v + offsetYpx
+
+    console.log('[Offset Preview]', d.label, 'u,v=', [u.toFixed(1), v.toFixed(1)], 'new=', [newU.toFixed(1), newV.toFixed(1)])
+
+    // 绘制虚线框表示补偿后的位置
+    ctx.setLineDash([6, 4])
+    ctx.strokeStyle = '#00ff00'
+    ctx.lineWidth = 3
+    const boxSize = 50 * scale
+    ctx.strokeRect(newU - boxSize/2, newV - boxSize/2, boxSize, boxSize)
+
+    // 绘制箭头指向
+    ctx.setLineDash([])
+    ctx.strokeStyle = '#00ff00'
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.moveTo(u, v)
+    ctx.lineTo(newU, newV)
+    ctx.stroke()
+
+    // 绘制箭头头部
+    const angle = Math.atan2(newV - v, newU - u)
+    const arrowLen = 12 * scale
+    ctx.beginPath()
+    ctx.moveTo(newU, newV)
+    ctx.lineTo(newU - arrowLen * Math.cos(angle - 0.3), newV - arrowLen * Math.sin(angle - 0.3))
+    ctx.moveTo(newU, newV)
+    ctx.lineTo(newU - arrowLen * Math.cos(angle + 0.3), newV - arrowLen * Math.sin(angle + 0.3))
+    ctx.stroke()
+
+    // 绘制文字说明
+    ctx.fillStyle = '#00ff00'
+    ctx.font = `bold ${16 * scale}px sans-serif`
+    ctx.shadowColor = 'rgba(0,0,0,0.8)'
+    ctx.shadowBlur = 4
+    const label = `${xOff > 0 ? '+' : ''}${(xOff*100).toFixed(1)}cm`
+    ctx.fillText(label, newU + 35 * scale, newV - 10 * scale)
+    ctx.shadowBlur = 0
+  })
+}
+
+watch([dets, cfg, showOffsetPreview, () => imgEl.value?.naturalWidth], () => {
+  requestAnimationFrame(drawOffsetPreview)
+}, { deep: true, immediate: true })
 
 // 点画面 -> 抓那一个。MJPEG 用 object-fit: contain，要把点击坐标换算回原图像素。
 // 打开「只算不抓」后，点击只让节点报出 base_link 坐标，臂不动——用来和卷尺对账。
@@ -66,6 +164,7 @@ function send(obj, tip) {
 // 开着是默认，关掉有真实代价：欠压时舵机失力，臂直接砸下来，正夹着的东西也摔。
 // 所以只有「关」这一侧要确认一次，「开」直接下发。
 const lowVoltOn = computed(() => cfg.value.low_volt_enabled !== false)
+const lowVoltBuzzerOn = computed(() => cfg.value.low_volt_buzzer_enabled === true)
 function setLowVolt(on) {
   if (on) return send({ action: 'set_config', patch: { low_volt_enabled: true } }, '低压保护已开启')
   Modal.confirm({
@@ -79,6 +178,16 @@ function setLowVolt(on) {
 
 // ---- 参数编辑：本地暂存，点保存才下发 ----
 const edit = reactive({ on: false, patch: {} })
+const PROFILE_KEYS = ['table_z', 'x_offset_hack', 'y_offset_hack', 'z_offset_hack',
+  'assume_object_h', 'grasp_z_offset', 'approach_h', 'lift_h', 'gripper_open', 'gripper_close']
+const profiles = computed(() => sb.value?.profiles || [])
+const selectedProfile = ref(null)
+const profileName = ref('')
+const profileDesc = ref('')
+const selectedProfileInfo = computed(() => profiles.value.find(p => p.id === selectedProfile.value) || null)
+watch(() => sb.value?.active_profile_id, id => {
+  if (id) selectedProfile.value = id
+}, { immediate: true })
 function field(k) { return edit.on && k in edit.patch ? edit.patch[k] : cfg.value[k] }
 function setField(k, v) { edit.on = true; edit.patch[k] = v }
 function saveCfg() {
@@ -87,6 +196,36 @@ function saveCfg() {
   edit.patch = {}; edit.on = false
 }
 function resetCfg() { edit.patch = {}; edit.on = false }
+function currentProfileParams() {
+  return Object.fromEntries(PROFILE_KEYS.map(k => [k, field(k)]))
+}
+function saveProfile() {
+  const name = profileName.value.trim()
+  if (!name) return message.error('请填写方案名称')
+  send({ action: 'profile_save', name, description: profileDesc.value.trim(),
+    params: currentProfileParams() }, `方案「${name}」已保存并启用`)
+  edit.patch = {}; edit.on = false
+}
+function applyProfile() {
+  const p = selectedProfileInfo.value
+  if (!p) return message.error('请选择一个参数方案')
+  Modal.confirm({ title: `应用方案「${p.name}」？`,
+    content: '会覆盖当前抓取参数，但不会立即驱动机械臂。下一次抓取使用新参数。',
+    okText: '应用方案', cancelText: '取消',
+    onOk: () => { resetCfg(); send({ action: 'profile_apply', id: p.id }, `已启用「${p.name}」`) } })
+}
+function deleteProfile() {
+  const p = selectedProfileInfo.value
+  if (!p) return message.error('请选择要删除的方案')
+  Modal.confirm({ title: `删除方案「${p.name}」？`, content: '只删除方案记录，不改变当前已生效参数。',
+    okText: '删除', okType: 'danger', cancelText: '取消',
+    onOk: () => { send({ action: 'profile_delete', id: p.id }, `已删除「${p.name}」`); selectedProfile.value = null } })
+}
+function fmtProfileTime(v) {
+  if (!v) return '—'
+  const d = new Date(v)
+  return Number.isNaN(d.getTime()) ? v : d.toLocaleString('zh-CN', { hour12: false })
+}
 
 // ---- 自然语言指令 ----
 const nl = ref('')
@@ -114,11 +253,27 @@ const detColumns = [
   { title: '', dataIndex: 'chip', key: 'chip', width: 34 },
   { title: '目标', dataIndex: 'label', key: 'label', width: 70 },
   { title: 'base_link 坐标 (m)', dataIndex: 'xyz', key: 'xyz' },
+  { title: '补偿后坐标', dataIndex: 'xyz_offset', key: 'xyz_offset', width: 140 },
+  { title: '检测器', dataIndex: 'detector', key: 'detector', width: 105 },
   { title: '来源', dataIndex: 'src', key: 'src', width: 76 },
   { title: '面积', dataIndex: 'area', key: 'area', width: 70 },
   { title: '', dataIndex: 'act', key: 'act', width: 116 },
 ]
-const detRows = computed(() => dets.value.map((d, i) => ({ key: i, ...d })))
+const detRows = computed(() => {
+  const xOff = cfg.value.x_offset_hack || 0
+  const yOff = cfg.value.y_offset_hack || 0
+  const zOff = cfg.value.z_offset_hack || 0
+
+  return dets.value.map((d, i) => {
+    const xyz_offset = d.xyz ? [
+      (d.xyz[0] + xOff).toFixed(3),
+      (d.xyz[1] + yOff).toFixed(3),
+      (d.xyz[2] + zOff).toFixed(3)
+    ].join(', ') : '—'
+
+    return { key: i, ...d, xyz_offset }
+  })
+})
 </script>
 
 <template>
@@ -136,12 +291,17 @@ const detRows = computed(() => dets.value.map((d, i) => ({ key: i, ...d })))
       <a-card size="small" title="视觉识别">
         <template #extra>
           <a-space>
+            <a-tag :color="sb?.detector?.yolo_loaded ? 'purple' : 'default'">
+              {{ sb?.detector?.yolo_loaded ? `YOLOv5s · ${sb.detector.yolo_device}`
+                : sb?.detector?.yolo_loading ? 'YOLO 后台加载中…' : 'YOLO 未启用' }}
+            </a-tag>
             <a-tag :color="STATE_COLOR[sb?.state] || 'default'">{{ sb?.state || '离线' }}</a-tag>
             <span style="color:var(--text-3);font-size:13px">{{ sb?.step || '—' }}</span>
           </a-space>
         </template>
         <div class="stage" @click="onPick">
           <img ref="imgEl" :src="src" @error="onImgError" />
+          <canvas ref="canvasEl" class="overlay-canvas" />
           <div class="hint">{{ probeMode ? '只算不抓：点一下看它算出来的坐标' : '点画面中的目标即抓取' }}</div>
         </div>
 
@@ -158,6 +318,13 @@ const detRows = computed(() => dets.value.map((d, i) => ({ key: i, ...d })))
           <a-button size="small" :disabled="!online" @click="send({ action: 'gripper', open: true })">张爪</a-button>
           <a-button size="small" :disabled="!online" @click="send({ action: 'gripper', open: false })">合爪</a-button>
           <a-button size="small" @click="reloadVideo">刷新画面</a-button>
+          <a-select :value="cfg.detector_mode || 'hybrid'" size="small" style="width:150px"
+            :options="[
+              { value: 'hybrid', label: 'YOLO + 颜色兜底' },
+              { value: 'yolo', label: '仅 YOLO 通用类' },
+              { value: 'color', label: '仅颜色识别' },
+            ]"
+            @change="v => send({ action: 'set_config', patch: { detector_mode: v } }, '识别模式已切换')" />
           <a-tooltip title="空跑：识别、算坐标、算 IK 全跑，但不给舵机发指令。第一次上电先开着它验证整条链路。">
             <a-switch :checked="!!cfg.dry_run" :disabled="!online" size="small"
               checked-children="空跑" un-checked-children="实动"
@@ -175,7 +342,7 @@ const detRows = computed(() => dets.value.map((d, i) => ({ key: i, ...d })))
       </a-card>
 
       <a-card size="small" title="识别结果" style="margin-top:16px">
-        <template #extra><span style="color:var(--text-3);font-size:13px">坐标已换算到 base_link</span></template>
+        <template #extra><span style="color:var(--text-3);font-size:13px">YOLO 识别 COCO 类；深度候选补充未知包装</span></template>
         <a-table :columns="detColumns" :data-source="detRows" size="small" :pagination="false"
           :locale="{ emptyText: online ? '当前没有识别到目标' : '节点离线' }">
           <template #bodyCell="{ column, record }">
@@ -191,6 +358,11 @@ const detRows = computed(() => dets.value.map((d, i) => ({ key: i, ...d })))
             <template v-else-if="column.key === 'src'">
               <a-tag :color="record.depth_src === 'depth' ? 'green' : 'orange'">
                 {{ record.depth_src === 'depth' ? '深度' : '平面' }}</a-tag>
+            </template>
+            <template v-else-if="column.key === 'detector'">
+              <a-tag :color="record.detector === 'yolov5' ? 'purple' : record.detector === 'depth' ? 'green' : 'blue'">
+                {{ record.detector === 'yolov5' ? `YOLO ${record.confidence ?? ''}` : record.detector === 'depth' ? '深度物体' : 'HSV' }}
+              </a-tag>
             </template>
             <template v-else-if="column.key === 'area'">{{ Math.round(record.area) }}</template>
             <template v-else-if="column.key === 'act'">
@@ -229,6 +401,13 @@ const detRows = computed(() => dets.value.map((d, i) => ({ key: i, ...d })))
           </a-descriptions-item>
           <a-descriptions-item label="已抓取">{{ stats.picked ?? 0 }} 件</a-descriptions-item>
           <a-descriptions-item label="失败">{{ stats.failed ?? 0 }} 次</a-descriptions-item>
+          <a-descriptions-item label="识别模型" :span="2">
+            <a-tag color="purple">{{ sb?.detector?.mode || '—' }}</a-tag>
+            <span v-if="sb?.detector?.yolo_loaded">YOLOv5s / {{ sb.detector.yolo_device }}</span>
+            <span v-else-if="sb?.detector?.yolo_error" style="color:var(--bad)">{{ sb.detector.yolo_error }}</span>
+            <span v-else-if="sb?.detector?.yolo_loading">正在后台加载，无需操作</span>
+            <span v-else>当前模式未启用 YOLO</span>
+          </a-descriptions-item>
           <a-descriptions-item label="末端 XYZ" :span="2">
             <code v-if="sb?.ee">{{ sb.ee.x.toFixed(3) }}, {{ sb.ee.y.toFixed(3) }}, {{ sb.ee.z.toFixed(3) }}
               &nbsp;pitch {{ sb.ee.pitch_deg }}°</code>
@@ -251,6 +430,12 @@ const detRows = computed(() => dets.value.map((d, i) => ({ key: i, ...d })))
                 : '保护已关闭：欠压时不再自动收臂，机械臂会砸下来'">
                 <a-switch :checked="lowVoltOn" :disabled="!online" size="small"
                   checked-children="低压保护" un-checked-children="保护已关" @change="setLowVolt" />
+              </a-tooltip>
+              <a-tooltip title="只控制低于 10V 时扩展板的六连响；关闭声音不会关闭低压收臂、锁车和告警。">
+                <a-switch :checked="lowVoltBuzzerOn" :disabled="!online" size="small"
+                  checked-children="低压有声" un-checked-children="低压静音"
+                  @change="v => send({ action: 'set_config', patch: { low_volt_buzzer_enabled: v } },
+                    v ? '低压蜂鸣已开启' : '低压蜂鸣已关闭，安全保护仍开启')" />
               </a-tooltip>
               <a-tag :color="sb?.cam_fix ? 'green' : 'orange'">
                 地面{{ sb?.cam_fix ? '已标定' : '未标定' }}</a-tag>
@@ -329,8 +514,44 @@ const detRows = computed(() => dets.value.map((d, i) => ({ key: i, ...d })))
             <a-button size="small" type="primary" @click="saveCfg">保存到机器人</a-button>
           </a-space>
         </template>
+        <div class="profile-box">
+          <div class="profile-title">
+            <span>参数方案</span>
+            <a-tag v-if="sb?.active_profile_id" color="blue">
+              当前：{{ profiles.find(p => p.id === sb.active_profile_id)?.name || '已保存方案' }}
+            </a-tag>
+            <a-tag v-else>当前参数未绑定方案</a-tag>
+          </div>
+          <a-space compact style="width:100%">
+            <a-select v-model:value="selectedProfile" allow-clear placeholder="选择已保存方案"
+              style="flex:1;min-width:0"
+              :options="profiles.map(p => ({ value: p.id, label: `${p.name} · ${fmtProfileTime(p.updated_at)}` }))" />
+            <a-button :disabled="!selectedProfile" @click="applyProfile">应用</a-button>
+            <a-button danger :disabled="!selectedProfile" @click="deleteProfile">删除</a-button>
+          </a-space>
+          <div v-if="selectedProfileInfo" class="profile-meta">
+            <span>{{ selectedProfileInfo.description || '无描述' }}</span>
+            <span>创建 {{ fmtProfileTime(selectedProfileInfo.created_at) }}</span>
+            <span>更新 {{ fmtProfileTime(selectedProfileInfo.updated_at) }}</span>
+          </div>
+          <a-row :gutter="8" style="margin-top:10px">
+            <a-col :span="8"><a-input v-model:value="profileName" maxlength="40" placeholder="新方案名称" /></a-col>
+            <a-col :span="11"><a-input v-model:value="profileDesc" maxlength="200" placeholder="描述：场景、物体、调参依据等" /></a-col>
+            <a-col :span="5"><a-button type="primary" block @click="saveProfile">保存当前方案</a-button></a-col>
+          </a-row>
+          <div class="tip">保存会把下方尚未提交的滑块值一起写入方案并立即设为当前参数。</div>
+        </div>
+        <div class="prow" style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--border)">
+          <span class="plabel">补偿预览</span>
+          <a-switch v-model:checked="showOffsetPreview" size="small"
+            checked-children="显示绿框" un-checked-children="隐藏" style="margin-left:12px" />
+          <span class="tip" style="margin:0 0 0 12px">开启后画面上显示补偿后的位置预览</span>
+        </div>
         <div v-for="p in [
           ['table_z', '桌面高度 z', 0, 0.2, 0.005, '机器人放桌上时，桌面在 base_link 系的高度'],
+          ['x_offset_hack', 'X 坐标补偿', -0.1, 0.1, 0.005, '视觉算出的 x 偏小时，加正值往前补；偏大时用负值'],
+          ['y_offset_hack', 'Y 坐标补偿', -0.1, 0.1, 0.005, '视觉算出的 y 偏左/右时的补偿'],
+          ['z_offset_hack', 'Z 高度补偿', -0.05, 0.05, 0.005, '视觉算出的物体高度有系统偏差时用'],
           ['assume_object_h', '假设目标高', 0, 0.1, 0.005, '深度失效时按这个高度算，估错 1cm 大约抓偏 5mm'],
           ['grasp_z_offset', '下探量', -0.06, 0.02, 0.005, '从视觉给的顶面再往下多少再合爪（负=往下）'],
           ['approach_h', '悬停高度', 0.02, 0.15, 0.01, ''],
@@ -374,6 +595,7 @@ const detRows = computed(() => dets.value.map((d, i) => ({ key: i, ...d })))
 <style scoped>
 .stage { position: relative; background: #000; border-radius: 8px; overflow: hidden; cursor: crosshair; }
 .stage img { width: 100%; display: block; aspect-ratio: 4/3; object-fit: contain; background: #000; }
+.overlay-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; object-fit: contain; }
 .hint { position: absolute; left: 8px; bottom: 8px; background: rgba(0,0,0,.55); color: #fff;
   font-size: 12px; padding: 3px 8px; border-radius: 4px; pointer-events: none; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
@@ -382,6 +604,12 @@ const detRows = computed(() => dets.value.map((d, i) => ({ key: i, ...d })))
 .plabel { font-size: 13px; color: var(--text-2); width: 74px; flex-shrink: 0; }
 .pval { font-size: 13px; width: 52px; text-align: right; flex-shrink: 0; }
 .tip { font-size: 12px; color: var(--text-3); margin-top: 8px; line-height: 1.7; }
+.profile-box { margin-bottom: 14px; padding: 12px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface-2); }
+.profile-title { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-bottom: 10px; font-size: 13px; font-weight: 600; color: var(--text-1); }
+.profile-meta { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 8px;
+  color: var(--text-3); font-size: 12px; line-height: 1.6; }
 .mono { font-family: ui-monospace, monospace; font-size: 12px; color: var(--text-3); margin-top: 10px; }
 .chat { margin-top: 12px; max-height: 240px; overflow: auto; }
 .msg { font-size: 13px; padding: 6px 0; border-bottom: 1px solid var(--border); line-height: 1.7; }

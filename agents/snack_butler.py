@@ -25,7 +25,8 @@ JetRover「零食管家」——识别零食 -> 算坐标 -> 机械臂抓到指�
     {"action":"set_config","patch":{...}}    改参数并落盘
 状态输出： /snack_butler/state (std_msgs/String, JSON)，标注图 /snack_butler/image_result
 """
-import os, sys, json, math, time, threading, traceback
+import os, sys, json, math, time, threading, traceback, uuid
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -40,7 +41,7 @@ from std_msgs.msg import String, UInt16
 from arm_kinematics import (ik_best, ik_auto_pitch, fk, fk_wrist, ServoMap, TOOL_LEN,
                             SERVO_IDS, GRIPPER_ID, JOINT_NAMES, clamp)
 import vision_geometry as vg
-from snack_detector import ColorDetector, COLOR_BGR, locate as locate_3d
+from snack_detector import UniversalDetector, COLOR_BGR, detect_depth_objects, locate as locate_3d
 
 # 这些是机器人自带的自定义消息；缺任何一个都没法动，直接报清楚
 from ros_robot_controller_msgs.msg import ServosPosition, ServoPosition, BuzzerState
@@ -61,6 +62,10 @@ def ascii_only(t):
 
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'snack_butler_config.json')
+PROFILES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'snack_butler_profiles.json')
+PROFILE_KEYS = ('table_z', 'x_offset_hack', 'y_offset_hack', 'z_offset_hack',
+                'assume_object_h', 'grasp_z_offset', 'approach_h', 'lift_h',
+                'gripper_open', 'gripper_close')
 
 DEFAULT_CONFIG = {
     # --- 姿态 ---
@@ -84,6 +89,7 @@ DEFAULT_CONFIG = {
     "grasp_clearance": 0.005,  # 合爪点最低离桌面这么高，防止怼到桌子
     "approach_h": 0.07,        # 预抓取悬停在目标上方多高
     "lift_h": 0.10,            # 抓起来先抬到多高再搬运
+    "safe_z": 0.08,            # 安全高度：从观察位移动到目标前，先移到这个高度避免撞机身
 
     # --- 工作区裁剪：投影落在这个盒子外的检测结果直接丢掉（挡住误检最有效的一招）---
     # 相对桌面来写：[下界, 上界] 都是「离 table_z 多高」，换桌子高度不用重调
@@ -116,6 +122,17 @@ DEFAULT_CONFIG = {
         "purple": [[[126, 70, 60], [160, 255, 255]]]
     },
     "enabled_colors": ["red", "orange", "green", "blue", "yellow"],
+    # 通用 COCO 物体用 Jetson 自带 YOLOv5s/GPU；彩色零食继续由 HSV 兜底。
+    # COCO 只有 80 类，并不等于世间所有商品；没训练过的包装仍可直接点画面抓取。
+    "detector_mode": "hybrid",
+    "yolo_root": "/home/ubuntu/third_party_ros2/yolov5",
+    "yolo_weights": "/home/ubuntu/third_party_ros2/yolov5/yolov5s.pt",
+    "yolo_size": 640,
+    "yolo_conf": 0.35,
+    "yolo_iou": 0.45,
+    "depth_object_enabled": True,
+    "depth_object_min_h": 0.012,
+    "depth_object_max_h": 0.16,
     # 观察位下相机会看到自己的底盘（绿色顶板 + 麦轮），HSV 一抓一个准。
     # 它在 base_link 里位置固定，跟臂怎么动无关，所以直接用 base_link 盒子排除。
     # 地面上的零食 z≈-0.09（桌面 -0.116 + 物高），底盘顶板 z≈0，不会误伤。
@@ -147,6 +164,10 @@ DEFAULT_CONFIG = {
     # 舵机/电机一动电压就瞬间塌（实测能掉 0.5 V 以上），所以必须"连续 N 次低于阈值"
     # 才动作，否则一抓东西就误触发。恢复用更高的阈值做迟滞，免得在阈值附近反复横跳。
     "low_volt_enabled": True,
+    # 扩展板固件在 10V 以下会反复六连响。关闭声音不等于关闭保护：仍会收臂、
+    # 拒绝抓取并锁住移动，只用零参数命令覆盖板载蜂鸣器。
+    "low_volt_buzzer_enabled": False,
+    "low_volt_buzzer_threshold": 10.0,
     "low_volt_park": 10.6,     # V，连续低于它就收臂并禁止抓取
     "low_volt_clear": 11.0,    # V，回到它以上才解除
     "low_volt_hold": 5,        # 连续多少个采样（电池约 1 Hz）才算数
@@ -158,6 +179,8 @@ DEFAULT_CONFIG = {
     # 解码限速：相机 12~15 fps，但识别只在"到观察位之后拍几帧"时用，
     # 标注图也只发 5 Hz。每来一帧就解一次纯属白烧 CPU。
     "proc_fps": 6,
+    # 在观察位空闲时持续刷新检测结果；只做视觉计算，不触发机械臂。
+    "idle_detect_hz": 1.0,
     "camera_frame": "depth_cam_color_optical_frame",
     "base_frame": "base_link",
     "use_tf": True,
@@ -181,8 +204,12 @@ class SnackButler(Node):
         super().__init__('snack_butler')
         self.cfg = json.loads(json.dumps(DEFAULT_CONFIG))
         self.load_config()
+        self.profiles = []
+        self.active_profile_id = None
+        self.load_profiles()
         self.smap = ServoMap(**{k: self.cfg['servo_map'][k] for k in ('dirs', 'centers')})
-        self.detector = ColorDetector(self.cfg)
+        self.detector = UniversalDetector(self.cfg)
+        self.ensure_initial_profile()
 
         self.lock = threading.Lock()
         self.rgb = None
@@ -202,9 +229,12 @@ class SnackButler(Node):
         self.calib_samples = []
         self.cam_w = 0              # 相机原始宽度（用来算降采样比例）
         self._last_dec = 0.0        # 上次解码时刻，用于限速
+        self._last_idle_scan = 0.0  # 观察位后台识别节流
+        self._last_idle_count = None
         self.batt_v = None          # 最近一次电池电压（V）
         self._low_n = 0             # 连续低压计数
         self.low_volt = False       # 已触发低压保护（latch，回到 clear 阈值才解除）
+        self._last_buzzer_silence = 0.0
 
         self._task = None
         self._wait_until = 0.0
@@ -254,7 +284,18 @@ class SnackButler(Node):
         self.create_timer(0.2, self.publish_state)  # 状态播报 5Hz
         self.create_timer(0.2, self.publish_image)  # 标注图 5Hz
         self.get_logger().info('零食管家已启动。发 /snack_butler/cmd 开工。')
+        threading.Thread(target=self.preload_detector, daemon=True).start()
         self.start(self.seq_goto_observe())
+
+    def preload_detector(self):
+        self.get_logger().info('[detector] 后台加载 YOLO 模型，不阻塞 ROS 状态与低压保护')
+        self.detector.preload()
+        status = self.detector.status()
+        if status['yolo_loaded']:
+            self.get_logger().info('[detector] YOLO 已就绪 weights=%s device=%s' %
+                                   (status['weights'], status['yolo_device']))
+        elif status['yolo_error']:
+            self.get_logger().error('[detector] YOLO 加载失败：%s' % status['yolo_error'])
 
     # ---------------- 配置 ----------------
     def load_config(self):
@@ -273,6 +314,95 @@ class SnackButler(Node):
             os.replace(tmp, CONFIG_PATH)
         except Exception as e:
             self.get_logger().error(f'配置保存失败: {e}')
+
+    def load_profiles(self):
+        try:
+            if not os.path.exists(PROFILES_PATH):
+                return
+            data = json.load(open(PROFILES_PATH))
+            self.profiles = data.get('profiles') if isinstance(data, dict) else []
+            self.profiles = self.profiles if isinstance(self.profiles, list) else []
+            self.active_profile_id = data.get('active_id') if isinstance(data, dict) else None
+        except Exception as e:
+            self.profiles, self.active_profile_id = [], None
+            self.get_logger().error(f'抓取参数方案读取失败: {e}')
+
+    def save_profiles(self):
+        try:
+            tmp = PROFILES_PATH + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump({'active_id': self.active_profile_id, 'profiles': self.profiles},
+                          f, indent=2, ensure_ascii=False)
+            os.replace(tmp, PROFILES_PATH)
+        except Exception as e:
+            self.get_logger().error(f'抓取参数方案保存失败: {e}')
+
+    def ensure_initial_profile(self):
+        """首次启用方案管理时，先保护现场已经调好的真机参数。"""
+        if self.profiles:
+            return
+        now = self.now_text()
+        item = {'id': uuid.uuid4().hex[:12], 'name': '升级前参数备份',
+                'description': '首次启用参数方案管理时自动保存的现有真机参数',
+                'created_at': now, 'updated_at': now, 'params': self.profile_params()}
+        self.profiles = [item]
+        self.active_profile_id = item['id']
+        self.save_profiles()
+        self.get_logger().info('[profile_migrate] 已自动备份当前抓取参数 id=%s' % item['id'])
+
+    def profile_params(self, source=None):
+        source = source or self.cfg
+        return {k: source[k] for k in PROFILE_KEYS if k in source}
+
+    @staticmethod
+    def now_text():
+        return datetime.now().astimezone().isoformat(timespec='seconds')
+
+    def save_profile(self, command):
+        name = str(command.get('name') or '').strip()[:40]
+        if not name:
+            raise ValueError('方案名称不能为空')
+        desc = str(command.get('description') or '').strip()[:200]
+        incoming = command.get('params') or {}
+        params = self.profile_params({**self.cfg, **{k: incoming[k] for k in PROFILE_KEYS if k in incoming}})
+        now = self.now_text()
+        profile_id = str(command.get('id') or uuid.uuid4().hex[:12])
+        old = next((p for p in self.profiles if p.get('id') == profile_id), None)
+        created_at = old.get('created_at', now) if old else now
+        item = {'id': profile_id, 'name': name, 'description': desc,
+                'created_at': created_at, 'updated_at': now, 'params': params}
+        self.profiles = [item if p.get('id') == profile_id else p for p in self.profiles]
+        if old is None:
+            self.profiles.insert(0, item)
+            self.profiles = self.profiles[:50]
+        deep_update(self.cfg, params)
+        self.detector.cfg = self.cfg
+        self.active_profile_id = profile_id
+        self.save_config(); self.save_profiles()
+        self.step = f'已保存并启用方案「{name}」'
+        self.get_logger().info('[profile_save] id=%s name=%s params=%s' % (profile_id, name, params))
+
+    def apply_profile(self, profile_id):
+        item = next((p for p in self.profiles if p.get('id') == profile_id), None)
+        if not item:
+            raise ValueError('参数方案不存在')
+        deep_update(self.cfg, self.profile_params(item.get('params') or {}))
+        self.detector.cfg = self.cfg
+        self.active_profile_id = profile_id
+        self.save_config(); self.save_profiles()
+        self.step = f'已启用方案「{item.get("name", profile_id)}」'
+        self.get_logger().info('[profile_apply] id=%s name=%s' % (profile_id, item.get('name')))
+
+    def delete_profile(self, profile_id):
+        item = next((p for p in self.profiles if p.get('id') == profile_id), None)
+        if not item:
+            raise ValueError('参数方案不存在')
+        self.profiles = [p for p in self.profiles if p.get('id') != profile_id]
+        if self.active_profile_id == profile_id:
+            self.active_profile_id = None
+        self.save_profiles()
+        self.step = f'已删除方案「{item.get("name", profile_id)}」'
+        self.get_logger().info('[profile_delete] id=%s name=%s' % (profile_id, item.get('name')))
 
     # ---------------- 订阅回调 ----------------
     def on_rgb_compressed(self, msg):
@@ -328,6 +458,7 @@ class SnackButler(Node):
             self.batt_v = float(msg.data) / 1000.0
         except Exception:
             return
+        self.silence_low_voltage_buzzer()
         c = self.cfg
         if not c.get('low_volt_enabled', True):
             # 关掉保护时必须把 latch 一起解掉。否则已经触发过的那一次会一直卡在
@@ -365,8 +496,22 @@ class SnackButler(Node):
         self.last_error = (f'电池 {self.batt_v:.2f} V 低于 {self.cfg["low_volt_park"]} V：'
                            f'已收臂并停止抓取。断电时机械臂会砸下来，请尽快充电。')
         self.get_logger().warn(self.last_error)
-        self.beep(400)
+        if self.cfg.get('low_volt_buzzer_enabled', False):
+            self.beep(400)
         self.start(self.seq_home())
+
+    def silence_low_voltage_buzzer(self):
+        """低压时持续覆盖板载固件的六连响，不改变任何低压动作保护。"""
+        if (self.cfg.get('low_volt_buzzer_enabled', False) or self.batt_v is None or
+                self.batt_v >= float(self.cfg.get('low_volt_buzzer_threshold', 10.0))):
+            return
+        now = time.time()
+        if now - self._last_buzzer_silence < .18:
+            return
+        self._last_buzzer_silence = now
+        msg = BuzzerState()
+        msg.freq = 0; msg.on_time = 0.0; msg.off_time = 0.0; msg.repeat = 0
+        self.pub_buzz.publish(msg)
 
     def on_joints(self, msg):
         for n, p in zip(msg.name, msg.position):
@@ -568,6 +713,15 @@ class SnackButler(Node):
             return []
         T_bo, src = self.optical_to_base_mat()
         dets = self.detector.detect(rgb)
+        if self.cfg.get('depth_object_enabled', True):
+            with self.lock:
+                depth = None if self.depth is None else self.depth.copy()
+            generic = detect_depth_objects(depth, rgb.shape, self.K, T_bo,
+                                           self.cfg['table_z'], self.cfg)
+            # YOLO/HSV 已经给出更具体标签时不重复显示同一个物体。
+            generic = [g for g in generic
+                       if not any(UniversalDetector._iou(g, d) > .35 for d in dets)]
+            dets += generic
         out = []
         for d in dets:
             p, how = self.locate(d, T_bo)
@@ -583,6 +737,26 @@ class SnackButler(Node):
         self.detections = out
         return out
 
+    def at_observe(self):
+        """只有机械臂确实在观察位时才做后台识别，避免 eye-in-hand 位姿不一致。"""
+        want = [math.radians(a) for a in self.cfg['observe_deg']]
+        return max(abs(a - b) for a, b in zip(self.current_q(), want)) <= math.radians(5.0)
+
+    def tick_idle_detection(self):
+        hz = float(self.cfg.get('idle_detect_hz') or 0)
+        now = time.time()
+        if hz <= 0 or self.state != 'IDLE' or not self.at_observe() or self.rgb is None:
+            return
+        if now - self._last_idle_scan < 1.0 / hz:
+            return
+        self._last_idle_scan = now
+        count = len(self.scan_once())
+        self.step = f'自动识别到 {count} 个目标'
+        if count != self._last_idle_count:
+            self.get_logger().info('[idle_detect] count=%d labels=%s' %
+                                   (count, [d.get('label') for d in self.detections]))
+            self._last_idle_count = count
+
     # ---------------- 状态机：每个 yield 返回「等待秒数」 ----------------
     def start(self, gen, name=None):
         self._task = gen
@@ -594,6 +768,7 @@ class SnackButler(Node):
         if not rclpy.ok():
             return
         if self._task is None:
+            self.tick_idle_detection()
             return
         now = time.time()
         if now < self._wait_until:
@@ -705,7 +880,11 @@ class SnackButler(Node):
             self.auto = False
             return
         self.target = tgt
-        yield from self.seq_grasp(tgt)
+        success = yield from self.seq_grasp(tgt)
+        # 单次“抓某色 / 点击即抓 / 抓这个”完成后恢复 eye-in-hand 固定观察位，
+        # 页面马上重新获得正确视角并恢复后台识别。自动清台由下一轮 seq_detect 回观察位。
+        if success and not self.auto:
+            yield from self.seq_goto_observe()
 
     def _blocked_lowvolt(self):
         if self.low_volt:
@@ -731,7 +910,7 @@ class SnackButler(Node):
 
     def seq_grasp(self, tgt):
         if self._blocked_lowvolt() or self._blocked_uncalibrated():
-            return
+            return False
         cfg = self.cfg
         x, y, zs = tgt['xyz']
         # 坐标补偿：视觉定位有系统偏差时，在界面上调这三个参数实时修正
@@ -750,7 +929,7 @@ class SnackButler(Node):
             self.last_error = f'IK 无解 ({x:.3f},{y:.3f},{gz:.3f})'
             self.stats['failed'] += 1
             self.auto = False
-            return
+            return False
         q_pre = (ik_best(x, y, gz + cfg['approach_h'], pitch, seed=q_grasp, wrist_roll=roll, tool=tool)
                  or ik_auto_pitch(x, y, gz + cfg['approach_h'], seed=q_grasp,
                                   wrist_roll=roll, tool=tool)[0]
@@ -758,9 +937,21 @@ class SnackButler(Node):
         q_lift = (ik_best(x, y, gz + cfg['lift_h'], pitch, seed=q_grasp, wrist_roll=roll, tool=tool)
                   or q_pre)
 
+        # 安全中间点：从观察位先移到目标 XY + 安全高度，避免大臂下探时撞到机身
+        # 只保留 joint1 转向目标，joint2~4 保持在一个安全的抬起姿态
+        safe_z = cfg.get('safe_z', 0.08)
+        q_safe, _ = ik_auto_pitch(x, y, safe_z, wrist_roll=0, tool=tool)
+
         self.state = 'GRASP'
+        if q_safe:
+            self.step = f'安全移动到目标上方 (z={safe_z:.3f})'
+            self.gripper(True)
+            self.send_arm(q_safe, cfg['move_time'])
+            yield cfg['move_time'] + cfg['settle']
+
         self.step = f"预抓取 ({x:.3f}, {y:.3f}, {gz:.3f}) pitch={math.degrees(pitch):.0f}°"
-        self.gripper(True)
+        if not q_safe:
+            self.gripper(True)
         self.send_arm(q_pre, cfg['move_time'])
         yield cfg['move_time'] + cfg['settle']
 
@@ -780,6 +971,7 @@ class SnackButler(Node):
         self.stats['picked'] += 1
         self.target = None
         self.beep()
+        return True
 
     def seq_place(self, binname):
         cfg = self.cfg
@@ -961,12 +1153,23 @@ class SnackButler(Node):
                 self.save_config()
                 self.step = f'投放区 {name} 已记为 ({p[0]:.3f},{p[1]:.3f},{p[2]:.3f})'
             elif a == 'set_config':
-                deep_update(self.cfg, c.get('patch') or {})
-                if 'servo_map' in (c.get('patch') or {}):
+                patch = c.get('patch') or {}
+                deep_update(self.cfg, patch)
+                if 'servo_map' in patch:
                     self.smap = ServoMap(**{k: self.cfg['servo_map'][k] for k in ('dirs', 'centers')})
                 self.detector.cfg = self.cfg
+                if any(k in patch for k in PROFILE_KEYS):
+                    self.active_profile_id = None
+                    self.save_profiles()
                 self.save_config()
                 self.step = '参数已更新'
+            elif a == 'profile_save':
+                self.save_profile(c)
+            elif a == 'profile_apply':
+                self.auto = False
+                self.apply_profile(str(c.get('id') or ''))
+            elif a == 'profile_delete':
+                self.delete_profile(str(c.get('id') or ''))
             elif a == 'calib_floor':
                 self.auto = False
                 self.start(self.seq_calib_floor())
@@ -1006,6 +1209,7 @@ class SnackButler(Node):
     def publish_state(self):
         if not rclpy.ok():
             return
+        self.silence_low_voltage_buzzer()
         q = self.current_q()
         ee = fk(q, tool=self.cfg['tool_len'])   # 报指尖，和抓取目标同一口径
         m = String()
@@ -1028,14 +1232,19 @@ class SnackButler(Node):
             'batt_v': None if self.batt_v is None else round(self.batt_v, 2),
             'low_volt': self.low_volt,
             'servo_map': self.smap.as_dict(),
+            'profiles': self.profiles,
+            'detector': self.detector.status(),
+            'active_profile_id': self.active_profile_id,
             'cfg': {k: self.cfg.get(k) for k in
                     ('table_z', 'assume_object_h', 'grasp_z_offset', 'tool_len', 'approach_h',
                      'lift_h', 'gripper_open',
                      'gripper_close', 'bins', 'route', 'enabled_colors', 'workspace_rel',
                      'pick_radius_px', 'self_body_boxes',
                      'low_volt_enabled', 'low_volt_park', 'low_volt_clear', 'low_volt_hold',
+                     'low_volt_buzzer_enabled', 'low_volt_buzzer_threshold',
                      'observe_deg', 'dry_run', 'min_area_px', 'require_calibration',
-                     'x_offset_hack', 'y_offset_hack', 'z_offset_hack')},
+                     'detector_mode', 'yolo_weights', 'yolo_size', 'yolo_conf',
+                     'home_deg', 'x_offset_hack', 'y_offset_hack', 'z_offset_hack', 'idle_detect_hz')},
             'stats': dict(self.stats, uptime=round(time.time() - self.stats['started'])),
         }, ensure_ascii=False)
         self.pub_state.publish(m)

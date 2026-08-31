@@ -6,12 +6,17 @@ import { useTheme, chartColors } from '../composables/useTheme'
 const { state, HOST, VIDEO_PORT } = useRos()
 const { mode } = useTheme()
 const lidar = ref(null)
-const scanN = computed(() => (state.scan ? state.scan.ranges.length + ' 点' : '—'))
+const scanFresh = computed(() => !!state.scan && state.now - state.scanAt < 2000)
+const scanN = computed(() => (scanFresh.value ? state.scan.ranges.length + ' 点' : '离线'))
 function drawLidar() {
-  const c = lidar.value, s = state.scan; if (!c || !s) return
+  const c = lidar.value, s = state.scan; if (!c) return
   const ctx = c.getContext('2d'), W = c.width, H = c.height, cx = W / 2, cy = H / 2
   const C = chartColors()
   ctx.clearRect(0, 0, W, H); ctx.fillStyle = C.surface2; ctx.fillRect(0, 0, W, H)
+  if (!s || !scanFresh.value) {
+    ctx.fillStyle = C.text3; ctx.font = '14px sans-serif'; ctx.textAlign = 'center'
+    ctx.fillText('等待 /scan 实时数据', cx, cy); return
+  }
   ctx.strokeStyle = C.grid; ctx.lineWidth = 1
   ;[0.25, 0.5, 0.75, 1].forEach(r => { ctx.beginPath(); ctx.arc(cx, cy, r * (W / 2 - 6), 0, 7); ctx.stroke() })
   ctx.beginPath(); ctx.moveTo(cx, 6); ctx.lineTo(cx, H - 6); ctx.moveTo(6, cy); ctx.lineTo(W - 6, cy); ctx.stroke()
@@ -23,7 +28,7 @@ function drawLidar() {
   }
   ctx.fillStyle = C.bad; ctx.beginPath(); ctx.arc(cx, cy, 3, 0, 7); ctx.fill()
 }
-watch([() => state.scan, mode], drawLidar)
+watch([() => state.scan, scanFresh, mode], drawLidar)
 onMounted(drawLidar)
 
 const cams = computed(() => state.topics.filter(([n, t]) => t === 'sensor_msgs/msg/Image' && !n.includes('theora') && !n.includes('compressed')).map(([n]) => n))

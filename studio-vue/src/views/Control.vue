@@ -1,9 +1,15 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onUnmounted, onActivated, onDeactivated } from 'vue'
+import { message, Modal } from 'ant-design-vue'
 import { useRos, videoUrl } from '../composables/useRos'
+import SpeedLimits from '../components/SpeedLimits.vue'
 const { state, actions, HOST, VIDEO_PORT, WEBRTC_PORT } = useRos()
 
-const MAX_LINEAR = 0.45, MAX_ANGULAR = 1.5, PUB_HZ = 15
+const PUB_HZ = 15
+const maxLinear = computed(() => state.navSafety?.limits?.vx || 0.12)
+const maxAngular = computed(() => state.navSafety?.limits?.wz || 0.45)
+const safetyFresh = computed(() => state.now - state.navSafetyAt < 1500)
+const manualArmed = computed(() => safetyFresh.value && !!state.navSafety?.armed && state.navSafety?.source === 'manual')
 const camTopic = ref('/depth_cam/rgb/image_raw')
 const camOptions = [
   { value: '/depth_cam/rgb/image_raw', label: 'RGB 彩色' },
@@ -13,7 +19,7 @@ const camOptions = [
   { value: '/line_following/image_result', label: '巡线' },
 ]
 const mode = ref('turn')
-const speed = ref(45)
+const speed = ref(70)
 const tele = reactive({ vx: '0.00', vy: '0.00', wz: '0.00' })
 const rtcMode = ref('MJPEG')
 const drawer = ref(false)
@@ -51,7 +57,7 @@ function startCam() { if (camImg.value) camImg.value.style.display = 'block'; lo
 
 // keep-alive 挂起时必须把 MJPEG 的 src 清掉：浏览器对同源 HTTP/1.1 只给 6 条并发，
 // 而 MJPEG 是永不关闭的长连接，挂着不放会把别的页面的取流请求堵死（黑屏且不报错）。
-onDeactivated(() => { if (camImg.value) camImg.value.src = ''; stopRTC() })
+onDeactivated(() => { if (camImg.value) camImg.value.src = ''; stopRTC(); eStop() })
 onActivated(() => { startCam() })
 function onCamTopic() { startCam() }
 
@@ -75,12 +81,18 @@ function drawJoy() {
 }
 function setJoy(cx, cy) { const c = joy.value, r = c.getBoundingClientRect(); let dx = (cx - r.left - R) / (R - KNOB), dy = (cy - r.top - R) / (R - KNOB); const m = Math.hypot(dx, dy); if (m > 1) { dx /= m; dy /= m } jx = dx; jy = dy; drawJoy() }
 function resetJoy() { jx = 0; jy = 0; active = false; drawJoy() }
-function jDown(e) { active = true; joy.value.setPointerCapture(e.pointerId); setJoy(e.clientX, e.clientY) }
+function jDown(e) {
+  if (!manualArmed.value) { message.warning('手动驱动已锁定，请先解锁'); return }
+  active = true; joy.value.setPointerCapture(e.pointerId); setJoy(e.clientX, e.clientY)
+}
 function jMove(e) { if (active) setJoy(e.clientX, e.clientY) }
 
 // ---- 键盘 ----
 const keys = {}
-function kd(e) { if (e.code === 'Space') { e.preventDefault(); eStop(); return } keys[e.key.toLowerCase()] = true }
+function kd(e) {
+  if (e.code === 'Space') { e.preventDefault(); eStop(); return }
+  if (manualArmed.value) keys[e.key.toLowerCase()] = true
+}
 function ku(e) { keys[e.key.toLowerCase()] = false }
 function keyVec() { let ky = 0, kx = 0, turn = 0; if (keys['w'] || keys['arrowup']) ky -= 1; if (keys['s'] || keys['arrowdown']) ky += 1; if (keys['a'] || keys['arrowleft']) kx -= 1; if (keys['d'] || keys['arrowright']) kx += 1; if (keys['q']) turn -= 1; if (keys['e']) turn += 1; return { kx, ky, turn } }
 const dz = v => Math.abs(v) < 0.06 ? 0 : v
@@ -89,16 +101,40 @@ function computeTwist() {
   if (active) { fwd = -jy; if (mode.value === 'turn') { rot = -jx; lat = 0 } else { lat = jx; rot = 0 } }
   else { const k = keyVec(); fwd = -k.ky; rot = -k.turn; if (mode.value === 'turn') { rot += -k.kx; lat = 0 } else { lat = k.kx }; rot = Math.max(-1, Math.min(1, rot)) }
   fwd = dz(fwd); lat = dz(lat); rot = dz(rot); const s = speed.value / 100
-  return { vx: fwd * MAX_LINEAR * s, vy: lat * MAX_LINEAR * s, wz: rot * MAX_ANGULAR * s }
+  const lateral = state.navSafety?.limits?.vy || maxLinear.value
+  return { vx: fwd * maxLinear.value * s, vy: lat * lateral * s, wz: rot * maxAngular.value * s }
 }
 let lastZero = false, pubTimer = null
 function pubLoop() {
+  if (!manualArmed.value) { if (active || jx || jy) resetJoy(); return }
   const { vx, vy, wz } = computeTwist()
   tele.vx = vx.toFixed(2); tele.vy = vy.toFixed(2); tele.wz = wz.toFixed(2)
   const z = vx === 0 && vy === 0 && wz === 0; if (z && lastZero) return; lastZero = z
   actions.cmdVel(vx, vy, wz)
 }
-function eStop() { resetJoy(); for (const k in keys) keys[k] = false; actions.cmdVel(0, 0, 0); lastZero = true }
+function eStop() { resetJoy(); for (const k in keys) keys[k] = false; actions.emergencyStop(); lastZero = true }
+function unlockManual() {
+  if (!safetyFresh.value) return message.error('安全闸门未连接，禁止解锁')
+  if (state.navSafety?.legacy_active) return message.error('检测到旧 /cmd_vel 控制旁路，禁止解锁')
+  if (!state.navSafety?.scan_ready) return message.error('雷达无数据，禁止解锁手动驱动')
+  const batteryV = state.batt == null ? null : state.batt / 1000
+  if (batteryV == null) return message.error('没有底盘电池遥测，禁止解锁手动驱动')
+  if (batteryV < 10.5) return message.error(`底盘电池仅 ${batteryV.toFixed(2)}V，请充电到 10.5V 以上再驾驶`)
+  Modal.confirm({ title: '解锁手动驾驶？',
+    content: `当前硬限速 ${maxLinear.value.toFixed(2)}m/s、${maxAngular.value.toFixed(2)}rad/s，并启用雷达近障急停。仍不能识别悬崖、玻璃和低矮障碍，请保持有人看护。`,
+    okText: '确认解锁', cancelText: '保持锁定',
+    onOk: () => {
+      // 手动接管时停止自主任务，避免 Nav2 继续计算并反复抢占控制源。
+      actions.explorerCmd({ action: 'stop' })
+      if (!actions.navSafetyCmd({ action: 'arm', source: 'manual' })) {
+        return message.error('rosbridge 未连接，解锁命令未发送')
+      }
+      message.success('手动驾驶解锁命令已发送')
+      setTimeout(() => {
+        if (!manualArmed.value) message.error(`解锁失败：${state.navSafety?.reason || '安全闸门没有确认'}`)
+      }, 1200)
+    } })
+}
 
 // ---- 机械臂/外设 ----
 const JOINTS = [{ id: 1, name: '底座旋转' }, { id: 2, name: '大臂' }, { id: 3, name: '小臂' }, { id: 4, name: '腕俯仰' }, { id: 5, name: '腕旋转' }]
@@ -126,7 +162,7 @@ onMounted(() => {
 onUnmounted(() => {
   clearInterval(pubTimer); stopRTC()
   window.removeEventListener('keydown', kd); window.removeEventListener('keyup', ku)
-  actions.cmdVel(0, 0, 0)
+  actions.emergencyStop()
 })
 </script>
 
@@ -140,8 +176,19 @@ onUnmounted(() => {
 
     <!-- 顶栏 -->
     <div class="hud-top">
-      <div class="glass brand"><b>JET</b>ROVER · <span :style="{ color: state.connected ? '#34d17a' : '#ff453a' }">{{ state.connected ? 'ONLINE' : 'OFFLINE' }}</span></div>
+      <div class="glass brand"><b>JETROVER</b><span class="brand-sub">DRIVE CONSOLE</span></div>
       <a-select v-model:value="camTopic" :options="camOptions" size="small" class="cam-sel" @change="onCamTopic" />
+      <span :class="['link-pill', { online: state.connected }]"><i />{{ state.connected ? 'ROS 在线' : 'ROS 离线' }}</span>
+      <button v-if="!manualArmed" class="drive-lock locked" @click="unlockManual">手动驾驶 · 已锁定</button>
+      <button v-else class="drive-lock armed" @click="eStop">手动驾驶 · 已解锁（点击锁定）</button>
+      <div v-if="state.navSafety?.legacy_active" class="legacy-warning">⚠ 旧 /cmd_vel 旁路活动</div>
+    </div>
+
+    <div class="glass safety-strip">
+      <div><span>雷达</span><b>{{ state.navSafety?.scan_ready ? '正常' : '无数据' }}</b></div>
+      <div><span>前方净空</span><b>{{ state.navSafety?.front_m == null ? '--' : state.navSafety.front_m.toFixed(2) + ' m' }}</b></div>
+      <div><span>电池</span><b>{{ state.batt == null ? '--' : (state.batt / 1000).toFixed(2) + ' V' }}</b></div>
+      <div><span>硬限速</span><b>{{ maxLinear.toFixed(2) }} m/s</b></div>
     </div>
 
     <!-- 遥测 -->
@@ -163,13 +210,15 @@ onUnmounted(() => {
 
     <!-- 右下 -->
     <div class="right-dock">
-      <div class="glass rbtn" @click="drawer = true">控制</div>
-      <div class="glass rbtn estop" @click="eStop">■ 急停</div>
-      <div class="glass spd"><span>SPD</span><a-slider v-model:value="speed" :min="10" :max="100" vertical style="height:110px" /><span>{{ speed }}</span></div>
+      <div class="glass rbtn" @click="drawer = true"><b>设置</b><span>限速 / 外设</span></div>
+      <div class="glass rbtn estop" @click="eStop"><b>急停</b><span>SPACE</span></div>
+      <div class="glass spd"><span>输出比例</span><a-slider v-model:value="speed" :min="10" :max="100" vertical style="height:104px" /><b>{{ speed }}%</b></div>
     </div>
 
     <!-- 外设抽屉 -->
     <a-drawer v-model:open="drawer" title="机械臂 · 外设" placement="right" :width="340" :get-container="false" :style="{ position: 'absolute' }">
+      <a-divider orientation="left" style="margin-top:0">底盘速度上限</a-divider>
+      <SpeedLimits compact />
       <a-divider orientation="left" style="margin-top:0">机械臂 <a-button size="small" @click="syncArm" style="margin-left:8px">读取姿态</a-button></a-divider>
       <div v-for="j in JOINTS" :key="j.id" class="jrow"><span>{{ j.name }}</span><a-slider :value="jval[j.id]" :min="0" :max="1000" @change="v => onJoint(j.id, v)" style="flex:1" /><b>{{ jval[j.id] }}</b></div>
       <div class="jrow"><span>时长</span><a-slider v-model:value="armDur" :min="200" :max="3000" :step="100" style="flex:1" /><b>{{ (armDur / 1000).toFixed(1) }}s</b></div>
@@ -204,9 +253,20 @@ onUnmounted(() => {
 .rtc-tag { position: absolute; bottom: 14px; left: 14px; z-index: 6; font-family: ui-monospace, monospace; font-size: 10px; letter-spacing: 1px; padding: 4px 9px; border-radius: 6px; background: rgba(8,10,14,.55); border: 1px solid rgba(255,255,255,.12); color: rgba(255,255,255,.6); }
 .glass { background: rgba(14,17,22,.5); backdrop-filter: blur(16px); border: 1px solid rgba(255,255,255,.12); color: #eef2f6; }
 .hud-top { position: absolute; top: 14px; left: 14px; right: 14px; z-index: 20; display: flex; gap: 12px; align-items: center; }
-.brand { padding: 0 14px; height: 40px; display: flex; align-items: center; border-radius: 10px; font-family: ui-monospace, monospace; font-size: 13px; }
-.brand b { color: #2e9bff; }
+.brand { padding: 0 14px; height: 40px; display: flex; align-items: center; gap: 10px; border-radius: 10px; font-family: ui-monospace, monospace; font-size: 13px; }
+.brand b { color: #62b5ff; letter-spacing: .8px; }.brand-sub { color: rgba(255,255,255,.38); font-size: 9px; letter-spacing: 1.3px; }
 .cam-sel { width: 140px; }
+.link-pill { display: inline-flex; align-items: center; gap: 6px; color: rgba(255,255,255,.55); font-size: 11px; }
+.link-pill i { width: 7px; height: 7px; border-radius: 50%; background: #7b8490; }.link-pill.online i { background:#34d17a; box-shadow:0 0 0 3px rgba(52,209,122,.14); }
+.drive-lock { height: 34px; padding: 0 12px; border-radius: 9px; cursor: pointer;
+  border: 1px solid rgba(255,255,255,.18); color: #fff; background: rgba(14,17,22,.65); }
+.drive-lock.locked { color: rgba(255,255,255,.72); }
+.drive-lock.armed { color: #ff8b84; border-color: rgba(255,69,58,.65); background: rgba(255,69,58,.18); }
+.legacy-warning { padding: 7px 10px; border-radius: 8px; color: #ff8b84;
+  background: rgba(255,69,58,.18); border: 1px solid rgba(255,69,58,.55); font-size: 12px; }
+.safety-strip { position:absolute; top:66px; left:14px; z-index:18; border-radius:10px; display:flex; overflow:hidden; }
+.safety-strip > div { padding:8px 13px; min-width:92px; }.safety-strip > div + div { border-left:1px solid rgba(255,255,255,.1); }
+.safety-strip span { display:block; color:rgba(255,255,255,.38); font-size:9px; letter-spacing:.5px; }.safety-strip b { display:block; margin-top:2px; font:600 12px ui-monospace,monospace; }
 .telebar { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 20; display: flex; border-radius: 12px; overflow: hidden; }
 .cell { padding: 8px 18px; text-align: center; }
 .cell + .cell { border-left: 1px solid rgba(255,255,255,.12); }
@@ -217,9 +277,10 @@ onUnmounted(() => {
 .seg button { background: transparent; border: 0; color: rgba(255,255,255,.6); font-size: 11px; padding: 5px 13px; border-radius: 6px; cursor: pointer; }
 .seg button.on { background: rgba(46,155,255,.2); color: #fff; }
 .right-dock { position: absolute; right: 24px; bottom: 70px; z-index: 25; display: flex; flex-direction: column; gap: 10px; align-items: center; }
-.rbtn { width: 60px; height: 54px; border-radius: 14px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 12px; }
+.rbtn { width: 88px; height: 52px; border-radius: 12px; display: flex; flex-direction:column; align-items: center; justify-content: center; cursor: pointer; }
+.rbtn b { font-size:13px; }.rbtn span { margin-top:2px; color:rgba(255,255,255,.4); font-size:9px; }
 .rbtn.estop { background: rgba(255,69,58,.18); border-color: rgba(255,69,58,.5); color: #ff6b62; }
-.spd { border-radius: 14px; padding: 10px 6px; display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: ui-monospace, monospace; font-size: 10px; }
+.spd { border-radius: 12px; padding: 10px 9px; display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: ui-monospace, monospace; font-size: 9px; }.spd b{font-size:12px;}
 .jrow { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .jrow span { font-size: 12px; color: var(--text-2); width: 52px; }
 .jrow b { font-family: ui-monospace, monospace; font-size: 12px; min-width: 38px; text-align: right; }

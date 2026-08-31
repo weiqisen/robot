@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch, onMounted, onBeforeUnmount, reactive, computed } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount, onActivated, onDeactivated, reactive, computed } from 'vue'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
@@ -254,11 +254,11 @@ const screenCfg = reactive(clone(SCREEN_DEFAULT))
 // 正好被定时重绘撞上 —— 那就是桌面"断断续续黑屏"的原因。
 const frames = { camera: null, desktop: null }
 const POLL_GAP = { camera: 350, desktop: 900 }
-let pollSeq = 0
+let pollSeq = 0, pageActive = true
 function startPolling() {
   const kind = screenCfg.block
   pollSeq++                       // 让上一轮轮询自然退出
-  if (kind !== 'camera' && kind !== 'desktop') return
+  if (!pageActive || (kind !== 'camera' && kind !== 'desktop')) return
   const my = pollSeq
   const step = () => {
     if (my !== pollSeq || screenCfg.block !== kind) return
@@ -495,7 +495,10 @@ function fit() {
   camera.aspect = w / h
   camera.updateProjectionMatrix()
 }
-function loop() { raf = requestAnimationFrame(loop); controls.update(); renderer.render(scene, camera) }
+function loop() {
+  if (!pageActive || !renderer) { raf = null; return }
+  raf = requestAnimationFrame(loop); controls.update(); renderer.render(scene, camera)
+}
 
 // 关节反馈 -> 模型
 watch(() => state.joints, m => {
@@ -664,7 +667,18 @@ onMounted(() => {
   renderer.domElement.addEventListener('pointermove', ptrMove)
   window.addEventListener('pointerup', ptrUp)
 })
+onDeactivated(() => {
+  pageActive = false; pollSeq++
+  if (screenTimer) { clearInterval(screenTimer); screenTimer = null }
+  if (raf) { cancelAnimationFrame(raf); raf = null }
+})
+onActivated(() => {
+  pageActive = true
+  if (renderer && !raf) loop()
+  if (screenMesh) { startPolling(); restartScreenTimer() }
+})
 onBeforeUnmount(() => {
+  pageActive = false; pollSeq++
   cancelAnimationFrame(raf)
   if (hostRO) hostRO.disconnect()
   window.removeEventListener('resize', fit); window.removeEventListener('pointerup', ptrUp)

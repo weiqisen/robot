@@ -14,11 +14,14 @@ export const BATT_MIN = 9.0, BATT_MAX = 12.6, BATT_WARN = 10.0
 // ---- 全局单例状态 ----
 const state = reactive({
   connected: false,
+  now: Date.now(),
   batt: null,            // mV
-  imu: null, imuRaw: null, imuSrc: null, odom: null, cmd: null, button: null,
-  servos: [], joints: null, scan: null,
+  imu: null, imuRaw: null, imuSrc: null, odom: null, cmd: null,
+  servos: [], joints: null, scan: null, scanAt: 0, mapAt: 0, navSafetyAt: 0, explorerAt: 0,
   jetson: null, map: null, plan: null, localPlan: null, costmap: null,
   snack: null,           // 零食管家节点状态（/snack_butler/state 的 JSON）
+  explorer: null,        // 自主探索节点状态（/explorer/state 的 JSON）
+  navSafety: null,       // Nav2 -> 底盘安全闸门状态
   logs: [],              // 运行日志环形缓冲（systemd journal + /rosout 合并）
   button: null, joy: null, sbus: null, motors: null,   // 扩展板(ros_robot_controller)外设
   units: null,           // Jetson 上的 systemd 服务状态（/system/services）
@@ -66,9 +69,15 @@ function subscribeAll() {
       m => { state.motors = m }, 200)
   sub('/controller_manager/servo_states', 'servo_controller_msgs/msg/ServoStateList', m => { state.servos = m.servo_state || [] }, 300)
   sub('/controller_manager/joint_states', 'sensor_msgs/msg/JointState', m => { state.joints = m }, 200)
-  sub('/scan', 'sensor_msgs/msg/LaserScan', m => { state.scan = m }, 200)
+  sub('/scan', 'sensor_msgs/msg/LaserScan', m => { state.scan = m; state.scanAt = Date.now() }, 200)
   sub('/jetson/stats', 'std_msgs/msg/String', m => { try { state.jetson = JSON.parse(m.data) } catch (e) {} })
   sub('/snack_butler/state', 'std_msgs/msg/String', m => { try { state.snack = JSON.parse(m.data) } catch (e) {} }, 200)
+  sub('/explorer/state', 'std_msgs/msg/String', m => {
+    try { state.explorer = JSON.parse(m.data); state.explorerAt = Date.now() } catch (e) {}
+  }, 300)
+  sub('/nav_safety/state', 'std_msgs/msg/String', m => {
+    try { state.navSafety = JSON.parse(m.data); state.navSafetyAt = Date.now() } catch (e) {}
+  }, 200)
 
   // ---- 运行日志：两路合并成一条流 ----
   // 常驻订阅（不是打开日志页才订），这样一进页面就有最近的历史，排障时不用干等。
@@ -96,7 +105,7 @@ function subscribeAll() {
     from: 'ros', lvl: ROS_LVL[m.level] || 'info', src: m.name, msg: m.msg,
     t: new Date((m.stamp?.sec || 0) * 1000).toISOString().replace('T', ' ').slice(0, 19),
   }))
-  sub('/map', 'nav_msgs/msg/OccupancyGrid', m => { state.map = m })
+  sub('/map', 'nav_msgs/msg/OccupancyGrid', m => { state.map = m; state.mapAt = Date.now() })
   sub('/plan', 'nav_msgs/msg/Path', m => { state.plan = m }, 300)
   sub('/local_plan', 'nav_msgs/msg/Path', m => { state.localPlan = m }, 300)
   sub('/global_costmap/costmap', 'nav_msgs/msg/OccupancyGrid', m => { state.costmap = m })
@@ -104,6 +113,7 @@ function subscribeAll() {
   if (!refreshTimer) refreshTimer = setInterval(() => { if (state.connected) refreshIntrospection() }, 8000)
 }
 let refreshTimer = null
+setInterval(() => { state.now = Date.now() }, 1000)
 function refreshIntrospection() {
   callSvc('/rosapi/nodes', {}, r => { state.nodes = (r.nodes || []).sort(); state.counts.nodes = state.nodes.length })
   callSvc('/rosapi/services', {}, r => { state.services = (r.services || []).sort(); state.counts.services = state.services.length })
@@ -118,14 +128,19 @@ function connect() {
   ros = new ROSLIB.Ros({ url: `ws://${ROBOT_HOST}:${ROSBRIDGE_PORT}` })
   ros.on('connection', () => { state.connected = true; subscribeAll() })
   ros.on('error', () => { state.connected = false })
-  ros.on('close', () => { state.connected = false; setTimeout(connect, 2000) })
+  ros.on('close', () => {
+    state.connected = false
+    state.explorer = null; state.explorerAt = 0
+    state.navSafety = null; state.navSafetyAt = 0
+    setTimeout(connect, 2000)
+  })
 }
 
 // ---- 发布/控制方法 ----
 const actions = {
   cmdVel(vx, vy, wz) {
     if (!state.connected) return
-    topic('/cmd_vel', 'geometry_msgs/msg/Twist').publish(new ROSLIB.Message({
+    topic('/manual_cmd_vel', 'geometry_msgs/msg/Twist').publish(new ROSLIB.Message({
       linear: { x: vx, y: vy, z: 0 }, angular: { x: 0, y: 0, z: wz } }))
   },
   setServos(position, duration = 1.0) {
@@ -176,11 +191,31 @@ const actions = {
     topic('/snack_butler/cmd', 'std_msgs/msg/String').publish(new ROSLIB.Message({ data: JSON.stringify(obj) }))
     return true
   },
+  explorerCmd(obj) {
+    if (!state.connected) return false
+    topic('/explorer/cmd', 'std_msgs/msg/String').publish(new ROSLIB.Message({ data: JSON.stringify(obj) }))
+    return true
+  },
+  navSafetyCmd(obj) {
+    if (!state.connected) return false
+    topic('/nav_safety/cmd', 'std_msgs/msg/String').publish(new ROSLIB.Message({ data: JSON.stringify(obj) }))
+    return true
+  },
   navCancel() {
     if (!state.connected) return
     // 取消所有导航目标（Nav2 BT navigator）
     new ROSLIB.Service({ ros, name: '/navigate_to_pose/_action/cancel_goal', serviceType: 'action_msgs/srv/CancelGoal' })
       .callService(new ROSLIB.ServiceRequest({ goal_info: { goal_id: { uuid: [] }, stamp: { sec: 0, nanosec: 0 } } }), () => {}, () => {})
+  },
+  emergencyStop() {
+    if (!state.connected) return false
+    const zero = new ROSLIB.Message({ linear: { x: 0, y: 0, z: 0 }, angular: { x: 0, y: 0, z: 0 } })
+    topic('/manual_cmd_vel', 'geometry_msgs/msg/Twist').publish(zero)
+    topic('/nav_cmd_vel', 'geometry_msgs/msg/Twist').publish(zero)
+    topic('/controller/cmd_vel', 'geometry_msgs/msg/Twist').publish(zero)
+    topic('/nav_safety/cmd', 'std_msgs/msg/String').publish(new ROSLIB.Message({ data: '{"action":"disarm"}' }))
+    this.navCancel()
+    return true
   },
   // 临时订阅一次（读取姿态等）
   once(name, messageType, cb, timeout = 2500) {
