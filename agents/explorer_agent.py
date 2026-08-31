@@ -70,6 +70,7 @@ class Explorer(Node):
         self.goal_seq = 0
         self.event_seq = 0
         self.events = deque(maxlen=80)
+        self.objects = deque(maxlen=100)
         self.lock = threading.RLock()
         self.cfg = {'max_minutes': 15.0, 'min_frontier_cells': 8,
                     'goal_timeout': 90.0, 'goal_tolerance': 0.35,
@@ -231,6 +232,16 @@ class Explorer(Node):
     def on_snack_state(self, msg):
         try:
             self.snack_state = json.loads(msg.data); self.last_snack = time.time()
+            pose = self.current_pose()
+            if pose:
+                for d in self.snack_state.get('detections') or []:
+                    if d.get('detector') != 'yolov5' or not d.get('xyz'): continue
+                    x, y = d['xyz'][:2]; c, s = math.cos(pose[2]), math.sin(pose[2])
+                    item = {'label':d.get('label','object'), 'confidence':d.get('confidence'),
+                            'x':round(pose[0]+c*x-s*y,2), 'y':round(pose[1]+s*x+c*y,2),
+                            'seen_at':time.strftime('%Y-%m-%dT%H:%M:%S%z')}
+                    if not any(o['label']==item['label'] and math.hypot(o['x']-item['x'],o['y']-item['y'])<.5 for o in self.objects):
+                        self.objects.append(item); self.add_event('vision','发现 %s，记录于地图 (%.2f, %.2f)'%(item['label'],item['x'],item['y']))
         except Exception: pass
 
     def scan_ready(self): return time.time() - self.last_scan < 2.0
@@ -622,6 +633,7 @@ class Explorer(Node):
                 'home_restored': self.home_restored, 'home_saved_at': self.home_saved_at,
                 'home_restore_status': self.home_restore_status,
                 'events': list(self.events),
+                'objects': list(self.objects),
                 'visited': len(self.visited), 'blacklisted': len(self.blacklist),
                 'map_ready': self.map_ready(), 'nav_ready': self.nav.server_is_ready(),
                 'scan_ready': self.scan_ready(),
@@ -630,6 +642,7 @@ class Explorer(Node):
                 'safety_legacy_active': bool(self.safety_state and self.safety_state.get('legacy_active')),
                 'safety_front_m': None if not self.safety_state else self.safety_state.get('front_m'),
                 'safety_body_m': None if not self.safety_state else self.safety_state.get('body_m'),
+                'safety_vision_m': None if not self.safety_state else self.safety_state.get('vision_guard_m'),
                 'clearance_ready': self.clearance_ready(),
                 'arm_ready': self.snack_ready(), 'arm_stowed': self.arm_stowed(),
                 'battery_v': None if self.batt_mv is None else round(self.batt_mv/1000, 2),

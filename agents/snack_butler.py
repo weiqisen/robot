@@ -745,7 +745,9 @@ class SnackButler(Node):
     def tick_idle_detection(self):
         hz = float(self.cfg.get('idle_detect_hz') or 0)
         now = time.time()
-        if hz <= 0 or self.state != 'IDLE' or not self.at_observe() or self.rgb is None:
+        # 探索时机械臂在收臂位也继续做低频识别：语义结果用于导航物品留档；
+        # 真正抓取前 seq_detect 仍会强制回观察位重新检测，不会拿旧姿态坐标开抓。
+        if hz <= 0 or self.state != 'IDLE' or self.rgb is None:
             return
         if now - self._last_idle_scan < 1.0 / hz:
             return
@@ -756,6 +758,24 @@ class SnackButler(Node):
             self.get_logger().info('[idle_detect] count=%d labels=%s' %
                                    (count, [d.get('label') for d in self.detections]))
             self._last_idle_count = count
+
+    def vision_guard_distance(self):
+        """深度点落入车体/机械臂前上方保护盒时，返回最近的 base_link X 距离。"""
+        with self.lock:
+            depth = None if self.depth is None else self.depth.copy()
+        if depth is None or not self.K:
+            return None
+        d = depth[::8, ::8].astype(np.float32)
+        if depth.dtype == np.uint16: d /= 1000.0
+        yy, xx = np.indices(d.shape, dtype=np.float32); xx *= 8; yy *= 8
+        fx, fy, cx, cy = self.K[0], self.K[4], self.K[2], self.K[5]
+        ox, oy = (xx-cx)/fx*d, (yy-cy)/fy*d
+        T = np.asarray(self.optical_to_base_mat()[0], np.float32)
+        bx = T[0,0]*ox+T[0,1]*oy+T[0,2]*d+T[0,3]
+        by = T[1,0]*ox+T[1,1]*oy+T[1,2]*d+T[1,3]
+        bz = T[2,0]*ox+T[2,1]*oy+T[2,2]*d+T[2,3]
+        ok = (d>.08)&(d<1.5)&(bx>.05)&(bx<.55)&(np.abs(by)<.24)&(bz>.04)&(bz<.55)
+        return None if not np.any(ok) else round(float(np.min(bx[ok])), 3)
 
     # ---------------- 状态机：每个 yield 返回「等待秒数」 ----------------
     def start(self, gen, name=None):
@@ -1231,6 +1251,7 @@ class SnackButler(Node):
             'cam_fix': self.cfg.get('cam_fix') is not None,
             'batt_v': None if self.batt_v is None else round(self.batt_v, 2),
             'low_volt': self.low_volt,
+            'vision_guard_m': self.vision_guard_distance(),
             'servo_map': self.smap.as_dict(),
             'profiles': self.profiles,
             'detector': self.detector.status(),
