@@ -72,10 +72,10 @@ echo "== webctl 已重启"
 echo "== 推送 agents"
 # jetson_agent / webrtc_agent 的 systemd 单元是早先手工装的，这里只更新脚本本身：
 # 网页的 BOM / 服务监控 / 运行日志页全靠 jetson_agent 推 topic，漏推就是一直空转。
-$SCP "$HERE"/agents/{snack_butler.py,arm_kinematics.py,vision_geometry.py,snack_detector.py,llm_agent.py,jetson_agent.py,webrtc_agent.py,gpu_bench.py,explorer_agent.py,exploration_bringup.launch.py,run_exploration_nav.sh,nav_safety_guard.py,nav_safety_logic.py,lidar_watchdog.py,exploration_nav_safety.yaml} \
+$SCP "$HERE"/agents/{snack_butler.py,arm_kinematics.py,vision_geometry.py,snack_detector.py,llm_agent.py,jetson_agent.py,webrtc_agent.py,gpu_bench.py,explorer_agent.py,exploration_bringup.launch.py,run_exploration_nav.sh,run_x11vnc.sh,nav_safety_guard.py,nav_safety_logic.py,lidar_watchdog.py,exploration_nav_safety.yaml} \
      "$USER_@$ROBOT:~/"
 # scp 不保证本地脚本的执行位在所有目标环境中保持一致；显式设置，便于 systemd 和人工排障直接执行。
-$SSH "$USER_@$ROBOT" 'chmod 755 ~/run_exploration_nav.sh'
+$SSH "$USER_@$ROBOT" 'chmod 755 ~/run_exploration_nav.sh ~/run_x11vnc.sh'
 # 配置文件已存在就不覆盖——上面标定出来的参数在里面
 $SSH "$USER_@$ROBOT" 'test -f ~/snack_butler_config.json || echo "{}" > ~/snack_butler_config.json'
 
@@ -90,6 +90,23 @@ for unit in jetson-agent webrtc-agent; do
 done
 
 echo "== 安装 systemd 服务"
+$SSH "$USER_@$ROBOT" "sudo tee /etc/systemd/system/x11vnc.service >/dev/null <<'EOF'
+[Unit]
+Description=x11vnc VNC Server (auto-detect desktop display)
+After=display-manager.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$USER_
+ExecStart=/home/$USER_/run_x11vnc.sh
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF"
+
 # 雷达不能按物理 USB 拓扑路径绑定；换 HUB 口或冷启动后路径会变化。
 # A1 的 CH340 转串口用稳定 VID/PID 建 /dev/lidar，保证厂商 launch 与 watchdog 都能找到。
 $SSH "$USER_@$ROBOT" "sudo tee /etc/udev/rules.d/99-jetrover-lidar.rules >/dev/null <<'EOF'
@@ -219,8 +236,8 @@ EOF
 sudo chmod 440 /etc/sudoers.d/jetrover-webctl
 sudo visudo -cf /etc/sudoers.d/jetrover-webctl >/dev/null"
 
-$SSH "$USER_@$ROBOT" 'sudo systemctl daemon-reload && sudo systemctl enable snack-butler lidar-watchdog nav-safety exploration-nav explorer-agent && sudo systemctl restart snack-butler lidar-watchdog nav-safety exploration-nav explorer-agent'
-echo "== snack-butler / lidar-watchdog / nav-safety / exploration-nav / explorer-agent 已启动"
+$SSH "$USER_@$ROBOT" 'sudo systemctl daemon-reload && sudo systemctl enable snack-butler lidar-watchdog nav-safety exploration-nav explorer-agent x11vnc && sudo systemctl restart snack-butler lidar-watchdog nav-safety exploration-nav explorer-agent x11vnc'
+echo "== snack-butler / lidar-watchdog / nav-safety / exploration-nav / explorer-agent / x11vnc 已启动"
 $SSH "$USER_@$ROBOT" 'systemctl is-active snack-butler || sudo journalctl -u snack-butler -n 30 --no-pager'
 
 if $SSH "$USER_@$ROBOT" 'test -f ~/.llm_agent.env'; then
