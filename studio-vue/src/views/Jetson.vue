@@ -1,9 +1,8 @@
 <script setup>
-import { computed, ref } from 'vue'
-import { message, Modal } from 'ant-design-vue'
+import { computed } from 'vue'
 import { useRos } from '../composables/useRos'
 import MiniChart from '../components/MiniChart.vue'
-const { state, HOST } = useRos()
+const { state } = useRos()
 const j = computed(() => state.jetson)
 
 // 用 antd 的字面色值，不用我们自己的 token —— token 里的 --ok 是青绿 #0d9488、
@@ -78,44 +77,6 @@ const facts = computed(() => {
   ]
 })
 
-// Jetson 上跑的 systemd 服务（由 jetson_agent 每 5 秒推一次）
-const svcs = computed(() => (state.units?.services || []).filter(s => s.state !== 'notfound'))
-const svcMissing = computed(() => (state.units?.services || []).filter(s => s.state === 'notfound'))
-const svcBad = computed(() => svcs.value.filter(s => s.state !== 'active').length)
-const restarting = ref({})
-const NAV_SERVICES = new Set(['explorer-agent', 'exploration-nav', 'nav-safety'])
-function restartService(s) {
-  Modal.confirm({
-    title: `重启 ${s.name}？`,
-    content: NAV_SERVICES.has(s.name)
-      ? '该服务参与自主移动。重启会取消当前导航或让安全闸门短暂离线，请确认小车已经停稳。'
-      : '服务会短暂离线，通常几秒内恢复。',
-    okText: '确认重启', cancelText: '取消',
-    okButtonProps: { danger: NAV_SERVICES.has(s.name) },
-    async onOk() {
-      restarting.value[s.name] = true
-      try {
-        const r = await fetch(`http://${HOST}:8000/api/services/${s.name}/restart`, { method: 'POST' })
-        const body = await r.json().catch(() => ({}))
-        if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`)
-        message.success(`${s.name} 已提交重启，状态会自动刷新`)
-      } catch (e) {
-        message.error(`重启失败：${e.message}`)
-        throw e
-      } finally { restarting.value[s.name] = false }
-    },
-  })
-}
-const fmtTime = ts => {
-  const d = new Date(ts * 1000)
-  const p = n => String(n).padStart(2, '0')
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
-}
-const dur = t => {
-  if (t == null) return '--'
-  const d = Math.floor(t / 86400), h = Math.floor(t % 86400 / 3600), m = Math.floor(t % 3600 / 60)
-  return d ? `${d} 天 ${h} 时` : h ? `${h} 时 ${m} 分` : `${m} 分`
-}
 const temps = computed(() => Object.entries(j.value?.temps || {}).sort((a, b) => b[1] - a[1]))
 const powers = computed(() => Object.entries(j.value?.power || {}))
 
@@ -201,41 +162,6 @@ const sysinfo = computed(() => {
     </a-col>
   </a-row>
 
-  <a-card title="自建服务" size="small" style="margin-top:16px">
-    <template #extra>
-      <span class="ex">{{ svcs.length }} 个 ·
-        <b :style="{ color: svcBad ? RED : GREEN }">{{ svcBad ? svcBad + ' 个异常' : '全部正常' }}</b>
-      </span>
-    </template>
-    <div class="svcs">
-      <div v-for="s in svcs" :key="s.name" class="svc">
-        <span class="sdot" :style="{ background: s.state === 'active' ? 'var(--live)' : RED,
-                                     boxShadow: s.state === 'active' ? '0 0 0 3px var(--live-halo)' : 'none' }" />
-        <div class="sname">
-          <b>{{ s.name }}</b>
-          <em>{{ s.desc }}</em>
-        </div>
-        <div class="smeta">
-          <span :style="{ color: s.state === 'active' ? 'var(--ok-text)' : RED }">
-            {{ s.state === 'active' ? '运行中' : s.state === 'inactive' ? '已停止' : s.state }}
-            <i v-if="s.sub && s.sub !== 'running'">· {{ s.sub }}</i>
-          </span>
-          <span>{{ dur(s.uptime) }}</span>
-          <span>{{ s.mem_mb == null ? '--' : s.mem_mb + ' MB' }}</span>
-          <span>PID {{ s.pid || '--' }}</span>
-          <span :class="{ warn: s.restarts > 0 }">重启 {{ s.restarts }}</span>
-          <span class="en">{{ s.enabled === 'enabled' ? '开机自启' : s.enabled || '' }}</span>
-          <span class="en" :title="s.file">{{ s.mtime ? '部署 ' + fmtTime(s.mtime) : '' }}</span>
-        </div>
-        <a-button size="small" :loading="!!restarting[s.name]" @click="restartService(s)">重启服务</a-button>
-      </div>
-    </div>
-    <div v-if="svcMissing.length" class="miss">
-      未安装：{{ svcMissing.map(s => s.name).join('、') }}
-    </div>
-    <a-empty v-if="!state.units" :image="null" description="等待 /system/services（由 jetson_agent 推送）" />
-  </a-card>
-
   <a-card title="系统信息 · 固件" size="small" style="margin-top:16px">
     <template #extra><span class="ex">开机读取一次</span></template>
     <div class="sys">
@@ -282,22 +208,6 @@ const sysinfo = computed(() => {
 .row span { color: var(--text-3); }
 .avg { font-style: normal; color: var(--text-4); font-weight: 400; margin-left: 5px; font-size: 12px; }
 .ex { color: var(--text-3); font-size: 13px; }
-.svcs { display: flex; flex-direction: column; }
-.svc { display: flex; align-items: center; gap: 12px; padding: 9px 0;
-  border-bottom: 1px solid var(--divider); }
-.svc:last-child { border-bottom: 0; }
-.sdot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
-.sname { min-width: 190px; }
-.sname b { font-family: var(--font-code); font-size: 13px; font-weight: 600; }
-.sname em { display: block; font-style: normal; font-size: 12px; color: var(--text-4); margin-top: 1px; }
-.smeta { margin-left: auto; display: flex; flex-wrap: wrap; justify-content: flex-end;
-  gap: 4px 18px; font-size: 13px; color: var(--text-3); font-variant-numeric: tabular-nums; }
-.smeta span { min-width: 62px; text-align: right; }
-.smeta i { font-style: normal; }
-.smeta .warn { color: var(--warn); }
-.smeta .en { min-width: 84px; color: var(--text-4); font-size: 12px; }
-.svc > .ant-btn { flex-shrink: 0; margin-left: 4px; }
-.miss { margin-top: 10px; font-size: 12px; color: var(--text-4); }
 .sys { display: grid; gap: 10px 24px; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
 .si { border-bottom: 1px solid var(--divider); padding-bottom: 8px; }
 .sv { font-size: 14px; color: var(--text-1); font-family: var(--font-code);

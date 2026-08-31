@@ -6,9 +6,10 @@ import { useRos } from '../composables/useRos'
 defineProps({ compact: Boolean })
 const { state, actions } = useRos()
 const vx = ref(0.12), vy = ref(0.08), wz = ref(0.45)
+const dirty = ref(false)
 const armed = computed(() => !!state.navSafety?.armed)
 watch(() => state.navSafety?.limits, v => {
-  if (!v) return
+  if (!v || dirty.value) return
   vx.value = v.vx; vy.value = v.vy; wz.value = v.wz
 }, { immediate: true })
 
@@ -17,7 +18,8 @@ const presets = {
   标准: [0.16, 0.10, 0.60],
   快速: [0.22, 0.14, 0.85],
 }
-function preset(v) { [vx.value, vy.value, wz.value] = presets[v] }
+function edit() { dirty.value = true }
+function preset(v) { [vx.value, vy.value, wz.value] = presets[v]; dirty.value = true }
 function save() {
   if (armed.value) return message.error('请先停止任务并锁定底盘，再修改限速')
   Modal.confirm({
@@ -28,6 +30,7 @@ function save() {
       if (!actions.navSafetyCmd({ action: 'set_limits', max_vx: vx.value, max_vy: vy.value, max_wz: wz.value }))
         return message.error('rosbridge 未连接，配置未发送')
       message.success('限速配置已发送，安全闸门将持久化保存')
+      setTimeout(() => { dirty.value = false }, 800)
     },
   })
 }
@@ -39,9 +42,9 @@ function save() {
       <span>驾驶档位</span>
       <a-segmented :options="['慢速', '标准', '快速']" size="small" :disabled="armed" @change="preset" />
     </div>
-    <div class="limit-row"><span>前进</span><a-slider v-model:value="vx" :min="0.05" :max="0.25" :step="0.01" :disabled="armed" /><b>{{ vx.toFixed(2) }} m/s</b></div>
-    <div class="limit-row"><span>横移</span><a-slider v-model:value="vy" :min="0.04" :max="0.18" :step="0.01" :disabled="armed" /><b>{{ vy.toFixed(2) }} m/s</b></div>
-    <div class="limit-row"><span>旋转</span><a-slider v-model:value="wz" :min="0.20" :max="1.00" :step="0.05" :disabled="armed" /><b>{{ wz.toFixed(2) }} rad/s</b></div>
+    <div class="limit-row"><span>前进</span><a-slider v-model:value="vx" :min="0.05" :max="0.25" :step="0.01" :disabled="armed" @update:value="edit" /><b>{{ vx.toFixed(2) }} m/s</b></div>
+    <div class="limit-row"><span>横移</span><a-slider v-model:value="vy" :min="0.04" :max="0.18" :step="0.01" :disabled="armed" @update:value="edit" /><b>{{ vy.toFixed(2) }} m/s</b></div>
+    <div class="limit-row"><span>旋转</span><a-slider v-model:value="wz" :min="0.20" :max="1.00" :step="0.05" :disabled="armed" @update:value="edit" /><b>{{ wz.toFixed(2) }} rad/s</b></div>
     <div class="limit-foot">
       <span>{{ armed ? '底盘已解锁，限速不可修改' : '安全闸门硬限制 · 手动与探索共用' }}</span>
       <a-button size="small" type="primary" :disabled="armed || !state.connected" @click="save">保存限速</a-button>

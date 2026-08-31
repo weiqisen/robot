@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, watch, nextTick } from 'vue'
 import { useRos } from '../composables/useRos'
+import ServicePanel from '../components/ServicePanel.vue'
 const { state } = useRos()
 
 // 两路来源：systemd journal（start_app_node / snack-butler / jetson-agent / webctl / wifi）
@@ -54,6 +55,7 @@ const counts = computed(() => {
 </script>
 
 <template>
+  <ServicePanel style="margin-bottom:10px" @filter="name => svcF = name" />
   <a-card size="small" :body-style="{ padding: 0 }">
     <template #title>运行日志</template>
     <template #extra>
@@ -131,7 +133,7 @@ const counts = computed(() => {
 .coverage b { color:var(--text-2); }
 
 /* VS Code Dark+ 的集成终端配色，两个主题下都保持深色——日志本来就该是深底 */
-.term { height: calc(100vh - 390px); min-height: 320px; overflow-y: auto; background: #1e1e1e;
+.term { height: calc(100vh - 590px); min-height: 300px; overflow-y: auto; background: #1e1e1e;
   padding: 10px 14px; font-family: var(--font-code); font-size: 12.5px; line-height: 1.65;
   border-radius: 0 0 8px 8px; }
 .ln { display: flex; gap: 10px; white-space: pre-wrap; word-break: break-word; color: #cccccc; }
