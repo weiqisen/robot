@@ -256,7 +256,7 @@ function sim(action, fault) {
 .check-grid { display:grid; grid-template-columns:1fr 1fr; column-gap:18px; }
 .check-row { display: flex; justify-content: space-between; gap:8px; padding: 5px 0; border-bottom: 1px solid var(--divider); font-size:12px; }
 .check-row b { font-weight: 600; }.check-row .ok { color: var(--ok); }.check-row .bad { color: var(--bad); }
-.camera-stage { position: relative; width: 100%; height:clamp(255px,36vh,340px); overflow: hidden;
+.camera-stage { position: relative; width: 100%; height:clamp(330px,45vh,430px); overflow: hidden;
   border-radius: 8px; background: #05070a; }
 .camera-stage img { width: 100%; height: 100%; display: block; object-fit: contain; }
 .camera-tip { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
