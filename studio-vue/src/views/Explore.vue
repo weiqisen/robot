@@ -11,6 +11,7 @@ const { state, actions, HOST, VIDEO_PORT } = useRos()
 const isSim = computed(() => HOST === '127.0.0.1' || HOST === 'localhost')
 const maxMinutes = ref(15), goalTimeout = ref(90), minFrontier = ref(8)
 const st = computed(() => state.explorer)
+const minStartVoltage = computed(() => st.value?.cfg?.min_start_voltage ?? 10.5)
 const stFresh = computed(() => state.connected && state.now - state.explorerAt < 2000)
 const active = computed(() => stFresh.value && ['preparing', 'exploring', 'returning'].includes(st.value?.mode))
 const modeText = computed(() => !stFresh.value ? '状态已过期' : ({ idle: '待机', preparing: '收臂准备', exploring: '探索中', paused: '已暂停',
@@ -37,8 +38,8 @@ const checks = computed(() => [
     st.value?.safety_vision_m == null ? '未见上方障碍' : `${st.value.safety_vision_m.toFixed(2)} m`],
   ['旧控制旁路', !st.value?.safety_legacy_active, st.value?.safety_legacy_active ? '检测到 /cmd_vel 非零指令' : '未发现'],
   ['地图位姿', !!st.value?.pose, st.value?.pose ? fmt(st.value.pose) : '无数据'],
-  ['底盘电池', (st.value?.battery_v ?? 0) >= 10.5,
-    st.value?.battery_v == null ? '无遥测' : `${st.value.battery_v} V`],
+  ['底盘电池', (st.value?.battery_v ?? 0) >= minStartVoltage.value,
+    st.value?.battery_v == null ? '无遥测' : `${st.value.battery_v} V（最低 ${minStartVoltage.value.toFixed(1)}）`],
 ])
 const ready = computed(() => checks.value.every(c => c[1]))
 const brainEvents = computed(() => st.value?.events || [])
@@ -88,7 +89,7 @@ function start() {
   if (!st.value?.clearance_ready) return message.error('车头或车身周围净空不足，请先人工挪开小车')
   if (st.value?.safety_legacy_active) return message.error('检测到旧 /cmd_vel 控制旁路，禁止开始探索')
   if (st.value?.battery_v == null) return message.error('没有底盘电池电压，禁止开始探索')
-  if (st.value.battery_v < 10.5) return message.error(`电池仅 ${st.value.battery_v}V，充电到 10.5V 以上再测试`)
+  if (st.value.battery_v < minStartVoltage.value) return message.error(`电池仅 ${st.value.battery_v}V，最低启动电压设为 ${minStartVoltage.value.toFixed(1)}V`)
   Modal.confirm({
     title: '开始自主探索？',
     content: '小车会先锁定底盘并把机械臂收到收臂位，确认到位后才记录原点并开始移动。请清空机械臂周围和地面危险物，并保持可随时急停。',
@@ -214,6 +215,8 @@ function sim(action, fault) {
             <div class="param-row"><span>最长时间</span><a-slider v-model:value="maxMinutes" :min="2" :max="60" :disabled="active" /><b>{{ maxMinutes }} 分</b></div>
             <div class="param-row"><span>目标超时</span><a-slider v-model:value="goalTimeout" :min="30" :max="240" :step="10" :disabled="active" /><b>{{ goalTimeout }} 秒</b></div>
             <div class="param-row"><span>边界簇</span><a-slider v-model:value="minFrontier" :min="3" :max="30" :disabled="active" /><b>{{ minFrontier }} 格</b></div>
+            <div class="param-row"><span>最低电压</span><a-slider :value="minStartVoltage" :min="9.7" :max="11.5" :step="0.1" :disabled="active"
+              @change="v => send({ action: 'set_config', patch: { min_start_voltage: v } }, `最低启动电压已设为 ${v.toFixed(1)}V`)" /><b>{{ minStartVoltage.toFixed(1) }} V</b></div>
           </a-tab-pane>
           <a-tab-pane key="speed" tab="速度上限"><SpeedLimits compact /></a-tab-pane>
           <a-tab-pane key="help" tab="安全说明"><p class="safe-note">探索前会自动收臂；Nav2 负责路径规划，雷达安全闸门负责近障急停。首次提速请在开阔区域测试，并保持物理急停可用。</p></a-tab-pane>

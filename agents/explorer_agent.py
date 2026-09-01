@@ -377,6 +377,21 @@ class Explorer(Node):
         with self.lock:
             self.get_logger().info('[command] action=%s mode=%s payload=%s' % (action, self.mode, msg.data))
             self.add_event('command', '收到命令：%s（当前 %s）' % (action, self.mode))
+            if action == 'set_config':
+                patch = cmd.get('patch') or {}
+                try:
+                    v = float(patch.get('min_start_voltage', self.cfg['min_start_voltage']))
+                    # 不允许低于任务中的自动返航阈值，避免“允许启动”却立刻触发返航。
+                    if not self.cfg['low_voltage'] <= v <= 11.5:
+                        raise ValueError('允许范围 %.1f–11.5V' % self.cfg['low_voltage'])
+                    if self.mode in ('preparing', 'exploring', 'returning'):
+                        raise ValueError('任务运行中不能修改')
+                    self.cfg['min_start_voltage'] = v
+                    self.step = '最低启动电压已设为 %.1fV（低于 %.1fV 仍会自动返航）' % (v, self.cfg['low_voltage'])
+                    self.add_event('config', self.step, 'warn' if v < 10.5 else 'info')
+                except Exception as e:
+                    self.step = '最低启动电压未修改：%s' % e
+                return
             if action == 'start':
                 if not self.map_ready():
                     self.step = '无法开始：没有 /map'
@@ -820,6 +835,7 @@ class Explorer(Node):
                 'safety_front_m': None if not self.safety_state else self.safety_state.get('front_m'),
                 'safety_body_m': None if not self.safety_state else self.safety_state.get('body_m'),
                 'safety_vision_m': None if not self.safety_state else self.safety_state.get('vision_guard_m'),
+                'cfg': {'min_start_voltage': self.cfg['min_start_voltage'], 'low_voltage': self.cfg['low_voltage']},
                 'clearance_ready': self.clearance_ready(),
                 'arm_ready': self.snack_ready(), 'arm_stowed': self.arm_stowed(),
                 'battery_v': None if self.batt_mv is None else round(self.batt_mv/1000, 2),
