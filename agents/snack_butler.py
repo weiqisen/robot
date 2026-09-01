@@ -280,7 +280,6 @@ class SnackButler(Node):
             self.get_logger().warn('没有 servo_controller_msgs，退回直发总线；'
                                    'joint_states 将不会跟随，视觉定位会不准')
         self.pub_state = self.create_publisher(String, '/snack_butler/state', 10)
-        self.pub_raw_img = self.create_publisher(Image, '/snack_butler/image_raw', 1)
         self.pub_img = self.create_publisher(Image, '/snack_butler/image_result', 1)
         self.pub_buzz = self.create_publisher(BuzzerState, '/ros_robot_controller/set_buzzer', 1)
 
@@ -298,7 +297,7 @@ class SnackButler(Node):
         self.create_timer(0.05, self._tx_drain)     # 下发队列 20Hz，见 _tx_push
         self.create_timer(0.05, self.tick)          # 状态机 20Hz
         self.create_timer(0.2, self.publish_state)  # 状态播报 5Hz
-        self.create_timer(0.2, self.publish_image)  # 标注图 5Hz
+        self.create_timer(1.0 / 3.0, self.publish_image)  # 标注图 3Hz，兼顾首帧可靠性与 CPU
         self.create_timer(5.0, self.watchdog_tick)
         self.get_logger().info('视觉抓取已启动。发 /snack_butler/cmd 开工。')
         threading.Thread(target=self.preload_detector, daemon=True).start()
@@ -1564,16 +1563,12 @@ class SnackButler(Node):
     def publish_image(self):
         if not rclpy.ok():
             return
-        # 没人订阅就别画也别发。标注图是 640x360 BGR，raw 一帧 1.1 MB，5 Hz 就是 5.5 MB/s，
-        # 白白占 DDS 带宽和 rosbridge 的序列化时间。web_video_server 只在有人看时才订。
-        if self.pub_img.get_subscription_count() == 0 and self.pub_raw_img.get_subscription_count() == 0:
-            return
+        # 始终发布一条低频标注流。web_video_server 会在首帧前放弃临时订阅；若此处
+        # 反过来等待订阅者，会形成“双方都等对方”的死锁，页面便会永久显示“连接中”。
         with self.lock:
             img = None if self.rgb is None else self.rgb.copy()
         if img is None:
             return
-        if self.pub_raw_img.get_subscription_count() > 0:
-            self.pub_raw_img.publish(self.image_msg(img))
         for d in self.detections:
             x, y, w, h = d['bbox']
             col = COLOR_BGR.get(d['label'], (200, 200, 200))
