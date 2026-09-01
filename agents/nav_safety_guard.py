@@ -180,8 +180,10 @@ class NavSafetyGuard(Node):
         else: return None, '没有已授权的控制源'
         if now - stamp > 0.35: return None, '%s 速度指令超时' % self.source
         if (self.last_vision and now-self.last_vision < 1.0 and self.vision_guard_m is not None and
-                self.vision_guard_m < .36 and (cmd.linear.x > .01 or abs(cmd.angular.z) > .05)):
-            return self.make_twist(0, 0, 0), '%s，已急停' % (self.vision_guard_reason or '视觉检测到车体上方障碍')
+                self.vision_guard_m < .36 and cmd.linear.x > .01):
+            # 视觉禁行区只描述车头前上方障碍。此前连“原地转向/向后脱困”都冻结，
+            # Frontier 脱困会傻停原地；这两种动作继续由下面的全车雷达检查兜底。
+            return self.make_twist(0, 0, 0), '%s，禁止继续前进' % (self.vision_guard_reason or '视觉检测到车体上方障碍')
 
         vx, vy, wz, reason = safe_velocity(
             cmd.linear.x, cmd.linear.y, cmd.angular.z, self.scan,
