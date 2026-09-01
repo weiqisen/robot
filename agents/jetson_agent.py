@@ -478,8 +478,11 @@ def parse(line):
             if mm: cores.append({'load': int(mm.group(1)), 'freq': int(mm.group(2))})
             else:  cores.append({'load': 0, 'freq': 0, 'off': True})
         d['cpu'] = cores
-    m = re.search(r'GR3D_FREQ (\d+)%', line)
-    if m: d['gpu'] = int(m.group(1))
+    m = re.search(r'GR3D_FREQ (\d+)%(?:@(\d+))?', line)
+    if m:
+        d['gpu'] = int(m.group(1))
+        if m.group(2):
+            d['gpu_freq'] = '%s MHz' % m.group(2)
     m = re.search(r'EMC_FREQ (\d+)%', line)
     if m: d['emc'] = int(m.group(1))
     # 温度  形如 CPU@44.5C GPU@43C tj@45C

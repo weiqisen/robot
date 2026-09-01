@@ -21,6 +21,24 @@ const tj = computed(() => {
   return t ? Math.max(...Object.values(t)) : null
 })
 const watt = computed(() => (j.value?.power?.VDD_IN?.now ?? null))
+const detector = computed(() => state.snack?.detector || null)
+const analysis = computed(() => state.snack?.analysis || null)
+const inferenceRows = computed(() => {
+  const d = detector.value, a = analysis.value
+  return [
+    ['推理设备', d?.yolo_loaded ? (d.yolo_device || 'CUDA') : d?.yolo_loading ? '模型加载中' : d?.yolo_error ? '加载失败' : '未启用'],
+    ['单帧时延', d?.infer_ms != null ? `${d.infer_ms} ms` : '—'],
+    ['推理 FPS', d?.infer_fps != null ? `${d.infer_fps}` : '—'],
+    ['当前目标', a?.detections != null ? `${a.detections} 个` : '—'],
+  ]
+})
+const inferenceState = computed(() => {
+  const d = detector.value
+  if (d?.yolo_error) return { color: 'error', text: 'YOLO 异常' }
+  if (d?.yolo_loading) return { color: 'processing', text: '加载中' }
+  if (d?.yolo_loaded) return { color: analysis.value?.live ? 'success' : 'default', text: analysis.value?.live ? '实时推理' : '待机' }
+  return { color: 'default', text: '未启用' }
+})
 
 // ---- 历史曲线（并进头部四个大指标里，不再单占一张卡）----
 const HN = 120
@@ -130,6 +148,19 @@ const sysinfo = computed(() => {
     </div>
   </a-card>
 
+  <a-card title="CUDA 推理监控" size="small" style="margin-top:16px">
+    <template #extra><a-tag :color="inferenceState.color">{{ inferenceState.text }}</a-tag></template>
+    <div class="inference-grid">
+      <div v-for="[label, value] in inferenceRows" :key="label" class="inference-item">
+        <span>{{ label }}</span><b>{{ value }}</b>
+      </div>
+      <div class="inference-item"><span>GPU 总负载</span><b>{{ j?.gpu ?? '—' }}{{ j?.gpu != null ? ' %' : '' }}</b></div>
+      <div class="inference-item"><span>GPU 频率</span><b>{{ j?.gpu_freq || '—' }}</b></div>
+      <div class="inference-item"><span>GPU 温度</span><b>{{ j?.temps?.GPU != null ? `${j.temps.GPU.toFixed(1)} °C` : '—' }}</b></div>
+      <p class="inference-note">GPU 数据来自 tegrastats；推理数据来自视觉抓取的 YOLO 实际执行，不按 CUDA 核逐核展示。</p>
+    </div>
+  </a-card>
+
   <a-row :gutter="[16, 16]" style="margin-top:16px">
     <a-col :xs="24" :lg="12">
       <a-card title="CPU 核心" size="small">
@@ -197,6 +228,12 @@ const sysinfo = computed(() => {
 .facts dt { font-size: 12px; color: var(--text-3); white-space: nowrap; }
 .facts dd { margin: 0; font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; }
 
+.inference-grid { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:8px; }
+.inference-item { min-width:0; padding:10px 12px; border:1px solid var(--divider); border-radius:8px; background:var(--surface-2); }
+.inference-item span { display:block; color:var(--text-3); font-size:12px; }
+.inference-item b { display:block; margin-top:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:600 15px var(--font-code); }
+.inference-note { grid-column:1 / -1; margin:2px 0 0; color:var(--text-3); font-size:12px; }
+
 .core { display: flex; align-items: center; gap: 10px; padding: 5px 0; }
 .cn { font-size: 13px; color: var(--text-3); width: 42px; font-family: var(--font-code); }
 .bar.wide { flex: 1; height: 6px; }
@@ -220,5 +257,6 @@ const sysinfo = computed(() => {
 @media (max-width: 700px) {
   .side { grid-template-columns: 1fr; }
   .facts { border-left: 0; border-top: 1px solid var(--divider); }
+  .inference-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); }
 }
 </style>

@@ -7,6 +7,7 @@
 import os
 import sys
 import threading
+import time
 import numpy as np
 import cv2
 import vision_geometry as vg
@@ -70,6 +71,9 @@ class UniversalDetector:
         self.yolo_error = ''
         self.device = 'not-loaded'
         self.yolo_loading = False
+        self.infer_ms = None
+        self.infer_fps = None
+        self.last_infer_at = None
         self._load_lock = threading.Lock()
 
     @staticmethod
@@ -119,6 +123,7 @@ class UniversalDetector:
         self._load_yolo()
         if self.model is None:
             return []
+        started = time.perf_counter()
         from utils.augmentations import letterbox
         from utils.general import non_max_suppression, scale_boxes
         size = int(self.cfg.get('yolo_size', 640))
@@ -155,6 +160,10 @@ class UniversalDetector:
                             'area': area, 'bbox': [x, y, w, h], 'angle_px': 0.0,
                             'fill': 1.0, 'confidence': round(float(conf), 3),
                             'detector': 'yolov5', '_cnt': cnt})
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        self.infer_ms = round(elapsed_ms, 1)
+        self.infer_fps = round(1000.0 / elapsed_ms, 1) if elapsed_ms else None
+        self.last_infer_at = time.time()
         return out
 
     def detect(self, bgr):
@@ -175,6 +184,9 @@ class UniversalDetector:
                 'yolo_loaded': self.model is not None, 'yolo_device': self.device,
                 'yolo_loading': self.yolo_loading,
                 'yolo_error': self.yolo_error,
+                'infer_ms': self.infer_ms,
+                'infer_fps': self.infer_fps,
+                'last_infer_at': self.last_infer_at,
                 'weights': self.cfg.get('yolo_weights',
                                         '/home/ubuntu/third_party_ros2/yolov5/yolov5s.pt')}
 
