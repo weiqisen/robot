@@ -1,8 +1,8 @@
 <script setup>
 import { ref, computed, watch, nextTick } from 'vue'
+import { message, Modal } from 'ant-design-vue'
 import { useRos } from '../composables/useRos'
-import ServicePanel from '../components/ServicePanel.vue'
-const { state } = useRos()
+const { state, HOST } = useRos()
 
 // 两路来源：systemd journal（start_app_node / snack-butler / jetson-agent / webctl / wifi）
 // 和 ROS 的 /rosout。合并流在 useRos 里常驻订阅，进来就有最近的历史。
@@ -33,6 +33,24 @@ const serviceOptions = computed(() => [
   ...units.value.map(s => ({ value: s.name, label: `${s.name} · ${s.desc}` })),
 ])
 const activeN = computed(() => units.value.filter(s => s.state === 'active').length)
+const restarting = ref({})
+const NAV = new Set(['explorer-agent', 'exploration-nav', 'nav-safety'])
+const dur = t => t == null ? '--' : t >= 86400 ? `${Math.floor(t / 86400)}天` : t >= 3600 ? `${Math.floor(t / 3600)}时` : `${Math.floor(t / 60)}分`
+function restart(s) {
+  Modal.confirm({ title: `重启 ${s.name}？`, okText: '确认重启', cancelText: '取消',
+    content: NAV.has(s.name) ? '该服务参与自主移动，请确认小车已停稳。' : '服务会短暂离线，通常数秒内恢复。',
+    okButtonProps: { danger: NAV.has(s.name) },
+    async onOk() {
+      restarting.value[s.name] = true
+      try {
+        const r = await fetch(`http://${HOST}:8000/api/services/${s.name}/restart`, { method: 'POST' })
+        const body = await r.json().catch(() => ({}))
+        if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`)
+        message.success(`${s.name} 正在重启`)
+      } catch (e) { message.error(`重启失败：${e.message}`); throw e }
+      finally { restarting.value[s.name] = false }
+    } })
+}
 watch(paused, v => { frozen = v ? state.logs.slice() : [] })
 
 // 跟随滚动：只有用户没往上翻的时候才自动贴底
@@ -55,7 +73,6 @@ const counts = computed(() => {
 </script>
 
 <template>
-  <ServicePanel style="margin-bottom:10px" @filter="name => svcF = name" />
   <a-card size="small" :body-style="{ padding: 0 }">
     <template #title>运行日志</template>
     <template #extra>
@@ -64,11 +81,14 @@ const counts = computed(() => {
     </template>
 
     <div class="service-strip">
-      <button v-for="s in units" :key="s.name" :class="['svc', s.state, { selected: svcF === s.name }]"
-        @click="svcF = svcF === s.name ? 'all' : s.name">
+      <div v-for="s in units" :key="s.name" :class="['svc', s.state, { selected: svcF === s.name }]"
+        role="button" tabindex="0" @click="svcF = svcF === s.name ? 'all' : s.name"
+        @keydown.enter="svcF = svcF === s.name ? 'all' : s.name">
         <i /><span><b>{{ s.name }}</b><small>{{ s.desc }}</small></span>
-        <em>{{ s.state === 'active' ? '运行中' : s.state === 'notfound' ? '未安装' : s.state }}</em>
-      </button>
+        <span class="svc-meta"><em>{{ s.state === 'active' ? '运行中' : s.state === 'notfound' ? '未安装' : s.state }}</em>
+          <small>PID {{ s.pid || '--' }} · {{ s.mem_mb ?? '--' }} MB · {{ dur(s.uptime) }}</small></span>
+        <a-button size="small" :loading="!!restarting[s.name]" @click.stop="restart(s)">重启</a-button>
+      </div>
       <div v-if="!units.length" class="svc-wait">等待自建服务清单…</div>
     </div>
 
@@ -115,7 +135,7 @@ const counts = computed(() => {
 .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px;
   border-bottom: 1px solid var(--divider); }
 .sp { margin-left: auto; }
-.service-strip { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:8px; padding:12px;
+.service-strip { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:8px; padding:12px;
   background:var(--surface-2); border-bottom:1px solid var(--divider); }
 .svc { min-width:0; display:flex; align-items:center; gap:9px; text-align:left; padding:9px 10px; border-radius:7px;
   border:1px solid var(--border); background:var(--surface); color:var(--text-2); cursor:pointer; font-family:inherit; }
@@ -123,10 +143,12 @@ const counts = computed(() => {
 .svc>i { width:8px; height:8px; flex:0 0 auto; border-radius:50%; background:var(--text-4); }
 .svc.active>i { background:#34d399; box-shadow:0 0 0 3px rgba(52,211,153,.14); }
 .svc.failed>i,.svc.inactive>i { background:#f43f5e; }
-.svc span { min-width:0; display:flex; flex-direction:column; gap:2px; }
+.svc>span { min-width:0; display:flex; flex-direction:column; gap:2px; }
 .svc b { font:600 11px/1.2 var(--font-code); overflow:hidden; text-overflow:ellipsis; }
 .svc small { color:var(--text-4); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.svc em { margin-left:auto; flex:0 0 auto; font-style:normal; font-size:10px; color:var(--text-4); }
+.svc-meta { margin-left:auto; text-align:right; flex:0 1 auto; }
+.svc-meta em { font-style:normal; font-size:10px; color:var(--text-4); }
+.svc-meta small { color:var(--text-4); font:10px var(--font-code); white-space:nowrap; }
 .svc-wait { color:var(--text-4); padding:8px; }
 .coverage { display:flex; align-items:center; gap:12px; padding:7px 12px; font-size:11px; color:var(--text-4);
   border-bottom:1px solid var(--divider); }
