@@ -225,6 +225,7 @@ def services_thread():
     """推服务状态，并产生低频心跳/状态变化事件，避免安静服务长期没有可学习日志。"""
     previous = {}
     last_heartbeat = 0.0
+    initial_pending = True
     while True:
         try:
             svcs = services_snapshot()
@@ -237,7 +238,13 @@ def services_thread():
                 for s in svcs:
                     old = previous.get(s["name"])
                     cur = (s["state"], s["sub"], s["pid"], s["restarts"])
-                    if old is not None and old != cur:
+                    if initial_pending:
+                        lines.append({"t": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                                      "unit": s["name"], "src": "service-monitor",
+                                      "lvl": "info" if s["state"] == "active" else "warn",
+                                      "msg": "[startup] %s/%s pid=%s uptime=%ss mem=%sMB restarts=%s" %
+                                             (cur[0], cur[1], cur[2], s["uptime"], s["mem_mb"], cur[3])})
+                    elif old is not None and old != cur:
                         lines.append({"t": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                                       "unit": s["name"], "src": "service-monitor", "lvl": "warn",
                                       "msg": "[state] %s/%s pid=%s restarts=%s (此前 %s/%s pid=%s restarts=%s)" %
@@ -253,8 +260,11 @@ def services_thread():
                                               s["mem_mb"], s["restarts"])})
                     last_heartbeat = now
                 if lines:
-                    ws_send({"op": "publish", "topic": LOG_TOPIC,
-                             "msg": {"data": json.dumps({"lines": lines}, ensure_ascii=False)}})
+                    sent = ws_send({"op": "publish", "topic": LOG_TOPIC,
+                                    "msg": {"data": json.dumps({"lines": lines}, ensure_ascii=False)}})
+                    # 链路未连通时不能把首批状态丢掉；下一轮连接成功后再补发。
+                    if sent:
+                        initial_pending = False
         except Exception:
             pass
         time.sleep(15)

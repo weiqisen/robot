@@ -19,7 +19,7 @@ const hhmmss = t => (String(t || '').match(/\d{2}:\d{2}:\d{2}/) || ['--:--:--'])
 
 let frozen = []
 const rows = computed(() => {
-  const all = paused.value ? frozen : state.logs
+  const all = paused.value ? frozen : (state.logs.length ? state.logs : bootstrapRows.value)
   const kw = q.value.trim().toLowerCase()
   return all.filter(e =>
     (srcF.value === 'all' || e.from === srcF.value) &&
@@ -28,6 +28,11 @@ const rows = computed(() => {
     (!kw || (e.msg + ' ' + (e.src || '')).toLowerCase().includes(kw)))
 })
 const units = computed(() => state.units?.services || [])
+const bootstrapRows = computed(() => units.value.map(s => ({
+  t: new Date().toISOString(), from: 'sys', unit: s.name, src: 'service-monitor',
+  lvl: s.state === 'active' ? 'info' : 'warn',
+  msg: `[startup] ${s.state}/${s.sub || '--'} pid=${s.pid || '--'} uptime=${dur(s.uptime)} mem=${s.mem_mb ?? '--'}MB`,
+})))
 const serviceOptions = computed(() => [
   { value: 'all', label: '全部服务' },
   ...units.value.map(s => ({ value: s.name, label: `${s.name} · ${s.desc}` })),
