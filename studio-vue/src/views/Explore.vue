@@ -53,11 +53,26 @@ watch(() => brainEvents.value.length, async () => {
 const camActive = useMjpegGate()
 const camStamp = ref(Date.now()), camState = ref('wait'), camImg = ref(null)
 const yoloOverlay = ref(false)
+const analysisText = computed(() => {
+  if (!yoloOverlay.value) return '实时'
+  const a = state.snack?.analysis
+  if (!a?.live) return '正在启用分析…'
+  const yolo = state.snack?.detector
+  if (yolo?.yolo_error) return 'YOLO 加载失败'
+  if (yolo?.yolo_loading) return 'YOLO 加载中…'
+  return `AI 分析 · ${a.detections ?? 0} 个目标`
+})
 const camSrc = computed(() => camActive.value
   ? videoUrl(HOST, VIDEO_PORT, yoloOverlay.value ? '/snack_butler/image_result' : '/depth_cam/rgb/image_raw', camStamp.value) : '')
 let camRetry = null
 function reloadCam() { camStamp.value = Date.now(); camState.value = 'wait' }
-function toggleYolo(v) { yoloOverlay.value = v; reloadCam() }
+function toggleYolo(v) {
+  yoloOverlay.value = v
+  if (!actions.snackCmd({ action: 'live_analysis', enabled: !!v })) {
+    message.warning('ROS 通信未连接，无法启用实时分析')
+  }
+  reloadCam()
+}
 function camError() {
   camState.value = 'error'
   if (!camRetry) camRetry = setTimeout(() => { camRetry = null; reloadCam() }, 3000)
@@ -132,7 +147,7 @@ function sim(action, fault) {
     <section class="left-stack">
       <a-card title="前方画面" size="small">
         <template #extra><a-space size="small"><a-switch :checked="yoloOverlay" size="small" checked-children="YOLO" un-checked-children="原始"
-          @change="toggleYolo" /><a-tag :color="camState === 'ok' ? 'success' : 'processing'">{{ camState === 'ok' ? (yoloOverlay ? 'YOLO 实时分析' : '实时') : '连接中' }}</a-tag><a-button size="small" @click="reloadCam">刷新</a-button></a-space></template>
+          @change="toggleYolo" /><a-tag :color="camState === 'ok' ? (yoloOverlay && state.snack?.detector?.yolo_error ? 'error' : 'success') : 'processing'">{{ camState === 'ok' ? analysisText : '连接中' }}</a-tag><a-button size="small" @click="reloadCam">刷新</a-button></a-space></template>
         <div class="camera-stage">
           <img v-if="camSrc" ref="camImg" :src="camSrc" alt="小车前方实时画面" @load="camState = 'ok'" @error="camError" />
           <div v-if="camState !== 'ok'" class="camera-tip">{{ camState === 'error' ? '画面中断，正在重连…' : '正在连接相机…' }}</div>

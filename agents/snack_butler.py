@@ -242,6 +242,8 @@ class SnackButler(Node):
         self._last_dec = 0.0        # 上次解码时刻，用于限速
         self._last_idle_scan = 0.0  # 观察位后台识别节流
         self._last_idle_count = None
+        self.live_analysis = False  # 页面显式开启时才提高到实时分析频率，不写入抓取方案
+        self.last_detection_at = 0.0
         self.batt_v = None          # 最近一次电池电压（V）
         self._low_n = 0             # 连续低压计数
         self.low_volt = False       # 已触发低压保护（latch，回到 clear 阈值才解除）
@@ -817,6 +819,7 @@ class SnackButler(Node):
             d['extrinsic'] = src
             out.append(d)
         self.detections = out
+        self.last_detection_at = time.time()
         return out
 
     def at_observe(self):
@@ -825,7 +828,9 @@ class SnackButler(Node):
         return max(abs(a - b) for a, b in zip(self.current_q(), want)) <= math.radians(5.0)
 
     def tick_idle_detection(self):
-        hz = float(self.cfg.get('idle_detect_hz') or 0)
+        # 空闲时维持低频留档；页面开启“实时分析”后才提升频率，避免常驻占满 Jetson。
+        hz = (min(float(self.cfg.get('proc_fps') or 3), 3.0) if self.live_analysis
+              else float(self.cfg.get('idle_detect_hz') or 0))
         now = time.time()
         # 探索时机械臂在收臂位也继续做低频识别：语义结果用于导航物品留档；
         # 真正抓取前 seq_detect 仍会强制回观察位重新检测，不会拿旧姿态坐标开抓。
@@ -1389,6 +1394,13 @@ class SnackButler(Node):
             elif a == 'detect':
                 self.auto = False
                 self.start(self.seq_detect())
+            elif a == 'live_analysis':
+                self.live_analysis = bool(c.get('enabled', True))
+                self._last_idle_scan = 0.0
+                self._last_idle_count = None
+                self.step = ('实时视觉分析已开启（最高 %.1f Hz）' %
+                             min(float(self.cfg.get('proc_fps') or 3), 3.0)
+                             if self.live_analysis else '实时视觉分析已关闭，恢复低频留档')
             elif a == 'pick':
                 self.auto = False
                 self.start(self.seq_pick(label=c.get('label'), outcome='route'))
@@ -1502,6 +1514,9 @@ class SnackButler(Node):
         m = String()
         m.data = json.dumps({
             'state': self.state, 'step': self.step, 'auto': self.auto,
+            'analysis': {'live': self.live_analysis,
+                         'last_at': round(self.last_detection_at, 3) if self.last_detection_at else None,
+                         'detections': len(self.detections)},
             'error': self.last_error,
             'target': None if not self.target else
                       {k: v for k, v in self.target.items() if not k.startswith('_')},
