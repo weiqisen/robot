@@ -15,7 +15,7 @@ const imgs = computed(() => state.topics
   .map(([n]) => n).filter(n => !isDepth(n)))
 const options = computed(() => imgs.value.map(n => ({ value: n, label: n })))
 
-// 默认挑一个大概率有画面的：零食管家的标注图 > 原始 RGB > 随便第一个
+// 默认挑一个大概率有画面的：视觉抓取的标注图 > 原始 RGB > 随便第一个
 const preferred = computed(() => {
   const l = imgs.value
   return (state.snack && l.find(n => n.includes('snack_butler')))

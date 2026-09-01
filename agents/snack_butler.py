@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-JetRover「零食管家」——识别零食 -> 算坐标 -> 机械臂抓到指定区域 的最小闭环。
+JetRover「视觉抓取」——识别目标 -> 算坐标 -> 机械臂抓到指定区域 的最小闭环。
 
 设计取舍（都是为了「能长期稳定跑 Demo」）：
   * 独立脚本，不做成 colcon 包：机器人上 need_compile=False 的环境编译新包很麻烦，
@@ -297,7 +297,7 @@ class SnackButler(Node):
         self.create_timer(0.2, self.publish_state)  # 状态播报 5Hz
         self.create_timer(0.2, self.publish_image)  # 标注图 5Hz
         self.create_timer(5.0, self.watchdog_tick)
-        self.get_logger().info('零食管家已启动。发 /snack_butler/cmd 开工。')
+        self.get_logger().info('视觉抓取已启动。发 /snack_butler/cmd 开工。')
         threading.Thread(target=self.preload_detector, daemon=True).start()
         # 正常启动时保持原有的观察位初始化；若存在中断动作日志，则绝不自动移动。
         if not self.recovery_journal:

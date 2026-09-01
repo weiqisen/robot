@@ -7,7 +7,7 @@
 - [部署与运维](docs/DEPLOYMENT.md)：本地启动、上车部署、首次安装、服务检查和回滚思路。
 - [运维手册](docs/OPERATIONS_RUNBOOK.md)：相机、日志、服务、探索与部署的日常排障边界。
 - [架构与代码地图](docs/ARCHITECTURE.md)：组件关系、端口、数据流，以及需求应从哪里改。
-- [零食管家](docs/SNACK_BUTLER.md)：视觉定位、机械臂标定、抓取参数和专项排障。
+- [视觉抓取](docs/SNACK_BUTLER.md)：视觉定位、机械臂标定、抓取参数和专项排障。
 - [自主探索](docs/AUTONOMOUS_EXPLORATION.md)：Frontier 探索、Nav2 避障、返航与安全边界。
 - [高可用路线](docs/HIGH_AVAILABILITY_ROADMAP.md)：自主探索与视觉抓取的故障隔离、恢复和续跑规划。
 - [Mac 本地模拟器](docs/LOCAL_SIMULATOR.md)：小车充电/关机时的网页与任务流程联调。

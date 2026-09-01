@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 零食管家（视觉引导抓取）命令行探针。
+// 视觉抓取命令行探针。
 // 调抓取时不想每次都开浏览器点——这里直连 rosbridge，读 /snack_butler/state、
 // 发 /snack_butler/cmd，把结果打在终端上。
 //

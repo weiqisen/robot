@@ -45,7 +45,7 @@ const rows = computed(() => SPEC.map(sp => {
 }))
 const online = computed(() => (state.servos || []).length)
 const ee = computed(() => {
-  // 末端位姿由 Twin/零食管家算，这里只做一个粗略提示：累计俯仰
+  // 末端位姿由 Twin/视觉抓取算，这里只做一个粗略提示：累计俯仰
   const a = ['joint2', 'joint3', 'joint4'].map(n => jrad.value[n]).filter(v => v != null)
   return a.length === 3 ? deg(a[0] + a[1] + a[2]) : null
 })

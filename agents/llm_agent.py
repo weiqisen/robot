@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-零食管家的自然语言指挥官。
+视觉抓取的自然语言指挥官。
 
 把「把红色的零食收到 A 筐」这种话翻译成 snack_butler 的命令，并把执行结果讲回来。
-跑在机器人上，网页 (studio-vue 的「零食管家」页) POST 到 :8092/ask。
+跑在机器人上，网页 (studio-vue 的「视觉抓取」页) POST 到 :8092/ask。
 
     机器人：python3 ~/llm_agent.py        （systemd 服务 llm-agent）
     依赖：  pip3 install anthropic websocket-client
@@ -294,7 +294,7 @@ HANDLERS = {'get_status': t_get_status, 'look': t_look, 'pick': t_pick, 'tidy_al
             'set_route': t_set_route, 'drive': t_drive, 'say': t_say}
 
 SYSTEM = """你是一台幻尔 JetRover 机器人的大脑。它是一台带麦克纳姆轮底盘、5 轴机械臂和深度相机的桌面机器人，
-正在当「零食管家」：识别桌上的零食，用机械臂抓起来分类放进筐里。
+正在执行「视觉抓取」：识别桌上的物品，用机械臂抓起来分类放进筐里。
 
 规则：
 - 用中文回答，口语化、简短（一般一两句话）。你是在跟站在机器人旁边的人说话。

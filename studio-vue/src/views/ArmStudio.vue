@@ -139,7 +139,7 @@ async function saveGroup() {
     await loadGroups(); group.value = name
   } catch (e) { message.error('保存失败：' + e.message) }
 }
-// X/Y/Z 直接复用零食管家的 goto（闭式 IK，已带指尖补偿）
+// X/Y/Z 直接复用视觉抓取的 goto（闭式 IK，已带指尖补偿）
 const goxyz = reactive({ x: 0.22, y: 0, z: -0.05 })
 function runXYZ() {
   if (!actions.snackCmd({ action: 'goto', x: +goxyz.x, y: +goxyz.y, z: +goxyz.z }))
@@ -249,7 +249,7 @@ onBeforeUnmount(() => { stopFlag = true })
         <label>pitch</label><input :value="sbPitch == null ? '--' : sbPitch" readonly class="ro" />
         <button class="btn sm" :disabled="!online" @click="runXYZ">运行</button>
         <InfoNote inline>
-          <p>X/Y/Z 走零食管家的 <code>goto</code>：闭式 IK，已含 37mm 指尖补偿。</p>
+          <p>X/Y/Z 走视觉抓取的 <code>goto</code>：闭式 IK，已含 37mm 指尖补偿。</p>
           <p class="warn">pitch 是当前末端俯仰的只读回显，由 IK 自动选取，不单独设定。</p>
         </InfoNote>
       </div>

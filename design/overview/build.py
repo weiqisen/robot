@@ -61,7 +61,7 @@ MENU = [
     (None, None, '感知 · 导航', 'group'),
     ('nav',  'map',   '导航建图', None),
     ('det',  'scan',  '目标检测', None),
-    ('snk',  'box',   '零食管家', None),
+    ('snk',  'box',   '视觉抓取', None),
     (None, None, 'ROS 系统', 'group'),
     ('sys',  'node',  '节点 · 服务', None),
     ('top',  'list',  '话题总览', None),

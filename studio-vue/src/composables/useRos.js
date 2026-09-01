@@ -22,7 +22,7 @@ const state = reactive({
   imu: null, imuRaw: null, imuSrc: null, odom: null, cmd: null,
   servos: [], joints: null, scan: null, scanAt: 0, mapAt: 0, navSafetyAt: 0, explorerAt: 0,
   jetson: null, map: null, plan: null, localPlan: null, costmap: null,
-  snack: null,           // 零食管家节点状态（/snack_butler/state 的 JSON）
+  snack: null,           // 视觉抓取节点状态（/snack_butler/state 的 JSON）
   explorer: null,        // 自主探索节点状态（/explorer/state 的 JSON）
   navSafety: null,       // Nav2 -> 底盘安全闸门状态
   logs: [],              // 运行日志环形缓冲（systemd journal + /rosout 合并）
@@ -188,7 +188,7 @@ const actions = {
       header: { frame_id: 'map' },
       pose: { pose: { position: { x, y, z: 0 }, orientation: { x: 0, y: 0, z: qz, w: qw } }, covariance: cov } }))
   },
-  // 零食管家：命令走 /snack_butler/cmd (std_msgs/String, JSON)
+  // 视觉抓取：命令走 /snack_butler/cmd (std_msgs/String, JSON)
   snackCmd(obj) {
     if (!state.connected) return false
     topic('/snack_butler/cmd', 'std_msgs/msg/String').publish(new ROSLIB.Message({ data: JSON.stringify(obj) }))

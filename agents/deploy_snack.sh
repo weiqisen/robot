@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 把零食管家部署到 JetRover。机器人常因电量低反复断电，所以默认「蹲守」：
+# 把视觉抓取部署到 JetRover。机器人常因电量低反复断电，所以默认「蹲守」：
 # 一直等到 SSH 通了再推送，不用守着开机。
 #
 #   ./agents/deploy_snack.sh                  # 蹲守 + 部署代码和网页
@@ -120,7 +120,7 @@ echo "== 雷达 udev 规则已更新（VID:PID 1a86:7523 -> /dev/lidar）"
 # 必须用 zsh -c 'source ~/.zshrc; ...' 起，用 bash+setup.bash 会报 KeyError 'need_compile'
 $SSH "$USER_@$ROBOT" "sudo tee /etc/systemd/system/snack-butler.service >/dev/null <<'EOF'
 [Unit]
-Description=JetRover Snack Butler (vision + arm pick-and-place)
+Description=JetRover Visual Grasp (vision + arm pick-and-place)
 After=start_app_node.service
 Wants=start_app_node.service
 StartLimitIntervalSec=120
