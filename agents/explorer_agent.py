@@ -548,7 +548,7 @@ class Explorer(Node):
             p = self.target_for_cluster(group)
             if not p:
                 rejected['unsafe'] += 1; continue
-            if any(math.hypot(p[0]-b['p'][0], p[1]-b['p'][1]) < .30 for b in self.blacklist):
+            if any(math.hypot(p[0]-b['p'][0], p[1]-b['p'][1]) < b.get('radius', .30) for b in self.blacklist):
                 rejected['blacklist'] += 1; continue
             if any(math.hypot(p[0]-v[0], p[1]-v[1]) < .35 for v in self.visited):
                 rejected['visited'] += 1; continue
@@ -564,16 +564,32 @@ class Explorer(Node):
                                     self.cfg['max_goal_distance']))
         return min(candidates, default=None, key=lambda x: x[0])
 
-    def blacklist_target(self, p, why):
+    def blacklist_target(self, p, why, radius=.30):
         if not p:
             return
         self.blacklist.append({'p': (float(p[0]), float(p[1])),
                                'until': time.time() + self.cfg['blacklist_ttl'],
-                               'why': why})
+                               'why': why, 'radius': float(radius)})
+
+    def obstacle_assessment(self, reason):
+        """把安全传感器信号翻译为可审计的导航决策，不把 YOLO 标签当作事实。"""
+        s = self.safety_state or {}
+        front, body, vision = s.get('front_m'), s.get('body_m'), s.get('vision_guard_m')
+        text = str(reason or s.get('vision_guard_reason') or '')
+        if isinstance(body, (int, float)) and body < .38:
+            return '硬禁行', '雷达车身净空 %.2fm' % body
+        if isinstance(front, (int, float)) and front < .38:
+            return '硬禁行', '雷达前方净空 %.2fm' % front
+        if '深度' in text:
+            return '硬禁行', '深度确认的前上方障碍%s' % ((' %.2fm' % vision) if isinstance(vision, (int, float)) else '')
+        if 'YOLO' in text:
+            return '疑似障碍', 'YOLO 提示需绕行，等待雷达/深度复核'
+        return '可绕行', '视觉禁行区触发，雷达未见近距车身障碍'
 
     def escape_from_obstacle(self, blocked_target, reason):
         """由 Nav2 执行一次短后退+掉头意图；失败仍只重规划，不直接驱动底盘。"""
-        self.blacklist_target(blocked_target, 'near_obstacle')
+        level, evidence = self.obstacle_assessment(reason)
+        self.blacklist_target(blocked_target, 'near_obstacle', radius=.60)
         pose = self.current_pose()
         if not pose or self.escape_attempts >= self.cfg['max_escape_attempts']:
             self.step = '近障目标已降权，脱困次数已用完，重新评估其他边界'
@@ -581,12 +597,20 @@ class Explorer(Node):
             return
         self.escape_attempts += 1
         dist = self.cfg['escape_distance']
-        # 目标落在车尾，末端朝反方向；Nav2 会基于代价地图选择安全后退/转向轨迹。
-        ex, ey, eyaw = pose[0] - dist * math.cos(pose[2]), pose[1] - dist * math.sin(pose[2]), pose[2] + math.pi
+        # 不再原地重复：根据受阻目标位于车头左/右，选反侧的斜后方小目标。
+        # Nav2 会检查该目标的可达性；安全闸门仍限制后退/旋转。
+        bearing = math.atan2(blocked_target[1]-pose[1], blocked_target[0]-pose[0]) if blocked_target else pose[2]
+        side = -1.0 if math.sin(bearing-pose[2]) > 0 else 1.0
+        escape_heading = pose[2] + math.pi + side * .60
+        ex, ey = pose[0] + dist * math.cos(escape_heading), pose[1] + dist * math.sin(escape_heading)
+        eyaw = pose[2] + side * math.pi / 2
         self.escape_target = (ex, ey)
-        self.step = '近障拦截，请求 Nav2 安全后退并转向后重新评估'
-        self.add_event('escape', '%s；尝试 %d/%d：后退 %.2fm 并转向' %
-                       (reason, self.escape_attempts, self.cfg['max_escape_attempts'], dist), 'warn')
+        self.step = '%s：扩大局部禁区，请求斜后方脱困并重新评估' % level
+        self.add_event('decision', '前方障碍评估：%s（%s）；选择%s侧斜后方可绕行退路' %
+                       (level, evidence, '右' if side < 0 else '左'), 'warn')
+        self.add_event('escape', '%s；尝试 %d/%d：局部禁区半径 0.60m，后撤 %.2fm、转向 %.0f°' %
+                       (level, self.escape_attempts, self.cfg['max_escape_attempts'], dist,
+                        math.degrees(eyaw)), 'warn')
         self.send_goal(ex, ey, eyaw)
 
     def send_goal(self, x, y, yaw, returning=False):
@@ -742,8 +766,10 @@ class Explorer(Node):
                     return
             if not best:
                 self.begin_return('没有剩余可探索边界'); return
-            _, p, cells = best
+            score, p, cells = best
             cur = self.current_pose(); yaw = math.atan2(p[1]-cur[1], p[0]-cur[0])
+            self.add_event('decision', '选择边界：信息簇 %d 格、距离 %.2fm、风险评分 %.2f；避开已访问与临时禁区' %
+                           (cells, math.hypot(p[0]-cur[0], p[1]-cur[1]), score))
             if self.send_goal(p[0], p[1], yaw):
                 self.step = '前往探索边界（%d 格）' % cells
 
