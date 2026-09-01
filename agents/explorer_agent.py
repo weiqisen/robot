@@ -74,6 +74,7 @@ class Explorer(Node):
         self.last_blacklist_retry = 0.0
         self.escape_target = None
         self.escape_attempts = 0
+        self.return_escape_attempts = 0
         self.goal_handle = None
         self.goal_started = 0.0
         self.goal_seq = 0
@@ -613,6 +614,29 @@ class Explorer(Node):
                         math.degrees(eyaw)), 'warn')
         self.send_goal(ex, ey, eyaw)
 
+    def escape_return_route(self):
+        """返航路线被床沿等前方障碍卡住时，先去侧后方中继点再重算原点路线。"""
+        pose = self.current_pose()
+        if not pose or not self.home or self.return_escape_attempts >= 2:
+            self.safety('disarm'); self.mode, self.step = 'error', '返航路线连续受阻，请人工接管'
+            self.add_event('return', self.step, 'error')
+            return
+        self.return_escape_attempts += 1
+        bearing = math.atan2(self.home[1]-pose[1], self.home[0]-pose[0])
+        # 两次分别选择原点方向的左右侧后方，避免重复顶向床沿。
+        side = 1 if self.return_escape_attempts % 2 else -1
+        heading = bearing + side * math.radians(120)
+        d = .42
+        x, y = pose[0] + d * math.cos(heading), pose[1] + d * math.sin(heading)
+        self.escape_target = (x, y)
+        self.step = '返航路线受阻：先撤到侧后方中继点，再重算原点路线'
+        self.add_event('decision', '返航路径无进展；选择%s侧后方中继点 (%.2f, %.2f)，避开前方障碍后重规划' %
+                       ('左' if side > 0 else '右', x, y), 'warn')
+        self.add_event('escape', '返航脱困 %d/2：请求 Nav2 撤离 %.2fm，随后重试原点' %
+                       (self.return_escape_attempts, d), 'warn')
+        # returning=False 让中继点成功后保留 returning 模式，tick 会重新发送原点。
+        self.send_goal(x, y, heading, returning=False)
+
     def send_goal(self, x, y, yaw, returning=False):
         if not self.nav.wait_for_server(timeout_sec=.2):
             self.step = '等待 Nav2 /navigate_to_pose'
@@ -674,7 +698,7 @@ class Explorer(Node):
                 self.step = '到达探索点，继续扫描边界'
         elif status != GoalStatus.STATUS_CANCELED:
             if returning:
-                self.safety('disarm'); self.mode, self.step = 'error', '返航目标不可达，请人工接管'
+                self.escape_return_route()
             else:
                 self.blacklist_target(p, 'nav_failed')
                 self.step = '目标不可达，已跳过'
