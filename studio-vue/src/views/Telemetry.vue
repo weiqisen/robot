@@ -23,11 +23,11 @@ const miscKV = computed(() => [['按键 ID', state.button ? state.button.id : '�
 <template>
   <a-row :gutter="[16, 16]">
     <a-col :xs="24" :md="8"><a-card title="IMU 姿态" size="small"><div style="text-align:center"><AttitudeCanvas :roll="e.roll" :pitch="e.pitch" :size="200" /></div></a-card></a-col>
-    <a-col :xs="24" :md="8"><a-card title="IMU 数值" size="small"><a-descriptions :column="1" size="small"><a-descriptions-item v-for="[k, v] in imuKV" :key="k" :label="k">{{ v }}</a-descriptions-item></a-descriptions><a-empty v-if="!imuKV.length" :image="null" description="无数据" /></a-card></a-col>
-    <a-col :xs="24" :md="8"><a-card title="里程计 Odometry" size="small"><a-descriptions :column="1" size="small"><a-descriptions-item v-for="[k, v] in odomKV" :key="k" :label="k">{{ v }}</a-descriptions-item></a-descriptions><a-empty v-if="!odomKV.length" :image="null" description="无数据" /></a-card></a-col>
+    <a-col :xs="24" :md="8"><a-card title="IMU 数值" size="small"><a-descriptions :column="1" size="small"><a-descriptions-item v-for="[k, v] in imuKV" :key="k" :label="k">{{ v }}</a-descriptions-item></a-descriptions><a-empty v-if="!imuKV.length" description="无数据" /></a-card></a-col>
+    <a-col :xs="24" :md="8"><a-card title="里程计 Odometry" size="small"><a-descriptions :column="1" size="small"><a-descriptions-item v-for="[k, v] in odomKV" :key="k" :label="k">{{ v }}</a-descriptions-item></a-descriptions><a-empty v-if="!odomKV.length" description="无数据" /></a-card></a-col>
   </a-row>
   <a-row :gutter="[16, 16]" style="margin-top:4px">
-    <a-col :xs="24" :md="12"><a-card title="当前速度指令 cmd_vel" size="small"><a-descriptions :column="1" size="small"><a-descriptions-item v-for="[k, v] in cmdKV" :key="k" :label="k">{{ v }}</a-descriptions-item></a-descriptions><a-empty v-if="!cmdKV.length" :image="null" description="无数据" /></a-card></a-col>
+    <a-col :xs="24" :md="12"><a-card title="当前速度指令 cmd_vel" size="small"><a-descriptions :column="1" size="small"><a-descriptions-item v-for="[k, v] in cmdKV" :key="k" :label="k">{{ v }}</a-descriptions-item></a-descriptions><a-empty v-if="!cmdKV.length" description="无数据" /></a-card></a-col>
     <a-col :xs="24" :md="12"><a-card title="按键 / 遥控" size="small"><a-descriptions :column="1" size="small"><a-descriptions-item v-for="[k, v] in miscKV" :key="k" :label="k">{{ v }}</a-descriptions-item></a-descriptions></a-card></a-col>
   </a-row>
 </template>

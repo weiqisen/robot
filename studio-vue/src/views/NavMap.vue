@@ -163,7 +163,7 @@ const poseKV = computed(() => {
     <a-col :xs="24" :md="9">
       <a-card title="机器人位姿" size="small">
         <a-descriptions :column="1" size="small"><a-descriptions-item v-for="[k, v] in poseKV" :key="k" :label="k">{{ v }}</a-descriptions-item></a-descriptions>
-        <a-empty v-if="!poseKV.length" :image="null" description="无 /odom" />
+        <a-empty v-if="!poseKV.length" description="无 /odom" />
       </a-card>
       <a-card title="目标记录" size="small" style="margin-top:16px">
         <a-list size="small" :data-source="goalLog" :locale="{ emptyText: '尚未设置目标' }">

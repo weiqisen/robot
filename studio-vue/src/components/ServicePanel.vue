@@ -40,7 +40,7 @@ function restart(s) {
       </div>
     </div>
     <div v-if="missing.length" class="missing">未安装：{{ missing.map(s=>s.name).join('、') }}</div>
-    <a-empty v-if="!state.units" :image="null" description="等待服务状态…" />
+    <a-empty v-if="!state.units" description="等待服务状态…" />
   </a-card>
 </template>
 

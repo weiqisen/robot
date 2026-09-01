@@ -140,7 +140,7 @@ const sysinfo = computed(() => {
           <b class="cv">{{ c.off ? 'off' : c.load + '%' }}</b>
           <span class="cf">{{ c.off ? '' : c.freq + ' MHz' }}</span>
         </div>
-        <a-empty v-if="!j?.cpu" :image="null" description="无数据" />
+        <a-empty v-if="!j?.cpu" description="无数据" />
       </a-card>
     </a-col>
     <a-col :xs="24" :sm="12" :lg="6">
@@ -148,7 +148,7 @@ const sysinfo = computed(() => {
         <div v-for="[k, v] in temps" :key="k" class="row">
           <span>{{ k }}</span><b :style="{ color: tColor(v) }">{{ v.toFixed(1) }} °C</b>
         </div>
-        <a-empty v-if="!temps.length" :image="null" description="无数据" />
+        <a-empty v-if="!temps.length" description="无数据" />
       </a-card>
     </a-col>
     <a-col :xs="24" :sm="12" :lg="6">
@@ -157,7 +157,7 @@ const sysinfo = computed(() => {
         <div v-for="[k, o] in powers" :key="k" class="row">
           <span>{{ k }}</span><b>{{ o.now }}<i class="unit">mW</i><em class="avg">/ {{ o.avg }}</em></b>
         </div>
-        <a-empty v-if="!powers.length" :image="null" description="无数据" />
+        <a-empty v-if="!powers.length" description="无数据" />
       </a-card>
     </a-col>
   </a-row>
@@ -169,7 +169,7 @@ const sysinfo = computed(() => {
         <div class="lbl">{{ k }}</div><div class="sv">{{ v }}</div>
       </div>
     </div>
-    <a-empty v-if="!sysinfo.length" :image="null" description="无数据" />
+    <a-empty v-if="!sysinfo.length" description="无数据" />
   </a-card>
 </template>
 
