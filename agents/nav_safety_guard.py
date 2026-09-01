@@ -193,7 +193,9 @@ class NavSafetyGuard(Node):
 
     @staticmethod
     def make_twist(vx, vy, wz):
-        t = Twist(); t.linear.x = vx; t.linear.y = vy; t.angular.z = wz
+        # rclpy 的 geometry_msgs 字段严格要求 Python float。视觉急停路径传入的
+        # 0 是 int，曾导致安全节点在急停时自身崩溃，反而让探索判为安全闸门失联。
+        t = Twist(); t.linear.x = float(vx); t.linear.y = float(vy); t.angular.z = float(wz)
         return t
 
     def publish_zero(self): self.out.publish(Twist())
