@@ -5,7 +5,7 @@ import { useRos, videoUrl } from '../composables/useRos'
 import { useMjpegGate } from '../composables/useMjpeg'
 import { useStreamWatch } from '../composables/useStreamWatch'
 import SpeedLimits from '../components/SpeedLimits.vue'
-import GpuTrendCard from '../components/GpuTrendCard.vue'
+import CudaInferenceCard from '../components/CudaInferenceCard.vue'
 
 const { state, actions, HOST, VIDEO_PORT } = useRos()
 const isSim = computed(() => HOST === '127.0.0.1' || HOST === 'localhost')
@@ -195,7 +195,7 @@ function sim(action, fault) {
     </section>
 
     <aside class="right-stack">
-      <GpuTrendCard />
+      <CudaInferenceCard />
       <a-card v-if="isSim" title="本地仿真控制" size="small">
         <a-alert type="info" show-icon message="仅作用于 Mac 模拟器，不会控制实体小车。" style="margin-bottom:8px" />
         <a-space wrap>
