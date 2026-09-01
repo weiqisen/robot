@@ -280,6 +280,7 @@ class SnackButler(Node):
             self.get_logger().warn('没有 servo_controller_msgs，退回直发总线；'
                                    'joint_states 将不会跟随，视觉定位会不准')
         self.pub_state = self.create_publisher(String, '/snack_butler/state', 10)
+        self.pub_raw_img = self.create_publisher(Image, '/snack_butler/image_raw', 1)
         self.pub_img = self.create_publisher(Image, '/snack_butler/image_result', 1)
         self.pub_buzz = self.create_publisher(BuzzerState, '/ros_robot_controller/set_buzzer', 1)
 
@@ -1565,12 +1566,14 @@ class SnackButler(Node):
             return
         # 没人订阅就别画也别发。标注图是 640x360 BGR，raw 一帧 1.1 MB，5 Hz 就是 5.5 MB/s，
         # 白白占 DDS 带宽和 rosbridge 的序列化时间。web_video_server 只在有人看时才订。
-        if self.pub_img.get_subscription_count() == 0:
+        if self.pub_img.get_subscription_count() == 0 and self.pub_raw_img.get_subscription_count() == 0:
             return
         with self.lock:
             img = None if self.rgb is None else self.rgb.copy()
         if img is None:
             return
+        if self.pub_raw_img.get_subscription_count() > 0:
+            self.pub_raw_img.publish(self.image_msg(img))
         for d in self.detections:
             x, y, w, h = d['bbox']
             col = COLOR_BGR.get(d['label'], (200, 200, 200))
@@ -1596,6 +1599,9 @@ class SnackButler(Node):
         if self.last_error:
             cv2.putText(img, ascii_only(self.last_error)[:70], (6, img.shape[0] - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.42, (80, 80, 255), 1, cv2.LINE_AA)
+        self.pub_img.publish(self.image_msg(img))
+
+    def image_msg(self, img):
         msg = Image()
         msg.header.frame_id = self.cfg['camera_frame']
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -1604,7 +1610,7 @@ class SnackButler(Node):
         msg.is_bigendian = 0
         msg.step = img.shape[1] * 3
         msg.data = img.tobytes()
-        self.pub_img.publish(msg)
+        return msg
 
 
 def main():
