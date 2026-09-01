@@ -5,7 +5,7 @@ import { useRos, videoUrl } from '../composables/useRos'
 import { useStreamWatch } from '../composables/useStreamWatch'
 import InfoNote from '../components/InfoNote.vue'
 import { useMjpegGate } from '../composables/useMjpeg'
-import GpuTrendCard from '../components/GpuTrendCard.vue'
+import CudaInferenceCard from '../components/CudaInferenceCard.vue'
 
 const { state, actions, HOST, VIDEO_PORT } = useRos()
 
@@ -472,7 +472,7 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
             : '物体已夹起，等待人工决定投放位置。'"
           :description="sb.held_target.verification === 'unconfirmed' ? '请先目视确认物体是否在夹爪中；确认后再投放，未夹到请原地松爪。' : ''" />
       </a-card>
-      <GpuTrendCard style="margin:10px 0" />
+      <CudaInferenceCard style="margin:10px 0" />
       <a-card id="snack-status" size="small" title="运行与安全状态">
         <a-descriptions class="status-desc" :column="2" size="small" bordered>
           <a-descriptions-item label="状态">{{ sb?.state || '—' }}</a-descriptions-item>
