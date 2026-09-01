@@ -872,9 +872,13 @@ class SnackButler(Node):
         return self.vision_guard()[0]
 
     def verify_grasp(self, tgt):
-        """回观察位复看原抓取坐标；目标仍在即判为疑似空抓，绝不继续投放。"""
+        """回观察位复看原抓取坐标。
+
+        机械臂没有夹爪力/电流反馈，且观察位刻意看不到夹爪；“桌上没再看到
+        目标”只能证明画面变化，不能证明夹住。因此只返回确定空抓或待人工确认。
+        """
         if not self.cfg.get('post_grasp_verify', True):
-            return True
+            return 'uncertain'
         seen = []
         for _ in range(max(1, int(self.cfg.get('post_grasp_verify_frames', 3)))):
             seen = self.scan_once()
@@ -887,9 +891,9 @@ class SnackButler(Node):
             self.stats['failed'] += 1
             self.get_logger().warning('[grasp_verify] target remains near (%.3f, %.3f): %s' %
                                       (tx, ty, [d.get('label') for d in remains]))
-            return False
-        self.get_logger().info('[grasp_verify] target absent from original table position')
-        return True
+            return 'remains'
+        self.get_logger().warning('[grasp_verify] target absent, but no gripper force feedback; require confirmation')
+        return 'uncertain'
 
     # ---------------- 状态机：每个 yield 返回「等待秒数」 ----------------
     def start(self, gen, name=None):
@@ -1190,24 +1194,20 @@ class SnackButler(Node):
         self.journal_phase('verify_grasp')
         # 保持闭爪回观察位复核，不能在搬运途中释放物品。
         yield from self.seq_goto_observe()
-        if not self.verify_grasp(tgt):
+        verify = self.verify_grasp(tgt)
+        if verify == 'remains':
             self.gripper(True)  # 不确定是否夹住时松爪，避免带着物品穿越桌面上方
             self.target = None
             self.clear_action_journal()  # 已回观察位、已松爪，属于受控失败而不是中断恢复
             return False
 
-        if outcome == 'inspect':
-            self.held_target = tgt
-            self.target = None
-            self.clear_action_journal()
-            self.state = 'HOLDING'
-            self.step = '抓取复核通过：物体已夹起，等待选择投放区或松爪'
-            return True
-        binname = outcome if outcome in cfg['bins'] else cfg['route'].get(tgt['label'], cfg['default_bin'])
-        yield from self.seq_place(binname)
-        self.stats['picked'] += 1
+        # 即使用户先点了 A/B，也不能把“暂未见到桌面目标”伪装成“已夹起”。
+        # 必须先目视确认，之后才允许 place_held 投放。
+        self.held_target = dict(tgt, verification='unconfirmed')
         self.target = None
-        self.beep()
+        self.clear_action_journal()
+        self.state = 'HOLDING'
+        self.step = '桌面目标暂未见：无法证明已夹起，请目视确认后投放或松爪'
         return True
 
     def seq_place_held(self, binname):

@@ -24,7 +24,9 @@ const taskItems = computed(() => [
   { title: '选择目标', description: selectedDet.value ? (CN[selectedDet.value.label] || selectedDet.value.label) : '点击画面或列表' },
   { title: '确认结果', description: '抓起观察 / 放入 A / 放入 B' },
   { title: '执行与复核', description: sb.value?.step || '等待执行' },
-  { title: '完成处置', description: sb.value?.held_target ? '物体已夹起，等待投放' : '回观察位继续识别' },
+  { title: '完成处置', description: sb.value?.held_target
+    ? (sb.value.held_target.verification === 'unconfirmed' ? '待目视确认后投放' : '物体已夹起，等待投放')
+    : '回观察位继续识别' },
 ])
 
 const STATE_COLOR = {
@@ -340,10 +342,11 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
 
         <div class="target-workbench">
           <template v-if="sb?.held_target">
-            <a-tag color="gold">已夹起：{{ CN[sb.held_target.label] || sb.held_target.label }}</a-tag>
-            <span>复核已通过，请决定投放位置：</span>
-            <a-button size="small" type="primary" @click="placeHeld('A')">放入 A 区</a-button>
-            <a-button size="small" @click="placeHeld('B')">放入 B 区</a-button>
+            <a-tag :color="sb.held_target.verification === 'unconfirmed' ? 'orange' : 'gold'">
+              {{ sb.held_target.verification === 'unconfirmed' ? '待确认：' : '已夹起：' }}{{ CN[sb.held_target.label] || sb.held_target.label }}</a-tag>
+            <span>{{ sb.held_target.verification === 'unconfirmed' ? '请目视确认后再投放：' : '复核已通过，请决定投放位置：' }}</span>
+            <a-button size="small" type="primary" @click="placeHeld('A')">确认夹起后放 A</a-button>
+            <a-button size="small" @click="placeHeld('B')">确认夹起后放 B</a-button>
             <a-button size="small" danger @click="send({ action: 'gripper', open: true }, '已松爪')">原地松爪</a-button>
           </template>
           <template v-else-if="selectedDet">
@@ -464,7 +467,10 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
           </template>
         </a-alert>
         <a-alert v-if="sb?.held_target" type="warning" show-icon style="margin-top:10px"
-          message="物体已夹起，等待人工决定投放位置。" />
+          :message="sb.held_target.verification === 'unconfirmed'
+            ? '桌面目标暂未见，但没有夹爪力反馈，不能判定已夹起。'
+            : '物体已夹起，等待人工决定投放位置。'"
+          :description="sb.held_target.verification === 'unconfirmed' ? '请先目视确认物体是否在夹爪中；确认后再投放，未夹到请原地松爪。' : ''" />
       </a-card>
       <GpuTrendCard style="margin:10px 0" />
       <a-card id="snack-status" size="small" title="运行与安全状态">
