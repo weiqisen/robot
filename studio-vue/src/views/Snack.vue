@@ -551,7 +551,7 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
       </a-card>
 
       <a-collapse class="advanced-panels" :bordered="false" style="margin-top:10px">
-        <a-collapse-panel key="calib" header="高级设置 · 标定与硬件检查">
+        <a-collapse-panel key="calib" header="标定与硬件">
       <a-card id="snack-calib" size="small" title="标定">
         <InfoNote v-if="online && sb?.cm" title="不用标定：指令走 /servo_controller">
           <p><b>弧度→脉冲由机器人自带驱动换算，不需要我们自己标。</b></p>
@@ -595,7 +595,7 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
         </div>
       </a-card>
         </a-collapse-panel>
-        <a-collapse-panel key="params" header="高级设置 · 抓取参数与方案">
+        <a-collapse-panel key="params" header="抓取参数与方案">
 
       <a-card id="snack-params" size="small" title="抓取参数">
         <template #extra>
@@ -667,7 +667,7 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
         <div class="tip">调夹爪时先点「张爪 / 合爪」看效果，合适了再保存。</div>
       </a-card>
         </a-collapse-panel>
-        <a-collapse-panel key="bins" header="高级设置 · 投放区与自动分拣">
+        <a-collapse-panel key="bins" header="投放区与分拣">
 
       <a-card id="snack-bins" size="small" title="投放区与分拣规则">
         <a-descriptions :column="1" size="small" bordered>
