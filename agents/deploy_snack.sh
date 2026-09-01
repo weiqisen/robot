@@ -72,7 +72,7 @@ echo "== webctl 已重启"
 echo "== 推送 agents"
 # jetson_agent / webrtc_agent 的 systemd 单元是早先手工装的，这里只更新脚本本身：
 # 网页的 BOM / 服务监控 / 运行日志页全靠 jetson_agent 推 topic，漏推就是一直空转。
-$SCP "$HERE"/agents/{snack_butler.py,arm_kinematics.py,vision_geometry.py,snack_detector.py,llm_agent.py,jetson_agent.py,webrtc_agent.py,gpu_bench.py,explorer_agent.py,exploration_bringup.launch.py,run_exploration_nav.sh,run_x11vnc.sh,nav_safety_guard.py,nav_safety_logic.py,lidar_watchdog.py,exploration_nav_safety.yaml} \
+$SCP "$HERE"/agents/{snack_butler.py,arm_kinematics.py,vision_geometry.py,snack_detector.py,service_watchdog.py,llm_agent.py,jetson_agent.py,webrtc_agent.py,gpu_bench.py,explorer_agent.py,exploration_bringup.launch.py,run_exploration_nav.sh,run_x11vnc.sh,nav_safety_guard.py,nav_safety_logic.py,lidar_watchdog.py,exploration_nav_safety.yaml} \
      "$USER_@$ROBOT:~/"
 # scp 不保证本地脚本的执行位在所有目标环境中保持一致；显式设置，便于 systemd 和人工排障直接执行。
 $SSH "$USER_@$ROBOT" 'chmod 755 ~/run_exploration_nav.sh ~/run_x11vnc.sh'
@@ -123,9 +123,14 @@ $SSH "$USER_@$ROBOT" "sudo tee /etc/systemd/system/snack-butler.service >/dev/nu
 Description=JetRover Snack Butler (vision + arm pick-and-place)
 After=start_app_node.service
 Wants=start_app_node.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
+WatchdogSec=25
+TimeoutStartSec=45
 User=$USER_
 WorkingDirectory=/home/$USER_
 ExecStart=/usr/bin/zsh -c 'source /home/$USER_/.zshrc; exec python3 /home/$USER_/snack_butler.py'
@@ -159,9 +164,14 @@ $SSH "$USER_@$ROBOT" "sudo tee /etc/systemd/system/explorer-agent.service >/dev/
 Description=JetRover autonomous frontier explorer
 After=start_app_node.service network-online.target
 Wants=start_app_node.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
+WatchdogSec=25
+TimeoutStartSec=45
 User=$USER_
 WorkingDirectory=/home/$USER_
 ExecStart=/usr/bin/zsh -c 'source /home/$USER_/.zshrc; exec python3 /home/$USER_/explorer_agent.py'
@@ -195,9 +205,14 @@ $SSH "$USER_@$ROBOT" "sudo tee /etc/systemd/system/nav-safety.service >/dev/null
 Description=JetRover Nav2 motion safety guard
 After=start_app_node.service
 Requires=start_app_node.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
+WatchdogSec=20
+TimeoutStartSec=30
 User=$USER_
 WorkingDirectory=/home/$USER_
 ExecStart=/usr/bin/zsh -c 'source /home/$USER_/.zshrc; exec python3 /home/$USER_/nav_safety_guard.py'

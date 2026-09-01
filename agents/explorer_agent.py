@@ -30,6 +30,7 @@ from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 from std_msgs.msg import String, UInt16
 from sensor_msgs.msg import LaserScan
+from service_watchdog import ServiceWatchdog
 
 try:
     from tf2_ros import Buffer, TransformListener
@@ -59,11 +60,17 @@ class Explorer(Node):
         self.home_restored = False
         self.home_restore_status = 'none'
         self.session_candidate = None
+        self.recovery_available = False
+        self.recovery_mode = None
+        self.recovery_elapsed = 0.0
+        self.recovery_last_target = None
         self.session_file = os.path.join(os.path.expanduser('~'), 'explorer_session.json')
         self.target = None
         self.started_at = 0.0
         self.visited = []
         self.blacklist = []
+        self.breadcrumbs = deque(maxlen=80)
+        self.last_breadcrumb = None
         self.last_blacklist_retry = 0.0
         self.goal_handle = None
         self.goal_started = 0.0
@@ -72,6 +79,7 @@ class Explorer(Node):
         self.events = deque(maxlen=80)
         self.objects = deque(maxlen=100)
         self.lock = threading.RLock()
+        self.watchdog = ServiceWatchdog('explorer-agent')
         self.cfg = {'max_minutes': 15.0, 'min_frontier_cells': 8,
                     'goal_timeout': 90.0, 'goal_tolerance': 0.35,
                     # 小于 Nav2 到达容差的目标只会让车原地转向；开阔处的下一簇边界
@@ -102,9 +110,16 @@ class Explorer(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self) if self.tf_buffer else None
         self.create_timer(1.0, self.tick)
         self.create_timer(0.5, self.publish_state)
+        self.create_timer(5.0, self.watchdog_tick)
+        self.create_timer(5.0, self.checkpoint_tick)
         self.create_timer(60.0, self.log_heartbeat)
         self.get_logger().info('[startup] 自主探索 agent 已启动，等待地图、雷达、Nav2 与安全闸门')
         self.add_event('startup', '探索大脑已启动，正在等待地图、雷达、Nav2 与安全闸门')
+        self.watchdog.ready('已启动，等待依赖')
+
+    def watchdog_tick(self):
+        self.watchdog.ping('mode=%s map=%s scan=%s safety=%s' %
+                           (self.mode, self.map_ready(), self.scan_ready(), self.safety_ready()))
 
     def add_event(self, kind, text, level='info', data=None):
         """给页面展示可验证的决策事件，不输出不可审计的隐藏推理。"""
@@ -115,8 +130,17 @@ class Explorer(Node):
             item['data'] = data
         self.events.append(item)
 
+    @staticmethod
+    def _poses(values, limit=80):
+        result = []
+        for value in (values or [])[:limit]:
+            if (isinstance(value, (list, tuple)) and len(value) == 3 and
+                    all(isinstance(v, (int, float)) and math.isfinite(v) for v in value)):
+                result.append(tuple(float(v) for v in value))
+        return result
+
     def load_session(self):
-        """恢复最近一次明确记录的返航原点，避免 agent 重启后按钮失效。"""
+        """恢复返航点和中断任务检查点；绝不在启动后自动恢复移动。"""
         try:
             with open(self.session_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
@@ -131,11 +155,12 @@ class Explorer(Node):
             self.session_candidate = {
                 'home': tuple(float(v) for v in home),
                 'map_to_odom': tuple(float(v) for v in map_to_odom),
+                'mission': data.get('mission') if isinstance(data.get('mission'), dict) else None,
             }
             self.home_saved_at = data.get('saved_at')
             self.home_restore_status = 'pending'
-            self.step = '正在校验上次任务原点'
-            self.add_event('session', '发现持久化返航原点，等待校验地图坐标连续性')
+            self.step = '正在校验上次任务检查点'
+            self.add_event('session', '发现持久化返航原点与任务检查点，等待校验地图坐标连续性')
             self.get_logger().info('[session] 找到持久化原点，等待地图连续性校验')
         except FileNotFoundError:
             return
@@ -177,7 +202,24 @@ class Explorer(Node):
             self.home = self.session_candidate['home']
             self.home_restored = True
             self.home_restore_status = 'restored'
-            self.step = '已恢复上次任务原点，等待命令'
+            mission = self.session_candidate.get('mission')
+            if mission and mission.get('mode') in ('preparing', 'exploring', 'returning', 'paused'):
+                self.visited = self._poses(mission.get('visited'), 200)
+                self.blacklist = [b for b in (mission.get('blacklist') or [])
+                                  if isinstance(b, dict) and isinstance(b.get('until'), (int, float)) and
+                                  b.get('until') > time.time() and self._poses([b.get('p')], 1)]
+                self.breadcrumbs = deque(self._poses(mission.get('breadcrumbs'), 80), maxlen=80)
+                self.recovery_available = True
+                self.recovery_mode = mission.get('mode')
+                self.recovery_elapsed = max(0.0, float(mission.get('elapsed_sec') or 0.0))
+                last_target = self._poses([mission.get('target')], 1)
+                self.recovery_last_target = last_target[0] if last_target else None
+                self.mode = 'recovery'
+                self.step = '发现中断任务，底盘已锁定；请确认继续探索或立即返航'
+                self.safety('disarm')
+                self.add_event('recovery', '已恢复任务检查点，等待人工确认；不会自动移动', 'warn')
+            else:
+                self.step = '已恢复上次任务原点，等待命令'
             self.get_logger().info('[session] 地图连续，已恢复原点 home=%s shift=%.3fm turn=%.1fdeg' %
                                    (self.home, shift, math.degrees(turn)))
             self.add_event('session', '地图坐标连续，已恢复原点 (%.2f, %.2f)' % self.home[:2])
@@ -191,14 +233,28 @@ class Explorer(Node):
                            (shift, math.degrees(turn)), 'error')
         self.session_candidate = None
 
-    def save_session(self):
+    def mission_snapshot(self):
+        active = self.mode in ('preparing', 'exploring', 'returning', 'paused')
+        if not active:
+            return None
+        return {
+            'mode': self.mode, 'elapsed_sec': round(time.time() - self.started_at, 1) if self.started_at else 0.0,
+            'target': list(self.target) if self.target else None,
+            'visited': [list(p) for p in self.visited[-200:]],
+            'blacklist': [{'p': list(b['p']), 'until': b['until'], 'reason': b.get('reason')}
+                          for b in self.blacklist[-80:] if b.get('until', 0) > time.time()],
+            'breadcrumbs': [list(p) for p in self.breadcrumbs],
+            'saved_at': time.time(),
+        }
+
+    def save_session(self, event=False):
         signature = self.map_to_odom_signature()
-        if not signature:
+        if not signature or not self.home:
             self.get_logger().error('[session] 缺少 map/odom 变换，未保存返航原点')
             return
         self.home_saved_at = time.strftime('%Y-%m-%dT%H:%M:%S%z')
-        data = {'version': 1, 'home': list(self.home), 'map_to_odom': list(signature),
-                'saved_at': self.home_saved_at}
+        data = {'version': 2, 'home': list(self.home), 'map_to_odom': list(signature),
+                'saved_at': self.home_saved_at, 'mission': self.mission_snapshot()}
         tmp = self.session_file + '.tmp'
         try:
             with open(tmp, 'w', encoding='utf-8') as f:
@@ -208,12 +264,24 @@ class Explorer(Node):
             os.replace(tmp, self.session_file)
             self.home_restored = False
             self.home_restore_status = 'saved'
-            self.get_logger().info('[session] 已持久化返航原点 home=%s saved_at=%s' %
-                                   (self.home, self.home_saved_at))
-            self.add_event('home', '已记录并持久化返航原点 (%.2f, %.2f)' % self.home[:2])
+            if event:
+                self.get_logger().info('[session] 已持久化返航原点 home=%s saved_at=%s' %
+                                       (self.home, self.home_saved_at))
+                self.add_event('home', '已记录并持久化返航原点 (%.2f, %.2f)' % self.home[:2])
         except Exception as e:
             self.get_logger().error('[session] 保存返航原点失败: %s' % e)
             self.add_event('home', '返航原点保存失败：%s' % e, 'error')
+
+    def checkpoint_tick(self):
+        with self.lock:
+            if self.mode not in ('preparing', 'exploring', 'returning', 'paused'):
+                return
+            pose = self.current_pose()
+            if pose and (not self.last_breadcrumb or math.hypot(pose[0] - self.last_breadcrumb[0],
+                                                                 pose[1] - self.last_breadcrumb[1]) >= .45):
+                self.breadcrumbs.append(pose)
+                self.last_breadcrumb = pose
+            self.save_session()
 
     def log_heartbeat(self):
         self.get_logger().info('[heartbeat] mode=%s step=%s map=%s scan=%s safety=%s nav=%s battery=%s' %
@@ -268,6 +336,16 @@ class Explorer(Node):
         q = self.snack_state.get('q_deg') or []
         home = (self.snack_state.get('cfg') or {}).get('home_deg') or []
         return len(q) >= 5 and len(home) >= 5 and max(abs(float(a)-float(b)) for a, b in zip(q, home)) <= self.cfg['arm_tolerance_deg']
+
+    def recovery_ready(self):
+        if not self.map_ready(): return '没有 /map'
+        if not self.scan_ready(): return '激光雷达 /scan 没有数据'
+        if not self.safety_ready() or not self.legacy_clear(): return '导航安全闸门未就绪或发现控制旁路'
+        if not self.snack_ready(): return '机械臂节点未连接，不能确认收臂'
+        if self.batt_mv is None or self.batt_mv / 1000.0 < self.cfg['min_start_voltage']:
+            return '电池电压不足，不能恢复移动'
+        if not self.current_pose(): return '没有 map/base_link 位姿'
+        return None
 
     def current_pose(self):
         if self.tf_buffer:
@@ -326,26 +404,38 @@ class Explorer(Node):
                 for k in self.cfg:
                     if k in cmd:
                         self.cfg[k] = type(self.cfg[k])(cmd[k])
-                self.home = pose
-                self.save_session()
                 self.started_at = 0.0
                 self.visited, self.blacklist = [], []
+                self.breadcrumbs.clear(); self.last_breadcrumb = pose
+                self.recovery_available = False; self.recovery_mode = None
+                self.recovery_elapsed = 0.0; self.recovery_last_target = None
+                self.home = pose
                 self.mode, self.step = 'preparing', '底盘已锁定，正在收回机械臂'
                 self.prepare_next = 'exploring'
                 self.cancel_goal()
                 self.safety('disarm')
                 self.prepare_started = time.time()
                 self.stow_arm()
+                self.save_session(event=True)
             elif action == 'pause' and self.mode == 'exploring':
                 self.cancel_goal(); self.safety('disarm'); self.mode, self.step = 'paused', '已暂停，导航驱动已锁定'
-            elif action == 'resume' and self.mode == 'paused':
-                if not self.scan_ready():
-                    self.step = '无法继续：激光雷达 /scan 没有数据'
+                self.save_session()
+            elif action == 'resume' and self.mode in ('paused', 'recovery'):
+                reason = self.recovery_ready()
+                if reason:
+                    self.step = '无法继续：' + reason
                 else:
-                    self.safety('disarm'); self.mode, self.step = 'preparing', '继续前先确认机械臂收回'
-                    self.prepare_next = 'exploring'; self.prepare_started = time.time(); self.stow_arm()
+                    target_mode = self.recovery_mode if self.mode == 'recovery' else 'exploring'
+                    self.safety('disarm'); self.mode, self.step = 'preparing', '恢复前先确认机械臂收回'
+                    self.prepare_next = 'returning' if target_mode == 'returning' else 'exploring'
+                    if self.recovery_elapsed:
+                        self.started_at = time.time() - self.recovery_elapsed
+                    self.recovery_available = False; self.recovery_mode = None
+                    self.target = None
+                    self.prepare_started = time.time(); self.stow_arm(); self.save_session()
             elif action == 'stop':
                 self.cancel_goal(); self.safety('disarm'); self.mode, self.step = 'idle', '任务已停止（不返航）'
+                self.recovery_available = False; self.recovery_mode = None; self.save_session()
             elif action == 'home':
                 if not self.home:
                     self.step = '没有已记录的原点'
@@ -354,6 +444,7 @@ class Explorer(Node):
                 else:
                     self.cancel_goal(); self.safety('disarm'); self.mode, self.step = 'preparing', '返航前先收回机械臂'
                     self.prepare_next = 'returning'; self.prepare_started = time.time(); self.stow_arm()
+                    self.recovery_available = False; self.recovery_mode = None; self.save_session()
             elif action == 'set_home_current':
                 pose = self.current_pose()
                 if self.mode in ('exploring', 'returning', 'preparing'):
@@ -632,6 +723,10 @@ class Explorer(Node):
                 'home': self.home, 'target': self.target, 'pose': pose,
                 'home_restored': self.home_restored, 'home_saved_at': self.home_saved_at,
                 'home_restore_status': self.home_restore_status,
+                'recovery_available': self.recovery_available,
+                'recovery_mode': self.recovery_mode,
+                'recovery_last_target': self.recovery_last_target,
+                'breadcrumbs': len(self.breadcrumbs),
                 'events': list(self.events),
                 'objects': list(self.objects),
                 'visited': len(self.visited), 'blacklisted': len(self.blacklist),

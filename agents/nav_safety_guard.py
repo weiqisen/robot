@@ -21,6 +21,7 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
 from nav_safety_logic import safe_velocity, sector_min, twist_nonzero
+from service_watchdog import ServiceWatchdog
 
 
 class NavSafetyGuard(Node):
@@ -62,7 +63,14 @@ class NavSafetyGuard(Node):
         self.load_config()
         self.last_log_state = None
         self.last_heartbeat = time.monotonic()
+        self.watchdog = ServiceWatchdog('nav-safety')
         self.get_logger().info('[startup] 导航安全闸门已启动，默认锁定，等待雷达与显式控制源授权')
+        self.create_timer(5.0, self.watchdog_tick)
+        self.watchdog.ready('已启动，默认锁定')
+
+    def watchdog_tick(self):
+        self.watchdog.ping('armed=%s scan=%s source=%s' %
+                           (self.armed, self.scan_fresh(), self.source or 'none'))
 
     def load_config(self):
         try:

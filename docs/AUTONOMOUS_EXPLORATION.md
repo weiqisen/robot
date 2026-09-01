@@ -50,6 +50,13 @@
 
 状态发布到 `/explorer/state`，包含 `mode`、`step`、`home`、`target`、`visited`、`blacklisted`、`map_ready`、`nav_ready`、`battery_v` 和当前配置。
 
+### 服务重启后的探索恢复
+
+探索运行期间会把原点、已访问区域、临时黑名单、最后目标和安全位姿检查点原子写入
+`~/explorer_session.json`。`explorer-agent` 重启后先检查 `map -> odom` 连续性；通过后仍会保持
+底盘锁定并显示“恢复待确认”。此时只能在网页选择“继续探索”（重新选择 Frontier）或“立即返航”，
+不会因服务重启自动开车。坐标不连续时旧任务与原点都会作废。
+
 ## 安全说明
 
 - “避障”能力取决于 Nav2 和传感器配置。本 agent 不会绕过代价地图直接驱动车轮。

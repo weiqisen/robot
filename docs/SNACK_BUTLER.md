@@ -119,6 +119,13 @@ pip3 install anthropic websocket-client
 状态在 `/snack_butler/state`（JSON），标注图在 `/snack_butler/image_result`
 （web_video_server: `http://IP:8080/stream?topic=/snack_butler/image_result&type=mjpeg`）。
 
+### 服务重启后的抓取恢复
+
+抓取从安全移动、下探、合爪、抬起到投放的每个阶段都会原子写入
+`~/snack_butler_action.json`。如果服务在动作中中断，重启后会进入 `RECOVERY` 并拒绝所有新动作；
+网页会显示中断阶段。确认机械臂周围无障碍、电压正常且关节状态已恢复后，点击“安全恢复”，系统才会
+先抬到记录的安全姿态再收臂。不会在服务启动时自行移动机械臂。
+
 机械臂到达观察位且空闲时，节点默认每秒自动识别一次并更新画面标注；这个后台识别只做视觉计算，
 不会自行抓取。单次“点击即抓/抓这个/按颜色抓”成功投放后会自动回到观察位并恢复后台识别。
 

@@ -42,6 +42,7 @@ from arm_kinematics import (ik_best, ik_auto_pitch, fk, fk_wrist, ServoMap, TOOL
                             SERVO_IDS, GRIPPER_ID, JOINT_NAMES, clamp)
 import vision_geometry as vg
 from snack_detector import UniversalDetector, COLOR_BGR, detect_depth_objects, locate as locate_3d
+from service_watchdog import ServiceWatchdog
 
 # 这些是机器人自带的自定义消息；缺任何一个都没法动，直接报清楚
 from ros_robot_controller_msgs.msg import ServosPosition, ServoPosition, BuzzerState
@@ -63,6 +64,7 @@ def ascii_only(t):
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'snack_butler_config.json')
 PROFILES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'snack_butler_profiles.json')
+ACTION_JOURNAL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'snack_butler_action.json')
 PROFILE_KEYS = ('table_z', 'x_offset_hack', 'y_offset_hack', 'z_offset_hack',
                 'assume_object_h', 'grasp_z_offset', 'approach_h', 'lift_h',
                 'gripper_open', 'gripper_close')
@@ -210,6 +212,7 @@ class SnackButler(Node):
         self.smap = ServoMap(**{k: self.cfg['servo_map'][k] for k in ('dirs', 'centers')})
         self.detector = UniversalDetector(self.cfg)
         self.ensure_initial_profile()
+        self.watchdog = ServiceWatchdog('snack-butler')
 
         self.lock = threading.Lock()
         self.rgb = None
@@ -238,6 +241,8 @@ class SnackButler(Node):
 
         self._task = None
         self._wait_until = 0.0
+        self.recovery_journal = None
+        self.load_action_journal()
 
         sensor_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT,
                                 history=HistoryPolicy.KEEP_LAST)
@@ -283,9 +288,20 @@ class SnackButler(Node):
         self.create_timer(0.05, self.tick)          # 状态机 20Hz
         self.create_timer(0.2, self.publish_state)  # 状态播报 5Hz
         self.create_timer(0.2, self.publish_image)  # 标注图 5Hz
+        self.create_timer(5.0, self.watchdog_tick)
         self.get_logger().info('零食管家已启动。发 /snack_butler/cmd 开工。')
         threading.Thread(target=self.preload_detector, daemon=True).start()
-        self.start(self.seq_goto_observe())
+        # 正常启动时保持原有的观察位初始化；若存在中断动作日志，则绝不自动移动。
+        if not self.recovery_journal:
+            self.start(self.seq_goto_observe())
+        else:
+            self.get_logger().warning('[recovery] 检测到中断动作日志，已锁定机械臂，等待人工确认恢复')
+        self.watchdog.ready('已启动，等待相机与关节状态')
+
+    def watchdog_tick(self):
+        self.watchdog.ping('state=%s rgb=%s depth=%s task=%s' %
+                           (self.state, self.rgb is not None, self.depth is not None,
+                            self._task is not None))
 
     def preload_detector(self):
         self.get_logger().info('[detector] 后台加载 YOLO 模型，不阻塞 ROS 状态与低压保护')
@@ -336,6 +352,63 @@ class SnackButler(Node):
             os.replace(tmp, PROFILES_PATH)
         except Exception as e:
             self.get_logger().error(f'抓取参数方案保存失败: {e}')
+
+    @staticmethod
+    def _atomic_json(path, data):
+        tmp = path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+
+    def load_action_journal(self):
+        """动作中断后保持机械臂静止，必须由用户确认安全恢复。"""
+        try:
+            with open(ACTION_JOURNAL_PATH, encoding='utf-8') as f:
+                data = json.load(f)
+            if not isinstance(data, dict) or not data.get('id') or not data.get('phase'):
+                raise ValueError('动作日志格式无效')
+            self.recovery_journal = data
+            self.state = 'RECOVERY'
+            self.step = '发现中断抓取，已锁定新动作；请确认安全恢复'
+            self.last_error = '上次动作停在「%s」，未自动移动机械臂' % data.get('phase')
+        except FileNotFoundError:
+            return
+        except Exception as e:
+            self.state = 'RECOVERY'
+            self.step = '动作日志损坏，已锁定新动作'
+            self.last_error = '无法读取中断动作日志：%s' % e
+
+    def journal_begin(self, target, q_safe, q_lift):
+        data = {'version': 1, 'id': uuid.uuid4().hex, 'started_at': time.time(),
+                'phase': 'planned', 'target': {k: v for k, v in target.items() if not k.startswith('_')},
+                'q_safe': list(q_safe) if q_safe else None,
+                'q_lift': list(q_lift) if q_lift else None}
+        try:
+            self._atomic_json(ACTION_JOURNAL_PATH, data)
+            self.recovery_journal = data
+        except Exception as e:
+            self.last_error = '无法写入动作安全日志：%s' % e
+            raise
+
+    def journal_phase(self, phase, **extra):
+        if not self.recovery_journal:
+            return
+        self.recovery_journal.update(extra)
+        self.recovery_journal['phase'] = phase
+        self.recovery_journal['updated_at'] = time.time()
+        self._atomic_json(ACTION_JOURNAL_PATH, self.recovery_journal)
+
+    def clear_action_journal(self):
+        try:
+            os.remove(ACTION_JOURNAL_PATH)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            self.get_logger().error('动作日志清除失败: %s' % e)
+            return
+        self.recovery_journal = None
 
     def ensure_initial_profile(self):
         """首次启用方案管理时，先保护现场已经调好的真机参数。"""
@@ -905,6 +978,38 @@ class SnackButler(Node):
         # 页面马上重新获得正确视角并恢复后台识别。自动清台由下一轮 seq_detect 回观察位。
         if success and not self.auto:
             yield from self.seq_goto_observe()
+            self.clear_action_journal()
+
+    def seq_recover(self):
+        """只在用户确认后执行：先抬到已记录的安全高度，再收臂。"""
+        journal = self.recovery_journal or {}
+        if self.batt_v is None or self.batt_v < self.cfg['low_volt_park']:
+            self.state = 'RECOVERY'
+            self.last_error = '恢复已拒绝：电池电压不足或无遥测'
+            self.step = '等待充电后再恢复'
+            return
+        if any(name not in self.joint_rad for name in JOINT_NAMES):
+            self.state = 'RECOVERY'
+            self.last_error = '恢复已拒绝：没有完整关节状态'
+            self.step = '等待关节状态后再恢复'
+            return
+        lift = journal.get('q_lift') or journal.get('q_safe')
+        if not isinstance(lift, list) or len(lift) != 5:
+            self.state = 'RECOVERY'
+            self.last_error = '恢复已拒绝：动作日志缺少安全抬升姿态'
+            self.step = '请人工确认机械臂姿态'
+            return
+        self.state = 'RECOVERY'
+        self.step = '安全恢复：抬升到中断动作的安全高度'
+        self.journal_phase('recovery_lift')
+        self.send_arm(lift, self.cfg['move_time'])
+        yield self.cfg['move_time'] + self.cfg['settle']
+        self.step = '安全恢复：收回机械臂'
+        self.journal_phase('recovery_home')
+        yield from self.seq_home()
+        self.clear_action_journal()
+        self.state = 'IDLE'
+        self.step = '中断动作已安全恢复，机械臂已收回'
 
     def _blocked_lowvolt(self):
         if self.low_volt:
@@ -962,27 +1067,33 @@ class SnackButler(Node):
         safe_z = cfg.get('safe_z', 0.08)
         q_safe, _ = ik_auto_pitch(x, y, safe_z, wrist_roll=0, tool=tool)
 
+        self.journal_begin(tgt, q_safe, q_lift)
         self.state = 'GRASP'
         if q_safe:
             self.step = f'安全移动到目标上方 (z={safe_z:.3f})'
+            self.journal_phase('safe_move')
             self.gripper(True)
             self.send_arm(q_safe, cfg['move_time'])
             yield cfg['move_time'] + cfg['settle']
 
         self.step = f"预抓取 ({x:.3f}, {y:.3f}, {gz:.3f}) pitch={math.degrees(pitch):.0f}°"
+        self.journal_phase('pre_grasp')
         if not q_safe:
             self.gripper(True)
         self.send_arm(q_pre, cfg['move_time'])
         yield cfg['move_time'] + cfg['settle']
 
         self.step = '下探'
+        self.journal_phase('descending')
         self.send_arm(q_grasp, 0.9)
         yield 0.9 + cfg['settle']
 
         self.step = '合爪'
+        self.journal_phase('closing_gripper')
         yield self.gripper(False)
 
         self.step = '抬起'
+        self.journal_phase('lifting')
         self.send_arm(q_lift, 0.9)
         yield 0.9 + 0.2
 
@@ -999,6 +1110,7 @@ class SnackButler(Node):
         bx, by, bz = b['xyz']
         self.state = 'PLACE'
         self.step = f'搬运到 {b.get("label", binname)}'
+        self.journal_phase('place_over')
         q_over, pitch = ik_auto_pitch(bx, by, bz + 0.05, tool=cfg['tool_len'])
         q_drop = (ik_best(bx, by, bz, pitch, seed=q_over, tool=cfg['tool_len'])
                   if q_over else None)
@@ -1008,12 +1120,15 @@ class SnackButler(Node):
         self.send_arm(q_over, cfg['move_time'])
         yield cfg['move_time'] + cfg['settle']
         if q_drop:
+            self.journal_phase('place_down')
             self.send_arm(q_drop, 0.7)
             yield 0.7 + 0.2
         self.step = '松爪'
+        self.journal_phase('release')
         yield self.gripper(True)
         self.send_arm(q_over, 0.7)
         yield 0.8
+        self.journal_phase('post_place')
 
     def seq_auto(self):
         """自动循环：一直抓到桌面上没有可抓目标为止"""
@@ -1026,7 +1141,10 @@ class SnackButler(Node):
             yield from self.seq_goto_observe()
             return
         self.target = tgt
-        yield from self.seq_grasp(tgt)
+        success = yield from self.seq_grasp(tgt)
+        if success:
+            yield from self.seq_goto_observe()
+            self.clear_action_journal()
 
     def seq_calibrate(self):
         """现场拟合 舵机脉冲 <-> 关节弧度。
@@ -1134,11 +1252,21 @@ class SnackButler(Node):
         a = c.get('action')
         self.last_error = ''      # 新命令进来就清掉上一条的报错，别一直挂在界面上
         try:
+            if self.recovery_journal and a not in ('recover', 'stop'):
+                self.state = 'RECOVERY'
+                self.step = '中断抓取待安全恢复；仅允许「安全恢复」或「停止」'
+                return
             if a == 'stop':
                 self.auto = False
                 self._task = None
-                self.state = 'IDLE'
-                self.step = '已停止'
+                self.state = 'RECOVERY' if self.recovery_journal else 'IDLE'
+                self.step = '已停止，仍保留中断动作日志待处理' if self.recovery_journal else '已停止'
+            elif a == 'recover':
+                if not self.recovery_journal:
+                    self.last_error = '没有需要恢复的中断动作'
+                else:
+                    self.auto = False
+                    self.start(self.seq_recover())
             elif a == 'observe':
                 self.auto = False
                 self.start(self.seq_goto_observe())
@@ -1251,6 +1379,10 @@ class SnackButler(Node):
             'cam_fix': self.cfg.get('cam_fix') is not None,
             'batt_v': None if self.batt_v is None else round(self.batt_v, 2),
             'low_volt': self.low_volt,
+            'recovery': None if not self.recovery_journal else {
+                'pending': True, 'phase': self.recovery_journal.get('phase'),
+                'id': self.recovery_journal.get('id'),
+            },
             'vision_guard_m': self.vision_guard_distance(),
             'servo_map': self.smap.as_dict(),
             'profiles': self.profiles,

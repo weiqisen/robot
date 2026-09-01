@@ -13,9 +13,9 @@ const st = computed(() => state.explorer)
 const stFresh = computed(() => state.connected && state.now - state.explorerAt < 2000)
 const active = computed(() => stFresh.value && ['preparing', 'exploring', 'returning'].includes(st.value?.mode))
 const modeText = computed(() => !stFresh.value ? '状态已过期' : ({ idle: '待机', preparing: '收臂准备', exploring: '探索中', paused: '已暂停',
-  returning: '返航中', complete: '已完成', error: '异常' }[st.value?.mode] || '节点未连接'))
+  returning: '返航中', recovery: '恢复待确认', complete: '已完成', error: '异常' }[st.value?.mode] || '节点未连接'))
 const modeColor = computed(() => !stFresh.value ? 'warning' : ({ preparing: 'processing', exploring: 'processing', returning: 'warning', complete: 'success',
-  error: 'error', paused: 'default' }[st.value?.mode] || 'default'))
+  recovery: 'error', error: 'error', paused: 'default' }[st.value?.mode] || 'default'))
 const elapsed = computed(() => {
   const s = st.value?.elapsed_sec || 0
   return `${Math.floor(s / 60)}分 ${s % 60}秒`
@@ -139,6 +139,11 @@ function clearHome() {
           <template #extra><a-button type="primary" @click="restartExplorer">重启探索服务</a-button></template>
         </a-result>
         <template v-else>
+          <a-alert v-if="st.recovery_available" type="warning" show-icon style="margin-bottom:10px"
+            message="检测到服务重启前未完成的探索任务；底盘已锁定。">
+            <template #description>已恢复原点、已访问区域和目标黑名单。请选择继续探索（会重新选目标）或立即返航。</template>
+            <template #action><a-space><a-button size="small" type="primary" @click="send({action:'resume'}, '正在安全恢复探索')">继续探索</a-button><a-button size="small" @click="returnHome">立即返航</a-button></a-space></template>
+          </a-alert>
           <a-steps size="small" :current="st.mode === 'returning' ? 2 : st.mode === 'complete' ? 3 : st.mode === 'idle' || st.mode === 'preparing' ? 0 : 1"
             :items="[{title:'准备'}, {title:'探索'}, {title:'返航'}, {title:'完成'}]" />
           <div class="step-text"><span>{{ st.step }}</span><b>{{ fmt(st.pose) }}</b></div>
@@ -154,7 +159,7 @@ function clearHome() {
             </a-space>
           </div>
           <a-space wrap class="mission-actions">
-            <a-button type="primary" :disabled="active || st.mode === 'paused' || !ready" @click="start">开始探索</a-button>
+            <a-button type="primary" :disabled="active || st.mode === 'paused' || st.mode === 'recovery' || !ready" @click="start">开始探索</a-button>
             <a-button v-if="st.mode !== 'paused'" :disabled="st.mode !== 'exploring'" @click="send({action:'pause'})">暂停</a-button>
             <a-button v-else type="primary" @click="send({action:'resume'})">继续</a-button>
             <a-button :disabled="!st.home" @click="returnHome">{{ st.mode === 'returning' ? '正在返航' : '立即返航' }}</a-button>

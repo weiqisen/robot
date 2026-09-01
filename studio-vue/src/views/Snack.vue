@@ -17,7 +17,7 @@ const stats = computed(() => sb.value?.stats || {})
 
 const STATE_COLOR = {
   INIT: 'default', IDLE: 'default', OBSERVE: 'processing', DETECT: 'processing',
-  GRASP: 'warning', PLACE: 'warning', CALIB: 'purple', HOME: 'default', ERROR: 'error',
+  GRASP: 'warning', PLACE: 'warning', CALIB: 'purple', HOME: 'default', RECOVERY: 'error', ERROR: 'error',
 }
 const CHIP = { red: '#e14b4b', orange: '#ef8c2d', yellow: '#e8c020',
                green: '#43a047', blue: '#2e7ddb', purple: '#8e5bc4' }
@@ -448,6 +448,12 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
             </a-space>
           </a-descriptions-item>
         </a-descriptions>
+        <a-alert v-if="sb?.recovery?.pending" type="error" show-icon style="margin-top:12px"
+          message="检测到服务中断时未完成的抓取动作，已锁定新动作。">
+          <template #description>中断阶段：{{ sb.recovery.phase || '未知' }}。确认机械臂周围无障碍且电压正常后，才执行“安全恢复”；它会先抬升再收臂。</template>
+          <template #action><a-button type="primary" danger :disabled="!online"
+            @click="send({ action: 'recover' }, '已开始安全恢复：先抬升，再收臂')">安全恢复</a-button></template>
+        </a-alert>
         <a-alert v-if="sb?.low_volt" type="error" show-icon banner style="margin-top:12px">
           <template #message>低压保护已触发 · 电池 {{ sb.batt_v ?? '--' }} V<InfoNote inline>
             <p><b>已自动收臂并停止抓取。</b></p>

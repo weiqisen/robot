@@ -69,6 +69,10 @@ WEB_ONLY=1 ./agents/deploy_snack.sh
 5. 重启已经安装的 `jetson-agent`、`webrtc-agent`。
 6. 安装/重启 `snack-butler`、`lidar-watchdog`、`nav-safety`、`exploration-nav` 和 `explorer-agent`；存在 `~/.llm_agent.env` 时启用 `llm-agent.service`。
 
+`snack-butler`、`explorer-agent` 和 `nav-safety` 使用 systemd 原生 watchdog：各 agent 每 5 秒由 ROS
+事件循环发送心跳，事件循环卡死或启动超时会被 systemd 终止并按重启策略恢复。可用
+`systemctl show <服务> -p WatchdogUSec -p NRestarts` 查看配置与累计重启次数。
+
 注意：这是部署脚本，不是完整的机器人镜像初始化器。它不会安装 rosbridge、web_video_server、x11vnc，也不会首次创建 `jetson-agent.service` 和 `webrtc-agent.service`。
 
 ## 全新机器的一次性补充
