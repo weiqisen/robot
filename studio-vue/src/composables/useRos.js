@@ -2,11 +2,14 @@ import { reactive, readonly } from 'vue'
 import ROSLIB from 'roslib'
 
 // 机器人主机：从机器人 8000 打开时取其 IP，本地开发回退
-export const ROBOT_HOST =
-  location.hostname && !['localhost', '127.0.0.1'].includes(location.hostname)
-    ? location.hostname
-    : '192.168.3.63'
-export const ROSBRIDGE_PORT = 9090
+const query = new URLSearchParams(location.search)
+// 本地仿真：`?sim=1` 连接 Mac 上 tools/sim_robot.py 的 rosbridge 兼容服务。
+// `?robot=IP` 也可用于临时切换测试车，不会写入任何持久化配置。
+export const ROBOT_HOST = query.get('robot') || (query.get('sim') === '1'
+  ? '127.0.0.1'
+  : (location.hostname && !['localhost', '127.0.0.1'].includes(location.hostname)
+      ? location.hostname : '192.168.3.63'))
+export const ROSBRIDGE_PORT = query.get('sim') === '1' ? Number(query.get('simPort') || 19090) : 9090
 export const VIDEO_PORT = 8080
 export const WEBRTC_PORT = 8091
 export const BATT_MIN = 9.0, BATT_MAX = 12.6, BATT_WARN = 10.0
@@ -199,6 +202,12 @@ const actions = {
   navSafetyCmd(obj) {
     if (!state.connected) return false
     topic('/nav_safety/cmd', 'std_msgs/msg/String').publish(new ROSLIB.Message({ data: JSON.stringify(obj) }))
+    return true
+  },
+  // 仅本地模拟器识别；真机上发布这个话题没有任何订阅者，不影响车辆。
+  simCmd(obj) {
+    if (!state.connected) return false
+    topic('/sim/cmd', 'std_msgs/msg/String').publish(new ROSLIB.Message({ data: JSON.stringify(obj) }))
     return true
   },
   navCancel() {

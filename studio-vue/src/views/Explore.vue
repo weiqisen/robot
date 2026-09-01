@@ -8,6 +8,7 @@ import SpeedLimits from '../components/SpeedLimits.vue'
 import GpuTrendCard from '../components/GpuTrendCard.vue'
 
 const { state, actions, HOST, VIDEO_PORT } = useRos()
+const isSim = computed(() => HOST === '127.0.0.1' || HOST === 'localhost')
 const maxMinutes = ref(15), goalTimeout = ref(90), minFrontier = ref(8)
 const st = computed(() => state.explorer)
 const stFresh = computed(() => state.connected && state.now - state.explorerAt < 2000)
@@ -117,6 +118,10 @@ function clearHome() {
   Modal.confirm({ title: '清除返航原点？', content: '清除后不能返航，需重新开始任务或人工记录当前位置。',
     okText: '清除', okButtonProps: { danger: true }, onOk: () => send({ action: 'clear_home' }, '已发送清除命令') })
 }
+function sim(action, fault) {
+  actions.simCmd({ action, fault })
+  message.info(action === 'fault' ? `已注入模拟故障：${fault}` : action === 'clear_fault' ? `已清除模拟故障：${fault}` : '模拟器已重置')
+}
 </script>
 
 <template>
@@ -172,6 +177,17 @@ function clearHome() {
 
     <aside class="right-stack">
       <GpuTrendCard />
+      <a-card v-if="isSim" title="本地仿真控制" size="small">
+        <a-alert type="info" show-icon message="仅作用于 Mac 模拟器，不会控制实体小车。" style="margin-bottom:8px" />
+        <a-space wrap>
+          <a-button size="small" @click="sim('fault', 'lidar_offline')">模拟雷达离线</a-button>
+          <a-button size="small" @click="sim('fault', 'battery_low')">模拟低电压</a-button>
+          <a-button size="small" danger @click="sim('fault', 'service_restart')">模拟服务重启</a-button>
+          <a-button size="small" @click="sim('clear_fault', 'lidar_offline')">恢复雷达</a-button>
+          <a-button size="small" @click="sim('clear_fault', 'battery_low')">恢复电池</a-button>
+          <a-button size="small" @click="sim('reset')">重置场景</a-button>
+        </a-space>
+      </a-card>
       <a-card title="大脑终端" size="small">
         <template #extra><a-tag color="cyan">实时决策</a-tag></template>
         <div ref="brainEl" class="brain-terminal">

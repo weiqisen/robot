@@ -38,6 +38,7 @@
 | `agents/snack_detector.py` | OpenCV HSV 检测和三维定位 |
 | `agents/llm_agent.py` | Claude tool use 到 ROS 命令的适配层 |
 | `agents/deploy_snack.sh` | 构建、复制和 systemd 部署入口 |
+| `tools/sim_robot.py` | Mac 本地最小 rosbridge 兼容模拟器，供网页与任务恢复联调 |
 | `design/` | 设计稿/预览，不参与生产构建 |
 
 ## 端口与依赖
