@@ -224,7 +224,7 @@ function sim(action, fault) {
 </template>
 
 <style scoped>
-.explore-grid { display:grid; grid-template-columns:minmax(0,1.18fr) minmax(390px,.82fr); gap:12px; align-items:start; }
+.explore-grid { display:grid; grid-template-columns:minmax(0,1.23fr) minmax(390px,.77fr); gap:12px; align-items:start; }
 .left-stack,.right-stack { display:grid; gap:12px; min-width:0; }
 .step-text { margin-top: 12px; padding: 9px 12px; border-radius: 7px; background: var(--surface-2); color: var(--text-2); display:flex; justify-content:space-between; gap:10px; }
 .step-text b { font:500 12px var(--font-code); color:var(--text-3); }
@@ -238,7 +238,7 @@ function sim(action, fault) {
 .check-grid { display:grid; grid-template-columns:1fr 1fr; column-gap:18px; }
 .check-row { display: flex; justify-content: space-between; gap:8px; padding: 5px 0; border-bottom: 1px solid var(--divider); font-size:12px; }
 .check-row b { font-weight: 600; }.check-row .ok { color: var(--ok); }.check-row .bad { color: var(--bad); }
-.camera-stage { position: relative; width: 100%; height:clamp(240px,33vh,315px); overflow: hidden;
+.camera-stage { position: relative; width: 100%; height:clamp(255px,36vh,340px); overflow: hidden;
   border-radius: 8px; background: #05070a; }
 .camera-stage img { width: 100%; height: 100%; display: block; object-fit: contain; }
 .camera-tip { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
