@@ -8,6 +8,7 @@
 - [架构与代码地图](docs/ARCHITECTURE.md)：组件关系、端口、数据流，以及需求应从哪里改。
 - [零食管家](docs/SNACK_BUTLER.md)：视觉定位、机械臂标定、抓取参数和专项排障。
 - [自主探索](docs/AUTONOMOUS_EXPLORATION.md)：Frontier 探索、Nav2 避障、返航与安全边界。
+- [高可用路线](docs/HIGH_AVAILABILITY_ROADMAP.md)：自主探索与视觉抓取的故障隔离、恢复和续跑规划。
 - [供电与 USB](docs/POWER_AND_USB.md)：Jetson/辅助板电源域、反向供电和正确断电方式。
 - [会话须知](AGENTS.md)：给后续 Codex/AI 会话的最短项目上下文。
 
