@@ -37,7 +37,7 @@ class NavSafetyGuard(Node):
         self.source = None
         self.zero_ticks = 0
         self.last_legacy_cmd = 0.0
-        self.vision_guard_m = None; self.last_vision = 0.0
+        self.vision_guard_m = None; self.vision_guard_reason = None; self.last_vision = 0.0
         self.legacy_count = 0
         self.out = self.create_publisher(Twist, '/controller/cmd_vel', 10)
         self.state_pub = self.create_publisher(String, '/nav_safety/state', 10)
@@ -118,7 +118,9 @@ class NavSafetyGuard(Node):
 
     def on_vision(self, msg):
         try:
-            self.vision_guard_m = json.loads(msg.data).get('vision_guard_m')
+            vision = json.loads(msg.data)
+            self.vision_guard_m = vision.get('vision_guard_m')
+            self.vision_guard_reason = vision.get('vision_guard_reason')
             self.last_vision = time.monotonic()
         except Exception:
             pass
@@ -179,7 +181,7 @@ class NavSafetyGuard(Node):
         if now - stamp > 0.35: return None, '%s 速度指令超时' % self.source
         if (self.last_vision and now-self.last_vision < 1.0 and self.vision_guard_m is not None and
                 self.vision_guard_m < .36 and (cmd.linear.x > .01 or abs(cmd.angular.z) > .05)):
-            return self.make_twist(0, 0, 0), '视觉检测到车体上方障碍，已急停'
+            return self.make_twist(0, 0, 0), '%s，已急停' % (self.vision_guard_reason or '视觉检测到车体上方障碍')
 
         vx, vy, wz, reason = safe_velocity(
             cmd.linear.x, cmd.linear.y, cmd.angular.z, self.scan,
@@ -213,6 +215,7 @@ class NavSafetyGuard(Node):
                 'front_m': None if front is None or not math.isfinite(front) else round(front, 3),
                 'body_m': None if body is None or not math.isfinite(body) else round(body, 3),
                 'vision_guard_m': self.vision_guard_m if time.monotonic()-self.last_vision < 1.0 else None,
+                'vision_guard_reason': self.vision_guard_reason if time.monotonic()-self.last_vision < 1.0 else None,
                 'limits': {'vx': self.max_vx, 'vy': self.max_vy, 'wz': self.max_wz,
                            'stop_m': self.stop_distance, 'slow_m': self.slow_distance,
                            'turn_stop_m': self.turn_stop_distance,

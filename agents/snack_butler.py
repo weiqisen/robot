@@ -92,6 +92,10 @@ DEFAULT_CONFIG = {
     "approach_h": 0.07,        # 预抓取悬停在目标上方多高
     "lift_h": 0.10,            # 抓起来先抬到多高再搬运
     "safe_z": 0.08,            # 安全高度：从观察位移动到目标前，先移到这个高度避免撞机身
+    # 合爪并抬起后回观察位复看原目标。仍在原处说明很可能空抓：不去投放，保留现场。
+    "post_grasp_verify": True,
+    "post_grasp_verify_frames": 3,
+    "post_grasp_verify_radius_m": 0.055,
 
     # --- 工作区裁剪：投影落在这个盒子外的检测结果直接丢掉（挡住误检最有效的一招）---
     # 相对桌面来写：[下界, 上界] 都是「离 table_z 多高」，换桌子高度不用重调
@@ -183,6 +187,8 @@ DEFAULT_CONFIG = {
     "proc_fps": 6,
     # 在观察位空闲时持续刷新检测结果；只做视觉计算，不触发机械臂。
     "idle_detect_hz": 1.0,
+    # 探索收臂后，YOLO/深度命中这些低矮或大体积物时也作为前向禁行区。
+    "vision_guard_labels": ["bed", "dining table", "chair", "couch", "tv", "potted plant"],
     "camera_frame": "depth_cam_color_optical_frame",
     "base_frame": "base_link",
     "use_tf": True,
@@ -832,12 +838,18 @@ class SnackButler(Node):
                                    (count, [d.get('label') for d in self.detections]))
             self._last_idle_count = count
 
-    def vision_guard_distance(self):
+    def vision_guard(self):
         """深度点落入车体/机械臂前上方保护盒时，返回最近的 base_link X 距离。"""
         with self.lock:
             depth = None if self.depth is None else self.depth.copy()
+        semantic = []
+        for det in self.detections:
+            xyz = det.get('xyz')
+            if (det.get('detector') == 'yolov5' and det.get('label') in self.cfg.get('vision_guard_labels', [])
+                    and xyz and .05 < xyz[0] < .70 and abs(xyz[1]) < .35):
+                semantic.append((float(xyz[0]), 'YOLO 识别到 %s' % det['label']))
         if depth is None or not self.K:
-            return None
+            return min(semantic, default=(None, None), key=lambda x: x[0])
         d = depth[::8, ::8].astype(np.float32)
         if depth.dtype == np.uint16: d /= 1000.0
         yy, xx = np.indices(d.shape, dtype=np.float32); xx *= 8; yy *= 8
@@ -848,7 +860,33 @@ class SnackButler(Node):
         by = T[1,0]*ox+T[1,1]*oy+T[1,2]*d+T[1,3]
         bz = T[2,0]*ox+T[2,1]*oy+T[2,2]*d+T[2,3]
         ok = (d>.08)&(d<1.5)&(bx>.05)&(bx<.55)&(np.abs(by)<.24)&(bz>.04)&(bz<.55)
-        return None if not np.any(ok) else round(float(np.min(bx[ok])), 3)
+        candidates = semantic
+        if np.any(ok):
+            candidates.append((round(float(np.min(bx[ok])), 3), '深度检测到前上方障碍'))
+        return min(candidates, default=(None, None), key=lambda x: x[0])
+
+    def vision_guard_distance(self):
+        return self.vision_guard()[0]
+
+    def verify_grasp(self, tgt):
+        """回观察位复看原抓取坐标；目标仍在即判为疑似空抓，绝不继续投放。"""
+        if not self.cfg.get('post_grasp_verify', True):
+            return True
+        seen = []
+        for _ in range(max(1, int(self.cfg.get('post_grasp_verify_frames', 3)))):
+            seen = self.scan_once()
+        radius = float(self.cfg.get('post_grasp_verify_radius_m', .055))
+        tx, ty = tgt['xyz'][:2]
+        remains = [d for d in seen if d.get('xyz') and math.hypot(d['xyz'][0]-tx, d['xyz'][1]-ty) <= radius]
+        if remains:
+            self.last_error = '抓取复核失败：目标仍在原桌面位置'
+            self.step = '疑似空抓，已停止投放并回观察位'
+            self.stats['failed'] += 1
+            self.get_logger().warning('[grasp_verify] target remains near (%.3f, %.3f): %s' %
+                                      (tx, ty, [d.get('label') for d in remains]))
+            return False
+        self.get_logger().info('[grasp_verify] target absent from original table position')
+        return True
 
     # ---------------- 状态机：每个 yield 返回「等待秒数」 ----------------
     def start(self, gen, name=None):
@@ -1096,6 +1134,15 @@ class SnackButler(Node):
         self.journal_phase('lifting')
         self.send_arm(q_lift, 0.9)
         yield 0.9 + 0.2
+
+        self.step = '抓取复核：回观察位检查目标是否仍在桌面'
+        self.journal_phase('verify_grasp')
+        yield from self.seq_goto_observe()
+        if not self.verify_grasp(tgt):
+            self.gripper(True)  # 不确定是否夹住时松爪，避免带着物品穿越桌面上方
+            self.target = None
+            self.clear_action_journal()  # 已回观察位、已松爪，属于受控失败而不是中断恢复
+            return False
 
         binname = cfg['route'].get(tgt['label'], cfg['default_bin'])
         yield from self.seq_place(binname)
@@ -1360,6 +1407,7 @@ class SnackButler(Node):
         self.silence_low_voltage_buzzer()
         q = self.current_q()
         ee = fk(q, tool=self.cfg['tool_len'])   # 报指尖，和抓取目标同一口径
+        vision_guard_m, vision_guard_reason = self.vision_guard()
         m = String()
         m.data = json.dumps({
             'state': self.state, 'step': self.step, 'auto': self.auto,
@@ -1383,7 +1431,8 @@ class SnackButler(Node):
                 'pending': True, 'phase': self.recovery_journal.get('phase'),
                 'id': self.recovery_journal.get('id'),
             },
-            'vision_guard_m': self.vision_guard_distance(),
+            'vision_guard_m': vision_guard_m,
+            'vision_guard_reason': vision_guard_reason,
             'servo_map': self.smap.as_dict(),
             'profiles': self.profiles,
             'detector': self.detector.status(),

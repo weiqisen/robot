@@ -72,6 +72,8 @@ class Explorer(Node):
         self.breadcrumbs = deque(maxlen=80)
         self.last_breadcrumb = None
         self.last_blacklist_retry = 0.0
+        self.escape_target = None
+        self.escape_attempts = 0
         self.goal_handle = None
         self.goal_started = 0.0
         self.goal_seq = 0
@@ -90,6 +92,8 @@ class Explorer(Node):
                     # 给 Nav2 足够的局部重规划时间；失败目标只临时降权，稍后可重试。
                     'near_block_timeout': 10.0, 'blacklist_ttl': 75.0,
                     'blacklist_retry_interval': 45.0, 'arm_stow_timeout': 8.0,
+                    # 近障持续时仅请求 Nav2 做短距离脱困，绝不绕过安全闸门直发 /cmd_vel。
+                    'escape_distance': .32, 'max_escape_attempts': 2,
                     'arm_tolerance_deg': 6.0,
                     'low_voltage': 9.7, 'min_start_voltage': 10.5}
 
@@ -567,6 +571,24 @@ class Explorer(Node):
                                'until': time.time() + self.cfg['blacklist_ttl'],
                                'why': why})
 
+    def escape_from_obstacle(self, blocked_target, reason):
+        """由 Nav2 执行一次短后退+掉头意图；失败仍只重规划，不直接驱动底盘。"""
+        self.blacklist_target(blocked_target, 'near_obstacle')
+        pose = self.current_pose()
+        if not pose or self.escape_attempts >= self.cfg['max_escape_attempts']:
+            self.step = '近障目标已降权，脱困次数已用完，重新评估其他边界'
+            self.add_event('replan', self.step, 'warn')
+            return
+        self.escape_attempts += 1
+        dist = self.cfg['escape_distance']
+        # 目标落在车尾，末端朝反方向；Nav2 会基于代价地图选择安全后退/转向轨迹。
+        ex, ey, eyaw = pose[0] - dist * math.cos(pose[2]), pose[1] - dist * math.sin(pose[2]), pose[2] + math.pi
+        self.escape_target = (ex, ey)
+        self.step = '近障拦截，请求 Nav2 安全后退并转向后重新评估'
+        self.add_event('escape', '%s；尝试 %d/%d：后退 %.2fm 并转向' %
+                       (reason, self.escape_attempts, self.cfg['max_escape_attempts'], dist), 'warn')
+        self.send_goal(ex, ey, eyaw)
+
     def send_goal(self, x, y, yaw, returning=False):
         if not self.nav.wait_for_server(timeout_sec=.2):
             self.step = '等待 Nav2 /navigate_to_pose'
@@ -609,11 +631,22 @@ class Explorer(Node):
                        ('返航' if returning else '探索', seq,
                         '到达' if status == GoalStatus.STATUS_SUCCEEDED else '取消' if status == GoalStatus.STATUS_CANCELED else '失败'),
                        'info' if status == GoalStatus.STATUS_SUCCEEDED else 'warn')
+        is_escape = self.escape_target and p and math.hypot(p[0]-self.escape_target[0], p[1]-self.escape_target[1]) < .08
+        if is_escape:
+            self.escape_target = None
+            if status == GoalStatus.STATUS_SUCCEEDED:
+                self.step = '已完成安全脱困，重新寻找可探索边界'
+                self.add_event('escape', self.step, 'info')
+            elif status != GoalStatus.STATUS_CANCELED:
+                self.step = '安全脱困目标不可达，已改选其他探索边界'
+                self.add_event('escape', self.step, 'warn')
+            return
         if status == GoalStatus.STATUS_SUCCEEDED:
             if returning:
                 self.safety('disarm'); self.mode, self.step = 'complete', '已返回原点，任务完成'
             else:
                 if p: self.visited.append(p)
+                self.escape_attempts = 0
                 self.step = '到达探索点，继续扫描边界'
         elif status != GoalStatus.STATUS_CANCELED:
             if returning:
@@ -676,11 +709,10 @@ class Explorer(Node):
                 elif time.time() - self.safety_blocked_since >= self.cfg['near_block_timeout']:
                     p = self.target
                     self.cancel_goal()
-                    self.blacklist_target(p, 'near_obstacle')
-                    self.step = '近障持续拦截，当前目标暂时降权，继续寻找其他路线'
+                    self.escape_from_obstacle(p, reason)
                     self.get_logger().warn('[safety_skip] reason=%s target=%s' % (reason, p))
-                    self.add_event('safety', '%s；持续 %.0f 秒，目标临时降权 %d 秒' %
-                                   (reason, self.cfg['near_block_timeout'], self.cfg['blacklist_ttl']), 'warn')
+                    self.add_event('safety', '%s；持续 %.0f 秒，目标扩大黑名单并触发安全脱困' %
+                                   (reason, self.cfg['near_block_timeout']), 'warn')
                 return
             self.safety_blocked_since = 0.0
             if self.target:
