@@ -232,6 +232,7 @@ class SnackButler(Node):
         self.step = ''
         self.last_error = ''
         self.detections = []
+        self.grasp_analysis = None  # 只算不动的抓取姿态诊断结果
         self.held_target = None
         self.target = None
         self.auto = False
@@ -1007,6 +1008,45 @@ class SnackButler(Node):
         det['pitch_deg'] = round(math.degrees(pitch), 1)
         return det, ''
 
+    def analyze_grasp(self, tgt):
+        """枚举目标邻域 IK 解，给出稳定下探建议；绝不发送舵机命令。"""
+        if not tgt or not tgt.get('xyz'):
+            return None, '没有可分析的三维目标'
+        cfg = self.cfg
+        x0, y0, z0 = [float(v) for v in tgt['xyz']]
+        x0 += cfg.get('x_offset_hack', 0.0)
+        y0 += cfg.get('y_offset_hack', 0.0)
+        z0 += cfg.get('z_offset_hack', 0.0)
+        roll = clamp(math.radians(-tgt.get('angle_px', 0.0)), -1.5, 1.5)
+        samples = []
+        # 以 12 mm 邻域模拟视觉/标定的小误差；中心点优先，绝不擅自改变实际目标。
+        for dx in (-.012, 0.0, .012):
+            for dy in (-.012, 0.0, .012):
+                p = [x0 + dx, y0 + dy, z0]
+                if not self.in_workspace(p):
+                    continue
+                q, pitch = ik_auto_pitch(p[0], p[1], self.grasp_z(p[2]), wrist_roll=roll,
+                                         tool=cfg['tool_len'])
+                if q is None:
+                    continue
+                # 垂直下探最抗标定误差；同时避开关节限位附近的解。
+                limit_margin = min(2.09 - abs(a) for a in q)
+                score = abs(pitch - math.pi) * 1.8 + max(0.0, .22 - limit_margin) * 5.0
+                samples.append({'dx_mm': round(dx * 1000), 'dy_mm': round(dy * 1000),
+                                'pitch_deg': round(math.degrees(pitch), 1),
+                                'limit_margin_deg': round(math.degrees(limit_margin), 1),
+                                'score': round(score, 3), 'q_deg': [round(math.degrees(a), 1) for a in q]})
+        if not samples:
+            return None, '目标附近 ±12 mm 都没有安全 IK 解；不要实抓'
+        samples.sort(key=lambda s: (s['score'], abs(s['dx_mm']) + abs(s['dy_mm'])))
+        best = samples[0]
+        center = next((s for s in samples if s['dx_mm'] == 0 and s['dy_mm'] == 0), None)
+        stable = len(samples) >= 7 and best['limit_margin_deg'] >= 14 and abs(best['pitch_deg'] - 180) <= 20
+        return {'target_xyz': [round(x0, 4), round(y0, 4), round(z0, 4)],
+                'stable': stable, 'reachable_samples': len(samples), 'best': best, 'center': center,
+                'samples': samples, 'note': ('姿态稳定，可先空跑验证' if stable else
+                                             '姿态/工作区余量不足：仅建议空跑，不要直接实抓')}, ''
+
     def seq_pick(self, label=None, uv=None, outcome='route'):
         yield from self.seq_detect()
         tgt = self.pick_target(label, uv)
@@ -1418,6 +1458,24 @@ class SnackButler(Node):
                 else:
                     self.step = '探针：算不出来'
                     self.last_error = why
+            elif a == 'analyze_grasp_at':
+                # 只读取相机、深度、IK；不调用 start/send_arm/gripper。
+                uv = (float(c['u']), float(c['v']))
+                tgt = self.pick_target(uv=uv)
+                if not tgt:
+                    tgt, why = self.target_from_uv(*uv)
+                else:
+                    why = ''
+                self.grasp_analysis, why2 = self.analyze_grasp(tgt)
+                if self.grasp_analysis:
+                    self.step = ('抓取诊断：%s，邻域可行 %d/9，最佳 pitch %.1f°，关节余量 %.1f°' %
+                                 ('稳定' if self.grasp_analysis['stable'] else '不稳定',
+                                  self.grasp_analysis['reachable_samples'],
+                                  self.grasp_analysis['best']['pitch_deg'],
+                                  self.grasp_analysis['best']['limit_margin_deg']))
+                else:
+                    self.last_error = why2 or why
+                    self.step = '抓取诊断失败'
             elif a == 'goto':
                 self.auto = False
                 q, _ = ik_auto_pitch(float(c['x']), float(c['y']), float(c['z']),
@@ -1471,6 +1529,7 @@ class SnackButler(Node):
             'servo_map': self.smap.as_dict(),
             'profiles': self.profiles,
             'detector': self.detector.status(),
+            'grasp_analysis': self.grasp_analysis,
             'active_profile_id': self.active_profile_id,
             'cfg': {k: self.cfg.get(k) for k in
                     ('table_z', 'assume_object_h', 'grasp_z_offset', 'tool_len', 'approach_h',

@@ -180,6 +180,11 @@ function runSelected(outcome) {
   send({ action: 'pick_at', u: Math.round(d.u), v: Math.round(d.v), outcome },
     outcome === 'inspect' ? '开始抓起复核，完成后会停在观察位' : `开始抓取并投放到 ${outcome} 区`)
 }
+function analyzeSelected() {
+  const d = selectedDet.value
+  if (!d) return message.warning('请先选择一个目标，再做只算不动的抓取诊断')
+  send({ action: 'analyze_grasp_at', u: Math.round(d.u), v: Math.round(d.v) }, '正在分析候选下探姿态，不会驱动机械臂')
+}
 function placeHeld(bin) { send({ action: 'place_held', bin }, `已下发投放到 ${bin} 区`) }
 
 function send(obj, tip) {
@@ -447,6 +452,17 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
         <a-alert v-if="selectedDet && !sb?.held_target" type="info" show-icon style="margin-top:10px"
           :message="`已选择：${CN[selectedDet.label] || selectedDet.label}`"
           :description="selectedDet.reachable ? '请在左侧选择抓起观察或投放区；抓取后会自动视觉复核。' : '该目标不在当前工作区，机械臂不会执行。'" />
+        <a-button v-if="selectedDet && !sb?.held_target" block size="small" style="margin-top:8px"
+          @click="analyzeSelected">分析此位置 · 不动机械臂</a-button>
+        <a-alert v-if="sb?.grasp_analysis" :type="sb.grasp_analysis.stable ? 'success' : 'warning'" show-icon style="margin-top:10px"
+          :message="sb.grasp_analysis.stable ? '抓取姿态诊断：稳定' : '抓取姿态诊断：不建议直接实抓'">
+          <template #description>
+            邻域可行 {{ sb.grasp_analysis.reachable_samples }}/9；最佳下探 {{ sb.grasp_analysis.best.pitch_deg }}°；
+            关节余量 {{ sb.grasp_analysis.best.limit_margin_deg }}°；建议偏移
+            X {{ sb.grasp_analysis.best.dx_mm }} mm / Y {{ sb.grasp_analysis.best.dy_mm }} mm。
+            {{ sb.grasp_analysis.note }}
+          </template>
+        </a-alert>
         <a-alert v-if="sb?.held_target" type="warning" show-icon style="margin-top:10px"
           message="物体已夹起，等待人工决定投放位置。" />
       </a-card>
