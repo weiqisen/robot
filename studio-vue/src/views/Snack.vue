@@ -14,6 +14,18 @@ const online = computed(() => !!sb.value)
 const dets = computed(() => sb.value?.detections || [])
 const cfg = computed(() => sb.value?.cfg || {})
 const stats = computed(() => sb.value?.stats || {})
+const taskStep = computed(() => {
+  if (sb.value?.held_target) return 3
+  const state = sb.value?.state
+  if (['GRASP', 'PLACE'].includes(state)) return 2
+  return selectedDet.value ? 1 : 0
+})
+const taskItems = computed(() => [
+  { title: '选择目标', description: selectedDet.value ? (CN[selectedDet.value.label] || selectedDet.value.label) : '点击画面或列表' },
+  { title: '确认结果', description: '抓起观察 / 放入 A / 放入 B' },
+  { title: '执行与复核', description: sb.value?.step || '等待执行' },
+  { title: '完成处置', description: sb.value?.held_target ? '物体已夹起，等待投放' : '回观察位继续识别' },
+])
 
 const STATE_COLOR = {
   INIT: 'default', IDLE: 'default', OBSERVE: 'processing', DETECT: 'processing',
@@ -301,10 +313,10 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
     </InfoNote></template>
   </a-alert>
 
-  <a-row :gutter="16">
+  <a-row class="snack-workspace" :gutter="[16, 16]">
     <!-- 左：画面 + 动作 -->
     <a-col :xs="24" :xl="15">
-      <a-card size="small" title="视觉识别">
+      <a-card size="small" title="1 · 选择目标" class="vision-card">
         <template #extra>
           <a-space>
             <a-tag :color="sb?.detector?.yolo_loaded ? 'purple' : 'default'">
@@ -340,10 +352,10 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
               <a-button size="small" @click="runSelected('B')">抓取放 B</a-button>
             </a-space>
           </template>
-          <span v-else>① 选择目标　② 选择结果　③ 执行并视觉复核</span>
+          <span v-else>已选择目标后，才会显示抓取动作。点击画面不会立即驱动机械臂。</span>
         </div>
 
-        <a-space wrap style="margin-top:12px">
+        <div class="quick-control">
           <a-button type="primary" :disabled="!online" @click="send({ action: 'auto', on: true }, '开始自动清台')">
             自动清台
           </a-button>
@@ -368,7 +380,7 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
               checked-children="空跑" un-checked-children="实动"
               @change="v => send({ action: 'set_config', patch: { dry_run: v } }, v ? '已切到空跑模式' : '已切到实际动作')" />
           </a-tooltip>
-        </a-space>
+        </div>
 
         <a-space wrap style="margin-top:8px">
           <span style="color:var(--text-3);font-size:13px">按颜色抓：</span>
@@ -379,8 +391,8 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
         </a-space>
       </a-card>
 
-      <a-card size="small" title="识别结果" style="margin-top:16px">
-        <template #extra><span style="color:var(--text-3);font-size:13px">YOLO 识别 COCO 类；深度候选补充未知包装</span></template>
+      <a-card size="small" title="已识别目标 · 点击选择" style="margin-top:16px">
+        <template #extra><span style="color:var(--text-3);font-size:13px">不会直接抓取</span></template>
         <a-table :columns="detColumns" :data-source="detRows" size="small" :pagination="false"
           :locale="{ emptyText: online ? '当前没有识别到目标' : '节点离线' }">
           <template #bodyCell="{ column, record }">
@@ -428,13 +440,18 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
       </a-card>
     </a-col>
 
-    <!-- 右：状态 + 参数 -->
+    <!-- 右：任务状态 + 高级设置 -->
     <a-col :xs="24" :xl="9">
-      <GpuTrendCard style="margin-bottom:10px" />
-      <a-card size="small" class="section-nav" :body-style="{padding:'7px'}">
-        <a-segmented block :options="[{label:'状态',value:'status'},{label:'标定',value:'calib'},{label:'抓取参数',value:'params'},{label:'分拣',value:'bins'}]" @change="jump" />
+      <a-card size="small" title="2 · 任务工作台" class="mission-workbench">
+        <a-steps direction="vertical" size="small" :current="taskStep" :items="taskItems" />
+        <a-alert v-if="selectedDet && !sb?.held_target" type="info" show-icon style="margin-top:10px"
+          :message="`已选择：${CN[selectedDet.label] || selectedDet.label}`"
+          :description="selectedDet.reachable ? '请在左侧选择抓起观察或投放区；抓取后会自动视觉复核。' : '该目标不在当前工作区，机械臂不会执行。'" />
+        <a-alert v-if="sb?.held_target" type="warning" show-icon style="margin-top:10px"
+          message="物体已夹起，等待人工决定投放位置。" />
       </a-card>
-      <a-card id="snack-status" size="small" title="运行状态" style="margin-top:10px">
+      <GpuTrendCard style="margin:10px 0" />
+      <a-card id="snack-status" size="small" title="运行与安全状态">
         <a-descriptions class="status-desc" :column="2" size="small" bordered>
           <a-descriptions-item label="状态">{{ sb?.state || '—' }}</a-descriptions-item>
           <a-descriptions-item label="自动模式">
@@ -511,7 +528,9 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
         <a-alert v-if="sb?.error" type="error" show-icon style="margin-top:12px" :message="sb.error" />
       </a-card>
 
-      <a-card id="snack-calib" size="small" title="标定" style="margin-top:10px">
+      <a-collapse class="advanced-panels" :bordered="false" style="margin-top:10px">
+        <a-collapse-panel key="calib" header="高级设置 · 标定与硬件检查">
+      <a-card id="snack-calib" size="small" title="标定">
         <InfoNote v-if="online && sb?.cm" title="不用标定：指令走 /servo_controller">
           <p><b>弧度→脉冲由机器人自带驱动换算，不需要我们自己标。</b></p>
           <p>这条路顺带让 <code>/controller_manager/joint_states</code> 跟着动 ——
@@ -553,8 +572,10 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
           方向 {{ JSON.stringify(sb.servo_map.dirs) }}　零位 {{ sb.servo_map.centers.map(c => Math.round(c)).join(', ') }}
         </div>
       </a-card>
+        </a-collapse-panel>
+        <a-collapse-panel key="params" header="高级设置 · 抓取参数与方案">
 
-      <a-card id="snack-params" size="small" title="抓取参数" style="margin-top:10px">
+      <a-card id="snack-params" size="small" title="抓取参数">
         <template #extra>
           <a-space v-if="edit.on">
             <a-button size="small" @click="resetCfg">撤销</a-button>
@@ -623,8 +644,10 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
         </div>
         <div class="tip">调夹爪时先点「张爪 / 合爪」看效果，合适了再保存。</div>
       </a-card>
+        </a-collapse-panel>
+        <a-collapse-panel key="bins" header="高级设置 · 投放区与自动分拣">
 
-      <a-card id="snack-bins" size="small" title="投放区与分拣规则" style="margin-top:10px">
+      <a-card id="snack-bins" size="small" title="投放区与分拣规则">
         <a-descriptions :column="1" size="small" bordered>
           <a-descriptions-item v-for="(b, k) in (cfg.bins || {})" :key="k" :label="b.label || k">
             <code>{{ (b.xyz || []).map(v => v.toFixed(3)).join(', ') }}</code>
@@ -635,6 +658,8 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
             <span class="dot" :style="{ background: CHIP[k] }" />{{ CN[k] || k }} → {{ v }}</a-tag>
         </div>
       </a-card>
+        </a-collapse-panel>
+      </a-collapse>
     </a-col>
   </a-row>
 </template>
@@ -648,6 +673,12 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
 .target-workbench { display:flex; align-items:center; flex-wrap:wrap; gap:8px; min-height:46px;
   padding:10px 12px; margin-top:10px; border:1px solid var(--border); border-radius:8px;
   background:var(--surface-2); font-size:13px; color:var(--text-2); }
+.quick-control { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-top:12px;
+  padding-top:10px; border-top:1px solid var(--border); }
+.mission-workbench :deep(.ant-steps-item-description) { font-size:12px; line-height:1.5; max-width:250px; }
+.advanced-panels :deep(.ant-collapse-item) { border:1px solid var(--border); border-radius:8px!important; margin-bottom:8px; overflow:hidden; }
+.advanced-panels :deep(.ant-collapse-header) { font-weight:600; font-size:13px; background:var(--surface-2); }
+.advanced-panels :deep(.ant-collapse-content-box) { padding:8px!important; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
 .dot.big { width: 12px; height: 12px; margin: 0; }
 .prow { display: flex; align-items: center; margin-bottom: 2px; }
