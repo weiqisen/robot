@@ -300,7 +300,8 @@ class SnackButler(Node):
         threading.Thread(target=self.preload_detector, daemon=True).start()
         # 正常启动时保持原有的观察位初始化；若存在中断动作日志，则绝不自动移动。
         if not self.recovery_journal:
-            self.start(self.seq_goto_observe())
+            # 正常开机没有在夹物，才明确张爪进入观察位。
+            self.start(self.seq_goto_observe(open_gripper=True))
         else:
             self.get_logger().warning('[recovery] 检测到中断动作日志，已锁定机械臂，等待人工确认恢复')
         self.watchdog.ready('已启动，等待相机与关节状态')
@@ -923,12 +924,18 @@ class SnackButler(Node):
             self.last_error = f'{type(e).__name__}: {e}'
             self.get_logger().error(traceback.format_exc())
 
-    def seq_goto_observe(self):
+    def seq_goto_observe(self, open_gripper=False):
+        """移动到观察位。
+
+        观察位也是抓取复核时的必经位置；这里绝不能默认张爪，否则刚夹起的
+        物体会在空中掉落。只有开始新一轮识别、开机初始化等空手流程才传 True。
+        """
         self.state = 'OBSERVE'
         self.step = '回观察位'
         q = [math.radians(a) for a in self.cfg['observe_deg']]
         self.send_arm(q, self.cfg['move_time'])
-        self.gripper(True)
+        if open_gripper:
+            self.gripper(True)
         yield self.cfg['move_time'] + self.cfg['settle']
         self.step = '就位'
 
@@ -939,7 +946,8 @@ class SnackButler(Node):
         yield self.cfg['move_time'] + self.cfg['settle']
 
     def seq_detect(self):
-        yield from self.seq_goto_observe()
+        # 新一轮抓取前确保空手、张爪；抓取后的复核不会走这条路径。
+        yield from self.seq_goto_observe(open_gripper=True)
         self.state = 'DETECT'
         self.step = '识别中'
         best = []
@@ -1140,6 +1148,7 @@ class SnackButler(Node):
 
         self.step = '抓取复核：回观察位检查目标是否仍在桌面'
         self.journal_phase('verify_grasp')
+        # 保持闭爪回观察位复核，不能在搬运途中释放物品。
         yield from self.seq_goto_observe()
         if not self.verify_grasp(tgt):
             self.gripper(True)  # 不确定是否夹住时松爪，避免带着物品穿越桌面上方
@@ -1166,7 +1175,7 @@ class SnackButler(Node):
             self.state = 'IDLE'; self.step = '没有已夹起的物体'; return
         yield from self.seq_place(binname)
         self.held_target = None
-        yield from self.seq_goto_observe()
+        yield from self.seq_goto_observe(open_gripper=True)
 
     def seq_place(self, binname):
         cfg = self.cfg
