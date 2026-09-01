@@ -400,7 +400,7 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
         <a-segmented block :options="[{label:'状态',value:'status'},{label:'标定',value:'calib'},{label:'抓取参数',value:'params'},{label:'分拣',value:'bins'}]" @change="jump" />
       </a-card>
       <a-card id="snack-status" size="small" title="运行状态" style="margin-top:10px">
-        <a-descriptions :column="2" size="small" bordered>
+        <a-descriptions class="status-desc" :column="2" size="small" bordered>
           <a-descriptions-item label="状态">{{ sb?.state || '—' }}</a-descriptions-item>
           <a-descriptions-item label="自动模式">
             <a-tag :color="sb?.auto ? 'processing' : 'default'">{{ sb?.auto ? '开' : '关' }}</a-tag>
@@ -422,7 +422,7 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
             <code>{{ (sb?.q_deg || []).join('°, ') }}<span v-if="sb?.q_deg">°</span></code>
           </a-descriptions-item>
           <a-descriptions-item label="数据源" :span="2">
-            <a-space>
+            <a-space class="status-sources" wrap :size="[4, 4]">
               <a-tag :color="sb?.has_rgb ? 'green' : 'red'">RGB</a-tag>
               <a-tag :color="sb?.has_depth ? 'green' : 'orange'">深度</a-tag>
               <a-tag :color="sb?.has_K ? 'green' : 'red'">内参</a-tag>
@@ -625,4 +625,16 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
 .cmds { margin: 4px 0 0 26px; }
 code { font-family: ui-monospace, monospace; font-size: 13px; }
 .section-nav{position:sticky;top:0;z-index:4;box-shadow:0 4px 14px rgba(0,0,0,.06)}
+.status-desc :deep(.ant-descriptions-view) { overflow: hidden; }
+.status-desc :deep(.ant-descriptions-item-label) {
+  width: 76px;
+  min-width: 76px;
+  white-space: nowrap;
+  word-break: keep-all;
+}
+.status-desc :deep(.ant-descriptions-item-content) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.status-sources { display: flex; max-width: 100%; }
 </style>
