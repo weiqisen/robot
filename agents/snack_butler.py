@@ -232,6 +232,7 @@ class SnackButler(Node):
         self.step = ''
         self.last_error = ''
         self.detections = []
+        self.held_target = None
         self.target = None
         self.auto = False
         self.stats = {'picked': 0, 'failed': 0, 'started': time.time()}
@@ -911,6 +912,8 @@ class SnackButler(Node):
             self._task = None
             if self.auto:
                 self.start(self.seq_auto())
+            elif self.held_target:
+                self.state = 'HOLDING'
             else:
                 self.state = 'IDLE'
                 self.step = ''
@@ -996,7 +999,7 @@ class SnackButler(Node):
         det['pitch_deg'] = round(math.degrees(pitch), 1)
         return det, ''
 
-    def seq_pick(self, label=None, uv=None):
+    def seq_pick(self, label=None, uv=None, outcome='route'):
         yield from self.seq_detect()
         tgt = self.pick_target(label, uv)
         why = ''
@@ -1011,10 +1014,10 @@ class SnackButler(Node):
             self.auto = False
             return
         self.target = tgt
-        success = yield from self.seq_grasp(tgt)
+        success = yield from self.seq_grasp(tgt, outcome=outcome)
         # 单次“抓某色 / 点击即抓 / 抓这个”完成后恢复 eye-in-hand 固定观察位，
         # 页面马上重新获得正确视角并恢复后台识别。自动清台由下一轮 seq_detect 回观察位。
-        if success and not self.auto:
+        if success and not self.auto and not self.held_target:
             yield from self.seq_goto_observe()
             self.clear_action_journal()
 
@@ -1071,7 +1074,7 @@ class SnackButler(Node):
             return True
         return False
 
-    def seq_grasp(self, tgt):
+    def seq_grasp(self, tgt, outcome='route'):
         if self._blocked_lowvolt() or self._blocked_uncalibrated():
             return False
         cfg = self.cfg
@@ -1144,12 +1147,26 @@ class SnackButler(Node):
             self.clear_action_journal()  # 已回观察位、已松爪，属于受控失败而不是中断恢复
             return False
 
-        binname = cfg['route'].get(tgt['label'], cfg['default_bin'])
+        if outcome == 'inspect':
+            self.held_target = tgt
+            self.target = None
+            self.clear_action_journal()
+            self.state = 'HOLDING'
+            self.step = '抓取复核通过：物体已夹起，等待选择投放区或松爪'
+            return True
+        binname = outcome if outcome in cfg['bins'] else cfg['route'].get(tgt['label'], cfg['default_bin'])
         yield from self.seq_place(binname)
         self.stats['picked'] += 1
         self.target = None
         self.beep()
         return True
+
+    def seq_place_held(self, binname):
+        if not self.held_target:
+            self.state = 'IDLE'; self.step = '没有已夹起的物体'; return
+        yield from self.seq_place(binname)
+        self.held_target = None
+        yield from self.seq_goto_observe()
 
     def seq_place(self, binname):
         cfg = self.cfg
@@ -1325,10 +1342,14 @@ class SnackButler(Node):
                 self.start(self.seq_detect())
             elif a == 'pick':
                 self.auto = False
-                self.start(self.seq_pick(label=c.get('label')))
+                self.start(self.seq_pick(label=c.get('label'), outcome='route'))
             elif a == 'pick_at':
                 self.auto = False
-                self.start(self.seq_pick(uv=(float(c['u']), float(c['v']))))
+                outcome = c.get('outcome', 'inspect')
+                self.start(self.seq_pick(uv=(float(c['u']), float(c['v'])), outcome=outcome))
+            elif a == 'place_held':
+                self.auto = False
+                self.start(self.seq_place_held(str(c.get('bin') or 'A')))
             elif a == 'auto':
                 self.auto = bool(c.get('on', True))
                 if self.auto:
@@ -1336,7 +1357,10 @@ class SnackButler(Node):
                 else:
                     self.step = '自动模式已关闭'
             elif a == 'gripper':
-                self.gripper(bool(c.get('open', True)))
+                opened = bool(c.get('open', True))
+                self.gripper(opened)
+                if opened:
+                    self.held_target = None
             elif a == 'calibrate':
                 self.auto = False
                 self.start(self.seq_calibrate())
@@ -1414,6 +1438,8 @@ class SnackButler(Node):
             'error': self.last_error,
             'target': None if not self.target else
                       {k: v for k, v in self.target.items() if not k.startswith('_')},
+            'held_target': None if not self.held_target else
+                           {k: v for k, v in self.held_target.items() if not k.startswith('_')},
             'detections': [{k: v for k, v in d.items() if not k.startswith('_')}
                            for d in self.detections],
             'ee': {'x': round(ee[0], 4), 'y': round(ee[1], 4), 'z': round(ee[2], 4),

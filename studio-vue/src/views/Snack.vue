@@ -139,9 +139,10 @@ watch([dets, cfg, showOffsetPreview, () => imgEl.value?.naturalWidth], () => {
   requestAnimationFrame(drawOffsetPreview)
 }, { deep: true, immediate: true })
 
-// 点画面 -> 抓那一个。MJPEG 用 object-fit: contain，要把点击坐标换算回原图像素。
-// 打开「只算不抓」后，点击只让节点报出 base_link 坐标，臂不动——用来和卷尺对账。
+// 先选目标，再明确选择“抓起观察 / 放 A / 放 B”；点击本身绝不驱动机械臂。
 const probeMode = ref(false)
+const selected = ref(null)
+const selectedDet = computed(() => selected.value == null ? null : detRows.value[selected.value])
 function onPick(e) {
   const el = imgEl.value
   if (!el || !el.naturalWidth) return
@@ -152,9 +153,22 @@ function onPick(e) {
   const v = (e.clientY - r.top - (r.height - dh) / 2) / scale
   if (u < 0 || v < 0 || u > el.naturalWidth || v > el.naturalHeight) return
   const uu = Math.round(u), vv = Math.round(v)
-  if (probeMode.value) send({ action: 'probe', u: uu, v: vv }, `探针 (${uu}, ${vv})，臂不动`)
-  else send({ action: 'pick_at', u: uu, v: vv }, `抓画面 (${uu}, ${vv}) 处的目标`)
+  if (probeMode.value) return send({ action: 'probe', u: uu, v: vv }, `探针 (${uu}, ${vv})，臂不动`)
+  const nearest = detRows.value
+    .map((d, i) => ({ i, d, r: (d.u - uu) ** 2 + (d.v - vv) ** 2 }))
+    .sort((a, b) => a.r - b.r)[0]
+  selected.value = nearest && nearest.r <= (cfg.value.pick_radius_px || 70) ** 2 ? nearest.i : null
+  if (selected.value == null) message.warning('没有选中识别目标；请点检测框或先点击“只算不抓”校验坐标')
 }
+function selectTarget(i) { selected.value = i }
+function runSelected(outcome) {
+  const d = selectedDet.value
+  if (!d) return message.warning('请先从画面或识别列表选择一个目标')
+  if (!d.reachable) return message.error('该目标当前不可抓取')
+  send({ action: 'pick_at', u: Math.round(d.u), v: Math.round(d.v), outcome },
+    outcome === 'inspect' ? '开始抓起复核，完成后会停在观察位' : `开始抓取并投放到 ${outcome} 区`)
+}
+function placeHeld(bin) { send({ action: 'place_held', bin }, `已下发投放到 ${bin} 区`) }
 
 function send(obj, tip) {
   if (!actions.snackCmd(obj)) return message.error('rosbridge 未连接')
@@ -304,7 +318,29 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
         <div class="stage" @click="onPick">
           <img ref="imgEl" :src="src" @error="onImgError" />
           <canvas ref="canvasEl" class="overlay-canvas" />
-          <div class="hint">{{ probeMode ? '只算不抓：点一下看它算出来的坐标' : '点画面中的目标即抓取' }}</div>
+          <div class="hint">{{ probeMode ? '只算不抓：点一下看它算出来的坐标' : '点画面或列表选择目标；选择动作后才会抓取' }}</div>
+        </div>
+
+        <div class="target-workbench">
+          <template v-if="sb?.held_target">
+            <a-tag color="gold">已夹起：{{ CN[sb.held_target.label] || sb.held_target.label }}</a-tag>
+            <span>复核已通过，请决定投放位置：</span>
+            <a-button size="small" type="primary" @click="placeHeld('A')">放入 A 区</a-button>
+            <a-button size="small" @click="placeHeld('B')">放入 B 区</a-button>
+            <a-button size="small" danger @click="send({ action: 'gripper', open: true }, '已松爪')">原地松爪</a-button>
+          </template>
+          <template v-else-if="selectedDet">
+            <a-tag :color="selectedDet.reachable ? 'blue' : 'default'">已选目标</a-tag>
+            <b>{{ CN[selectedDet.label] || selectedDet.label }}</b>
+            <code v-if="selectedDet.xyz">{{ selectedDet.xyz.map(v => v.toFixed(3)).join(', ') }}</code>
+            <a-tag v-if="!selectedDet.reachable" color="default">当前够不着</a-tag>
+            <a-space v-else wrap>
+              <a-button size="small" type="primary" @click="runSelected('inspect')">抓起后观察</a-button>
+              <a-button size="small" @click="runSelected('A')">抓取放 A</a-button>
+              <a-button size="small" @click="runSelected('B')">抓取放 B</a-button>
+            </a-space>
+          </template>
+          <span v-else>① 选择目标　② 选择结果　③ 执行并视觉复核</span>
         </div>
 
         <a-space wrap style="margin-top:12px">
@@ -312,7 +348,7 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
             自动清台
           </a-button>
           <a-button :disabled="!online" @click="send({ action: 'detect' }, '识别一次')">只识别</a-button>
-          <a-switch v-model:checked="probeMode" checked-children="只算不抓" un-checked-children="点击即抓" />
+          <a-switch v-model:checked="probeMode" checked-children="只算不抓" un-checked-children="选择目标" />
           <a-button danger :disabled="!online" @click="send({ action: 'stop' }, '已停止')">停止</a-button>
           <a-divider type="vertical" />
           <a-button size="small" :disabled="!online" @click="send({ action: 'observe' }, '回观察位')">观察位</a-button>
@@ -370,8 +406,7 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
             <template v-else-if="column.key === 'act'">
               <a-tag v-if="!record.reachable" color="default">够不着</a-tag>
               <a-button v-else size="small" type="link" :disabled="!online"
-                @click="send({ action: 'pick_at', u: Math.round(record.u), v: Math.round(record.v) }, '开抓')">
-                抓这个</a-button>
+                @click="selectTarget(record.key)">{{ selected === record.key ? '已选中' : '选择' }}</a-button>
             </template>
           </template>
         </a-table>
@@ -610,6 +645,9 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
 .overlay-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; object-fit: contain; }
 .hint { position: absolute; left: 8px; bottom: 8px; background: rgba(0,0,0,.55); color: #fff;
   font-size: 12px; padding: 3px 8px; border-radius: 4px; pointer-events: none; }
+.target-workbench { display:flex; align-items:center; flex-wrap:wrap; gap:8px; min-height:46px;
+  padding:10px 12px; margin-top:10px; border:1px solid var(--border); border-radius:8px;
+  background:var(--surface-2); font-size:13px; color:var(--text-2); }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
 .dot.big { width: 12px; height: 12px; margin: 0; }
 .prow { display: flex; align-items: center; margin-bottom: 2px; }
