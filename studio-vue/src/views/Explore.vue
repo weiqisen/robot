@@ -51,10 +51,12 @@ watch(() => brainEvents.value.length, async () => {
 // 前方实时画面。页面被 keep-alive 隐藏时释放 MJPEG 长连接，避免占满浏览器并发。
 const camActive = useMjpegGate()
 const camStamp = ref(Date.now()), camState = ref('wait'), camImg = ref(null)
+const yoloOverlay = ref(false)
 const camSrc = computed(() => camActive.value
-  ? videoUrl(HOST, VIDEO_PORT, '/depth_cam/rgb/image_raw', camStamp.value) : '')
+  ? videoUrl(HOST, VIDEO_PORT, yoloOverlay.value ? '/snack_butler/image_result' : '/depth_cam/rgb/image_raw', camStamp.value) : '')
 let camRetry = null
 function reloadCam() { camStamp.value = Date.now(); camState.value = 'wait' }
+function toggleYolo(v) { yoloOverlay.value = v; reloadCam() }
 function camError() {
   camState.value = 'error'
   if (!camRetry) camRetry = setTimeout(() => { camRetry = null; reloadCam() }, 3000)
@@ -128,11 +130,12 @@ function sim(action, fault) {
   <div class="explore-grid">
     <section class="left-stack">
       <a-card title="前方画面" size="small">
-        <template #extra><a-space size="small"><a-tag :color="camState === 'ok' ? 'success' : 'processing'">{{ camState === 'ok' ? '实时' : '连接中' }}</a-tag><a-button size="small" @click="reloadCam">刷新</a-button></a-space></template>
+        <template #extra><a-space size="small"><a-switch :checked="yoloOverlay" size="small" checked-children="YOLO" un-checked-children="原始"
+          @change="toggleYolo" /><a-tag :color="camState === 'ok' ? 'success' : 'processing'">{{ camState === 'ok' ? (yoloOverlay ? 'YOLO 实时分析' : '实时') : '连接中' }}</a-tag><a-button size="small" @click="reloadCam">刷新</a-button></a-space></template>
         <div class="camera-stage">
           <img v-if="camSrc" ref="camImg" :src="camSrc" alt="小车前方实时画面" @load="camState = 'ok'" @error="camError" />
           <div v-if="camState !== 'ok'" class="camera-tip">{{ camState === 'error' ? '画面中断，正在重连…' : '正在连接相机…' }}</div>
-          <div class="camera-label">FRONT RGB</div>
+          <div class="camera-label">{{ yoloOverlay ? 'FRONT RGB · YOLO / DEPTH' : 'FRONT RGB' }}</div>
         </div>
       </a-card>
 
