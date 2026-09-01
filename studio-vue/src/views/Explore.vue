@@ -63,7 +63,7 @@ const analysisText = computed(() => {
   return `AI 分析 · ${a.detections ?? 0} 个目标`
 })
 const camSrc = computed(() => camActive.value
-  ? videoUrl(HOST, VIDEO_PORT, yoloOverlay.value ? '/snack_butler/image_result' : '/snack_butler/image_raw', camStamp.value) : '')
+  ? videoUrl(HOST, VIDEO_PORT, '/snack_butler/image_result', camStamp.value) : '')
 let camRetry = null
 function reloadCam() { camStamp.value = Date.now(); camState.value = 'wait' }
 function toggleYolo(v) {
@@ -146,7 +146,7 @@ function sim(action, fault) {
   <div class="explore-grid">
     <section class="left-stack">
       <a-card title="前方画面" size="small">
-        <template #extra><a-space size="small"><a-switch :checked="yoloOverlay" size="small" checked-children="YOLO" un-checked-children="原始"
+        <template #extra><a-space size="small"><a-switch :checked="yoloOverlay" size="small" checked-children="YOLO" un-checked-children="低频"
           @change="toggleYolo" /><a-tag :color="camState === 'ok' ? (yoloOverlay && state.snack?.detector?.yolo_error ? 'error' : 'success') : 'processing'">{{ camState === 'ok' ? analysisText : '连接中' }}</a-tag><a-button size="small" @click="reloadCam">刷新</a-button></a-space></template>
         <div class="camera-stage">
           <img v-if="camSrc" ref="camImg" :src="camSrc" alt="小车前方实时画面" @load="camState = 'ok'" @error="camError" />
