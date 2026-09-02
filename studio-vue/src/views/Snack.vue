@@ -460,63 +460,79 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
         </div>
 
         <div class="quick-control">
-          <a-button type="primary" :disabled="!online" @click="send({ action: 'auto', on: true }, '开始自动清台')">
-            自动清台
-          </a-button>
-          <a-button :disabled="!online" @click="send({ action: 'detect' }, '识别一次')">只识别</a-button>
-          <a-switch v-model:checked="probeMode" checked-children="只算不抓" un-checked-children="选择目标" />
-          <a-button danger :disabled="!online" @click="send({ action: 'stop' }, '已停止')">停止</a-button>
-          <a-divider type="vertical" />
-          <a-button :type="recording ? 'primary' : 'default'" :danger="recording" :disabled="!online"
-            @click="toggleRecording">
-            {{ recording ? '⏹ 停止录制' : '⏺ 开始录制' }}
-          </a-button>
-          <a-divider type="vertical" />
-          <a-button size="small" :disabled="!online" @click="send({ action: 'observe' }, '回观察位')">观察位</a-button>
-          <a-button size="small" :disabled="!online" @click="send({ action: 'home' }, '收臂')">收臂</a-button>
-          <a-button size="small" :disabled="!online" @click="send({ action: 'gripper', open: true })">张爪</a-button>
-          <a-button size="small" :disabled="!online" @click="send({ action: 'gripper', open: false })">合爪</a-button>
-          <a-button size="small" @click="reloadVideo">刷新画面</a-button>
-          <a-select :value="cfg.detector_mode || 'hybrid'" size="small" style="width:150px"
-            :options="[
-              { value: 'hybrid', label: 'YOLO + 颜色兜底' },
-              { value: 'yolo', label: '仅 YOLO 通用类' },
-              { value: 'color', label: '仅颜色识别' },
-            ]"
-            @change="v => send({ action: 'set_config', patch: { detector_mode: v } }, '识别模式已切换')" />
-          <a-tooltip title="空跑：识别、算坐标、算 IK 全跑，但不给舵机发指令。第一次上电先开着它验证整条链路。">
-            <a-switch :checked="!!cfg.dry_run" :disabled="!online" size="small"
-              checked-children="空跑" un-checked-children="实动"
-              @change="v => send({ action: 'set_config', patch: { dry_run: v } }, v ? '已切到空跑模式' : '已切到实际动作')" />
-          </a-tooltip>
-          <a-tooltip title="仅用于正前方够不到的物品：收臂后低速分段前进，每段重新识别。雷达、视觉、电压异常会立即停下。">
-            <a-switch :checked="!!cfg.auto_drive_grasp_enabled" :disabled="!online" size="small"
-              checked-children="自动驾驶抓取" un-checked-children="自动补位关闭"
-              @change="v => send({ action: 'set_config', patch: { auto_drive_grasp_enabled: v } }, v ? '自动驾驶抓取已开启' : '自动驾驶抓取已关闭')" />
-          </a-tooltip>
-          <a-tooltip title="抓取后回观察位，扫描原目标位置附近 5.5cm：还在就松爪（空抓），不在了就认为可能夹住。误判时会空中松爪，可关掉此开关跳过视觉复核。">
-            <a-switch :checked="cfg.post_grasp_verify !== false" :disabled="!online" size="small"
-              checked-children="抓取视觉复核" un-checked-children="跳过复核"
-              @change="v => send({ action: 'set_config', patch: { post_grasp_verify: v } }, v ? '抓取视觉复核已开启' : '已关闭抓取视觉复核')" />
-          </a-tooltip>
-          <a-tooltip title="开着时抓起后必须人工点投放/松爪；关了就按选中的动作（inspect / A / B）自动投放。">
-            <a-switch :checked="cfg.manual_confirm_before_place !== false" :disabled="!online" size="small"
-              checked-children="投放前人工确认" un-checked-children="复核通过自动投"
-              @change="v => send({ action: 'set_config', patch: { manual_confirm_before_place: v } }, v ? '投放前需人工确认' : '复核通过后自动投放')" />
-          </a-tooltip>
-        </div>
-
-        <a-divider style="margin:16px 0">快捷抓取</a-divider>
-
-        <div class="quick-pick-section">
-          <div class="section-label">按颜色抓取</div>
-          <div class="pick-grid">
-            <a-button v-for="c in (cfg.enabled_colors || [])" :key="c" :disabled="!online"
-              @click="send({ action: 'pick', label: c }, `抓取${CN[c] || c}色目标`)">
-              <span class="dot" :style="{ background: CHIP[c] }" />{{ CN[c] || c }}
+          <div class="control-row primary-actions">
+            <a-button type="primary" size="large" :disabled="!online" @click="send({ action: 'auto', on: true }, '开始自动清台')">
+              🤖 自动清台
+            </a-button>
+            <a-button size="large" :disabled="!online" @click="send({ action: 'detect' }, '识别一次')">
+              👁️ 识别一次
+            </a-button>
+            <a-button type="primary" :danger="recording" size="large" :disabled="!online" @click="toggleRecording">
+              {{ recording ? '⏹ 停止录制' : '⏺ 开始录制' }}
+            </a-button>
+            <a-button danger size="large" :disabled="!online" @click="send({ action: 'stop' }, '已停止')">
+              ⏹ 停止
             </a-button>
           </div>
+
+          <div class="control-row arm-actions">
+            <span class="control-label">机械臂：</span>
+            <a-button :disabled="!online" @click="send({ action: 'observe' }, '回观察位')">观察位</a-button>
+            <a-button :disabled="!online" @click="send({ action: 'home' }, '收臂')">收臂</a-button>
+            <a-button :disabled="!online" @click="send({ action: 'gripper', open: true })">张爪</a-button>
+            <a-button :disabled="!online" @click="send({ action: 'gripper', open: false })">合爪</a-button>
+          </div>
+
+          <div class="control-row mode-switches">
+            <span class="control-label">模式：</span>
+            <a-switch v-model:checked="probeMode" checked-children="只算不抓" un-checked-children="选择目标" />
+            <a-tooltip title="空跑：识别、算坐标、算 IK 全跑，但不给舵机发指令。第一次上电先开着它验证整条链路。">
+              <a-switch :checked="!!cfg.dry_run" :disabled="!online"
+                checked-children="空跑" un-checked-children="实动"
+                @change="v => send({ action: 'set_config', patch: { dry_run: v } }, v ? '已切到空跑模式' : '已切到实际动作')" />
+            </a-tooltip>
+            <a-select :value="cfg.detector_mode || 'hybrid'" style="width:160px"
+              :options="[
+                { value: 'hybrid', label: 'YOLO + 颜色兜底' },
+                { value: 'yolo', label: '仅 YOLO 通用类' },
+                { value: 'color', label: '仅颜色识别' },
+              ]"
+              @change="v => send({ action: 'set_config', patch: { detector_mode: v } }, '识别模式已切换')" />
+            <a-button size="small" @click="reloadVideo">刷新画面</a-button>
+          </div>
+
+          <div class="control-row safety-switches">
+            <span class="control-label">安全与辅助：</span>
+            <a-tooltip title="仅用于正前方够不到的物品：收臂后低速分段前进，每段重新识别。雷达、视觉、电压异常会立即停下。">
+              <a-switch :checked="!!cfg.auto_drive_grasp_enabled" :disabled="!online"
+                checked-children="自动驾驶抓取" un-checked-children="自动补位关闭"
+                @change="v => send({ action: 'set_config', patch: { auto_drive_grasp_enabled: v } }, v ? '自动驾驶抓取已开启' : '自动驾驶抓取已关闭')" />
+            </a-tooltip>
+            <a-tooltip title="抓取后回观察位，扫描原目标位置附近 5.5cm：还在就松爪（空抓），不在了就认为可能夹住。误判时会空中松爪，可关掉此开关跳过视觉复核。">
+              <a-switch :checked="cfg.post_grasp_verify !== false" :disabled="!online"
+                checked-children="抓取视觉复核" un-checked-children="跳过复核"
+                @change="v => send({ action: 'set_config', patch: { post_grasp_verify: v } }, v ? '抓取视觉复核已开启' : '已关闭抓取视觉复核')" />
+            </a-tooltip>
+            <a-tooltip title="开着时抓起后必须人工点投放/松爪；关了就按选中的动作（inspect / A / B）自动投放。">
+              <a-switch :checked="cfg.manual_confirm_before_place !== false" :disabled="!online"
+                checked-children="投放前人工确认" un-checked-children="复核通过自动投"
+                @change="v => send({ action: 'set_config', patch: { manual_confirm_before_place: v } }, v ? '投放前需人工确认' : '复核通过后自动投放')" />
+            </a-tooltip>
+          </div>
         </div>
+
+        <a-collapse ghost style="margin-top:16px">
+          <a-collapse-panel key="quick-pick" header="按颜色抓取（快捷）">
+            <div class="quick-pick-section">
+              <div class="pick-grid">
+                <a-button v-for="c in (cfg.enabled_colors || [])" :key="c" :disabled="!online"
+                  @click="send({ action: 'pick', label: c }, `抓取${CN[c] || c}色目标`)">
+                  <span class="dot" :style="{ background: CHIP[c] }" />{{ CN[c] || c }}
+                </a-button>
+              </div>
+            </div>
+          </a-collapse-panel>
+        </a-collapse>
       </a-card>
 
       <a-card size="small" title="已识别目标 · 点击选择" style="margin-top:16px">
@@ -831,8 +847,36 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
 .target-workbench { display:flex; align-items:center; flex-wrap:wrap; gap:8px; min-height:46px;
   padding:10px 12px; margin-top:10px; border:1px solid var(--border); border-radius:8px;
   background:var(--surface-2); font-size:13px; color:var(--text-2); }
-.quick-control { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-top:12px;
-  padding-top:10px; border-top:1px solid var(--border); }
+.quick-control {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-1);
+}
+.control-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.control-row.primary-actions .ant-btn {
+  flex: 1;
+  min-width: 120px;
+}
+.control-row.arm-actions .ant-btn {
+  min-width: 90px;
+}
+.control-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin-right: 4px;
+}
+
 .inference-panel { overflow:hidden; }
 .infer-summary { padding:8px 10px; border:1px solid var(--border); border-radius:7px; background:var(--surface-2); font-size:12px; line-height:1.55; color:var(--text-2); }
 .infer-terminal { margin-top:9px; padding:8px 0; min-height:180px; max-height:250px; overflow:auto; border-radius:7px; background:#101821; font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; }
@@ -874,15 +918,9 @@ code { font-family: ui-monospace, monospace; font-size: 13px; }
   min-width: 0;
 }
 
-/* 快捷抓取区域 */
+/* 快捷抓取区域（折叠） */
 .quick-pick-section {
-  margin-top: 12px;
-}
-.section-label {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-2);
-  margin-bottom: 10px;
+  margin-top: 8px;
 }
 .pick-grid {
   display: grid;
