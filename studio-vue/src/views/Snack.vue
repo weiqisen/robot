@@ -464,9 +464,6 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
             <a-button type="primary" size="large" :disabled="!online" @click="send({ action: 'auto', on: true }, '开始自动清台')">
               自动清台
             </a-button>
-            <a-button size="large" :disabled="!online" @click="send({ action: 'detect' }, '识别一次')">
-              识别一次
-            </a-button>
             <a-button :type="recording ? 'primary' : 'default'" :danger="recording" size="large" :disabled="!online"
               @click="toggleRecording">
               {{ recording ? '停止录制' : '开始录制' }}

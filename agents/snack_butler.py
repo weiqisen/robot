@@ -310,7 +310,7 @@ DEFAULT_CONFIG = {
     # 标注图也只发 5 Hz。每来一帧就解一次纯属白烧 CPU。
     "proc_fps": 6,
     # 在观察位空闲时持续刷新检测结果；只做视觉计算，不触发机械臂。
-    "idle_detect_hz": 1.0,
+    "idle_detect_hz": 2.0,  # 空闲时持续识别频率（Hz）；0 = 禁用
     # 探索收臂后，YOLO/深度命中这些低矮或大体积物时也作为前向禁行区。
     "vision_guard_labels": ["bed", "dining table", "chair", "couch", "tv", "potted plant"],
     "camera_frame": "depth_cam_color_optical_frame",
@@ -965,19 +965,18 @@ class SnackButler(Node):
         return max(abs(a - b) for a, b in zip(self.current_q(), want)) <= math.radians(5.0)
 
     def tick_idle_detection(self):
-        # 空闲时维持低频留档；页面开启“实时分析”后才提升频率，避免常驻占满 Jetson。
+        # 空闲时持续识别：页面开启”实时分析”时用 proc_fps（≤3Hz），否则用 idle_detect_hz（默认 2Hz）。
+        # 识别结果用于网页显示和自动抓取决策；真正抓取前 seq_detect 仍会回观察位重新检测。
         hz = (min(float(self.cfg.get('proc_fps') or 3), 3.0) if self.live_analysis
-              else float(self.cfg.get('idle_detect_hz') or 0))
+              else float(self.cfg.get('idle_detect_hz', 2.0)))
         now = time.time()
-        # 探索时机械臂在收臂位也继续做低频识别：语义结果用于导航物品留档；
-        # 真正抓取前 seq_detect 仍会强制回观察位重新检测，不会拿旧姿态坐标开抓。
         if hz <= 0 or self.state != 'IDLE' or self.rgb is None:
             return
         if now - self._last_idle_scan < 1.0 / hz:
             return
         self._last_idle_scan = now
         count = len(self.scan_once())
-        self.step = f'自动识别到 {count} 个目标'
+        self.step = f'识别到 {count} 个目标'
         if count != self._last_idle_count:
             self.get_logger().info('[idle_detect] count=%d labels=%s' %
                                    (count, [d.get('label') for d in self.detections]))
