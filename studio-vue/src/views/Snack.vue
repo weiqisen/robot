@@ -460,59 +460,55 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
         </div>
 
         <div class="control-panel">
-          <div class="control-group primary">
-            <a-button type="primary" size="large" :disabled="!online" @click="send({ action: 'auto', on: true }, '开始自动清台')">
+          <div class="control-row">
+            <a-button type="primary" :disabled="!online" @click="send({ action: 'auto', on: true }, '开始自动清台')">
               自动清台
             </a-button>
-            <a-button :type="recording ? 'primary' : 'default'" :danger="recording" size="large" :disabled="!online"
+            <a-button :type="recording ? 'primary' : 'default'" :danger="recording" :disabled="!online"
               @click="toggleRecording">
               {{ recording ? '停止录制' : '开始录制' }}
             </a-button>
-            <a-button danger size="large" :disabled="!online" @click="send({ action: 'stop' }, '已停止')">停止</a-button>
+            <a-button danger :disabled="!online" @click="send({ action: 'stop' }, '已停止')">停止</a-button>
+            <a-divider type="vertical" style="height:28px" />
+            <span class="label">机械臂</span>
+            <a-button size="small" :disabled="!online" @click="send({ action: 'observe' }, '回观察位')">观察位</a-button>
+            <a-button size="small" :disabled="!online" @click="send({ action: 'home' }, '收臂')">收臂</a-button>
+            <a-button size="small" :disabled="!online" @click="send({ action: 'gripper', open: true })">张爪</a-button>
+            <a-button size="small" :disabled="!online" @click="send({ action: 'gripper', open: false })">合爪</a-button>
+            <a-button size="small" @click="reloadVideo">刷新</a-button>
           </div>
 
-          <div class="control-group">
-            <span class="group-label">机械臂</span>
-            <a-button :disabled="!online" @click="send({ action: 'observe' }, '回观察位')">观察位</a-button>
-            <a-button :disabled="!online" @click="send({ action: 'home' }, '收臂')">收臂</a-button>
-            <a-button :disabled="!online" @click="send({ action: 'gripper', open: true })">张爪</a-button>
-            <a-button :disabled="!online" @click="send({ action: 'gripper', open: false })">合爪</a-button>
-          </div>
-
-          <div class="control-group">
-            <span class="group-label">模式</span>
-            <a-switch v-model:checked="probeMode" checked-children="只算不抓" un-checked-children="选择目标" />
+          <div class="control-row">
+            <span class="label">模式</span>
+            <a-switch v-model:checked="probeMode" size="small" checked-children="只算不抓" un-checked-children="选择目标" />
             <a-tooltip title="空跑：识别、算坐标、算 IK 全跑，但不给舵机发指令">
-              <a-switch :checked="!!cfg.dry_run" :disabled="!online"
+              <a-switch :checked="!!cfg.dry_run" :disabled="!online" size="small"
                 checked-children="空跑" un-checked-children="实动"
                 @change="v => send({ action: 'set_config', patch: { dry_run: v } }, v ? '已切到空跑模式' : '已切到实际动作')" />
             </a-tooltip>
-            <a-select :value="cfg.detector_mode || 'hybrid'" style="width:180px"
+            <a-select :value="cfg.detector_mode || 'hybrid'" size="small" style="width:150px"
               :options="[
-                { value: 'hybrid', label: 'YOLO + 颜色兜底' },
-                { value: 'yolo', label: '仅 YOLO' },
+                { value: 'hybrid', label: 'YOLO+颜色' },
+                { value: 'yolo', label: '仅YOLO' },
                 { value: 'color', label: '仅颜色' },
               ]"
               @change="v => send({ action: 'set_config', patch: { detector_mode: v } }, '识别模式已切换')" />
-            <a-button size="small" @click="reloadVideo">刷新画面</a-button>
-          </div>
-
-          <div class="control-group">
-            <span class="group-label">安全</span>
+            <a-divider type="vertical" style="height:28px" />
+            <span class="label">安全</span>
             <a-tooltip title="抓取后回观察位，扫描原位置：还在就松爪">
-              <a-switch :checked="cfg.post_grasp_verify !== false" :disabled="!online"
-                checked-children="抓取复核" un-checked-children="跳过复核"
-                @change="v => send({ action: 'set_config', patch: { post_grasp_verify: v } }, v ? '已开启' : '已关闭')" />
+              <a-switch :checked="cfg.post_grasp_verify !== false" :disabled="!online" size="small"
+                checked-children="抓取复核" un-checked-children="跳过"
+                @change="v => send({ action: 'set_config', patch: { post_grasp_verify: v } })" />
             </a-tooltip>
             <a-tooltip title="抓起后必须人工点投放/松爪">
-              <a-switch :checked="cfg.manual_confirm_before_place !== false" :disabled="!online"
-                checked-children="人工确认" un-checked-children="自动投放"
-                @change="v => send({ action: 'set_config', patch: { manual_confirm_before_place: v } }, v ? '需确认' : '自动投')" />
+              <a-switch :checked="cfg.manual_confirm_before_place !== false" :disabled="!online" size="small"
+                checked-children="人工确认" un-checked-children="自动投"
+                @change="v => send({ action: 'set_config', patch: { manual_confirm_before_place: v } })" />
             </a-tooltip>
             <a-tooltip title="正前方够不到时自动前进">
-              <a-switch :checked="!!cfg.auto_drive_grasp_enabled" :disabled="!online"
+              <a-switch :checked="!!cfg.auto_drive_grasp_enabled" :disabled="!online" size="small"
                 checked-children="自动驾驶" un-checked-children="关闭"
-                @change="v => send({ action: 'set_config', patch: { auto_drive_grasp_enabled: v } }, v ? '已开启' : '已关闭')" />
+                @change="v => send({ action: 'set_config', patch: { auto_drive_grasp_enabled: v } })" />
             </a-tooltip>
           </div>
         </div>
@@ -832,42 +828,28 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
   background:var(--surface-2); font-size:13px; color:var(--text-2); }
 
 .control-panel {
-  margin-top: 16px;
-  padding: 16px;
+  margin-top: 12px;
+  padding: 12px 14px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface-1);
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 10px;
 }
 
-.control-group {
+.control-row {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 10px;
-  padding: 8px 0;
+  gap: 8px;
 }
 
-.control-group.primary {
-  padding-bottom: 14px;
-  border-bottom: 1px solid var(--border);
-}
-
-.control-group.primary .ant-btn {
-  min-width: 140px;
-}
-
-.group-label {
+.control-row .label {
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text-2);
-  min-width: 60px;
-}
-
-.control-group .ant-btn {
-  min-width: 80px;
+  margin: 0 2px;
 }
 
 .inference-panel { overflow:hidden; }
