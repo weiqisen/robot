@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """独立视觉 MJPEG 桥：只服务视觉抓取图像，重启不影响底盘/导航。"""
 import threading
+import signal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import cv2
 import numpy as np
@@ -10,6 +11,10 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import Image
 
 PORT = 8082
+
+
+class VideoHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
 
 class Bridge(Node):
     def __init__(self):
@@ -51,6 +56,15 @@ def main():
                         self.wfile.write(b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ' + str(len(frame)).encode() + b'\r\n\r\n' + frame + b'\r\n')
                     threading.Event().wait(1 / 3)
             except (BrokenPipeError, ConnectionResetError): pass
-    ThreadingHTTPServer(('0.0.0.0', PORT), Handler).serve_forever()
+    server = VideoHTTPServer(('0.0.0.0', PORT), Handler)
+    def stop(*_):
+        # systemd/guard restart must never wait for a browser's long-lived MJPEG
+        # request.  shutdown is invoked off the serve_forever thread.
+        threading.Thread(target=server.shutdown, daemon=True).start()
+        rclpy.shutdown()
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    server.serve_forever()
+    server.server_close()
 
 if __name__ == '__main__': main()
