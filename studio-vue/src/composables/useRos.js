@@ -11,7 +11,10 @@ export const ROBOT_HOST = query.get('robot') || (query.get('sim') === '1'
       ? location.hostname : '192.168.3.63'))
 export const ROSBRIDGE_PORT = query.get('sim') === '1' ? Number(query.get('simPort') || 19090) : 9090
 export const VIDEO_PORT = 8080
-export const VISION_VIDEO_PORT = 8082
+// The vendor web_video_server is the current validated producer.  Keep this
+// separate constant so the isolated bridge can be re-enabled after its DDS
+// delivery issue is resolved on the Jetson.
+export const VISION_VIDEO_PORT = 8080
 export const WEBRTC_PORT = 8091
 export const BATT_MIN = 9.0, BATT_MAX = 12.6, BATT_WARN = 10.0
 
