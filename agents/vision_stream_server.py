@@ -15,12 +15,14 @@ class Bridge(Node):
     def __init__(self):
         super().__init__('vision_stream_server')
         self.lock, self.jpeg = threading.Lock(), None
+        self.frames = 0
         # snack_butler publishes reliably; match it exactly.  Some DDS versions
         # on the Jetson fail to deliver a reliable publisher to a best-effort
         # Python subscriber even though the profile is nominally compatible.
         qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                          history=HistoryPolicy.KEEP_LAST)
         self.create_subscription(Image, '/snack_butler/image_result', self.on_image, qos)
+        self.get_logger().info('subscribed to /snack_butler/image_result')
 
     def on_image(self, msg):
         try:
@@ -28,6 +30,9 @@ class Bridge(Node):
             ok, data = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 75])
             if ok:
                 with self.lock: self.jpeg = data.tobytes()
+                self.frames += 1
+                if self.frames == 1 or self.frames % 90 == 0:
+                    self.get_logger().info('encoded frame #%d (%d bytes)' % (self.frames, len(self.jpeg)))
         except Exception as e:
             self.get_logger().warn('frame encode failed: %s' % e)
 
