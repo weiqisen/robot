@@ -45,6 +45,96 @@ import vision_geometry as vg
 from snack_detector import UniversalDetector, COLOR_BGR, detect_depth_objects, locate as locate_3d
 from service_watchdog import ServiceWatchdog
 
+# 视频录制器
+class GraspRecorder:
+    """录制抓取流程为 MP4，主画面 + 右上角 LLM 推理小窗"""
+    def __init__(self, output_dir='~/recordings'):
+        self.output_dir = os.path.expanduser(output_dir)
+        os.makedirs(self.output_dir, exist_ok=True)
+        self.writer = None
+        self.recording = False
+        self.start_time = None
+        self.filename = None
+
+    def start(self):
+        if self.recording:
+            return
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        self.filename = os.path.join(self.output_dir, f'grasp_{timestamp}.mp4')
+        self.recording = True
+        self.start_time = time.time()
+        self.writer = None  # 延迟创建，等第一帧确定尺寸
+
+    def add_frame(self, img, state, step, llm_text=None):
+        """添加一帧：img 是 BGR 图像，叠加状态信息和可选的 LLM 推理"""
+        if not self.recording:
+            return
+
+        h, w = img.shape[:2]
+
+        # 第一帧时创建 writer
+        if self.writer is None:
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            self.writer = cv2.VideoWriter(self.filename, fourcc, 10.0, (w, h))
+
+        frame = img.copy()
+
+        # 右上角 LLM 推理小窗（如果有）
+        if llm_text:
+            box_w, box_h = 320, 180
+            box_x, box_y = w - box_w - 10, 10
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (box_x, box_y), (box_x + box_w, box_y + box_h),
+                         (30, 30, 30), -1)
+            cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
+            cv2.rectangle(frame, (box_x, box_y), (box_x + box_w, box_y + box_h),
+                         (100, 200, 100), 2)
+
+            # 绘制 LLM 文本（支持中文）
+            try:
+                from PIL import Image, ImageDraw, ImageFont
+                pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                draw = ImageDraw.Draw(pil_img)
+                try:
+                    font = ImageFont.truetype('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc', 14)
+                except:
+                    font = ImageFont.load_default()
+
+                lines = llm_text.split('\n')[:8]  # 最多 8 行
+                y_offset = box_y + 8
+                for line in lines:
+                    draw.text((box_x + 8, y_offset), line[:35], font=font, fill=(200, 255, 200))
+                    y_offset += 20
+
+                frame = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+            except Exception as e:
+                # PIL 不可用，回退到纯 ASCII
+                y_offset = box_y + 18
+                for line in llm_text.split('\n')[:8]:
+                    cv2.putText(frame, ascii_only(line[:35]), (box_x + 8, y_offset),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 255, 200), 1, cv2.LINE_AA)
+                    y_offset += 18
+
+        # 底部状态栏（时间戳）
+        elapsed = time.time() - self.start_time
+        timestamp_text = f'REC {int(elapsed//60):02d}:{int(elapsed%60):02d}'
+        cv2.circle(frame, (w - 85, h - 15), 6, (0, 0, 255), -1)  # 红点
+        cv2.putText(frame, timestamp_text, (w - 75, h - 10),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
+
+        self.writer.write(frame)
+
+    def stop(self):
+        if not self.recording:
+            return None
+        self.recording = False
+        if self.writer:
+            self.writer.release()
+            self.writer = None
+        result = self.filename
+        self.filename = None
+        return result
+
 # 这些是机器人自带的自定义消息；缺任何一个都没法动，直接报清楚
 from ros_robot_controller_msgs.msg import ServosPosition, ServoPosition, BuzzerState
 try:
@@ -262,6 +352,8 @@ class SnackButler(Node):
         self._last_idle_count = None
         self.live_analysis = False  # 页面显式开启时才提高到实时分析频率，不写入抓取方案
         self.last_detection_at = 0.0
+        self.recorder = GraspRecorder()     # 抓取流程录像；只在页面点录制时才写盘
+        self.llm_note = ''                  # LLM 推理文字，录像右上角小窗用
         self.batt_v = None          # 最近一次电池电压（V）
         self._low_n = 0             # 连续低压计数
         self.low_volt = False       # 已触发低压保护（latch，回到 clear 阈值才解除）
@@ -1601,6 +1693,18 @@ class SnackButler(Node):
                 self.gripper(opened)
                 if opened:
                     self.held_target = None
+            elif a == 'start_recording':
+                if self.recorder.recording:
+                    self.step = '已经在录制中'
+                else:
+                    self.recorder.start()
+                    self.step = '开始录制：%s' % os.path.basename(self.recorder.filename)
+            elif a == 'stop_recording':
+                path = self.recorder.stop()
+                self.step = ('录制已保存：%s' % os.path.basename(path)) if path else '当前没有在录制'
+            elif a == 'llm_note':
+                # LLM 侧把推理文字发过来，录像右上角小窗同步显示
+                self.llm_note = str(c.get('text') or '')[:400]
             elif a == 'calibrate':
                 self.auto = False
                 self.start(self.seq_calibrate())
@@ -1739,6 +1843,11 @@ class SnackButler(Node):
                      'auto_drive_grasp_speed', 'auto_drive_grasp_min_v',
                      'post_grasp_verify', 'manual_confirm_before_place')},
             'stats': dict(self.stats, uptime=round(time.time() - self.stats['started'])),
+            'recording': {'active': self.recorder.recording,
+                          'file': os.path.basename(self.recorder.filename)
+                                  if self.recorder.filename else None,
+                          'seconds': round(time.time() - self.recorder.start_time, 1)
+                                     if self.recorder.recording and self.recorder.start_time else 0},
         }, ensure_ascii=False)
         self.pub_state.publish(m)
 
@@ -1777,6 +1886,13 @@ class SnackButler(Node):
             cv2.putText(img, ascii_only(self.last_error)[:70], (6, img.shape[0] - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.42, (80, 80, 255), 1, cv2.LINE_AA)
         self.pub_img.publish(self.image_msg(img))
+        # 录像走同一张已标注的图：网页看到什么，录下来就是什么
+        if self.recorder.recording:
+            try:
+                self.recorder.add_frame(img, self.state, self.step, self.llm_note or None)
+            except Exception as e:
+                self.get_logger().warn('录像写帧失败，已停止录制：%s' % e)
+                self.recorder.stop()
 
     def image_msg(self, img):
         msg = Image()

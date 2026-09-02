@@ -163,14 +163,56 @@ function drawOffsetPreview() {
     ctx.fillText(label, newU + 35 * scale, newV - 10 * scale)
     ctx.shadowBlur = 0
   })
+
+  // 绘制选中目标的绿色高亮框
+  const sel = selectedDet.value
+  if (sel && sel.bbox) {
+    const [x, y, w, h] = sel.bbox
+    ctx.strokeStyle = '#00ff00'
+    ctx.lineWidth = 4
+    ctx.setLineDash([])
+    ctx.strokeRect(x * scale, y * scale, w * scale, h * scale)
+
+    // 四个角的加强标记
+    const cornerLen = 20 * scale
+    ctx.lineWidth = 5
+    // 左上
+    ctx.beginPath()
+    ctx.moveTo(x * scale, y * scale + cornerLen)
+    ctx.lineTo(x * scale, y * scale)
+    ctx.lineTo(x * scale + cornerLen, y * scale)
+    ctx.stroke()
+    // 右上
+    ctx.beginPath()
+    ctx.moveTo((x + w) * scale - cornerLen, y * scale)
+    ctx.lineTo((x + w) * scale, y * scale)
+    ctx.lineTo((x + w) * scale, y * scale + cornerLen)
+    ctx.stroke()
+    // 左下
+    ctx.beginPath()
+    ctx.moveTo(x * scale, (y + h) * scale - cornerLen)
+    ctx.lineTo(x * scale, (y + h) * scale)
+    ctx.lineTo(x * scale + cornerLen, (y + h) * scale)
+    ctx.stroke()
+    // 右下
+    ctx.beginPath()
+    ctx.moveTo((x + w) * scale - cornerLen, (y + h) * scale)
+    ctx.lineTo((x + w) * scale, (y + h) * scale)
+    ctx.lineTo((x + w) * scale, (y + h) * scale - cornerLen)
+    ctx.stroke()
+  }
 }
 
-watch([dets, cfg, showOffsetPreview, () => imgEl.value?.naturalWidth], () => {
+watch([dets, cfg, showOffsetPreview, selected, () => imgEl.value?.naturalWidth], () => {
   requestAnimationFrame(drawOffsetPreview)
 }, { deep: true, immediate: true })
 
-// 先选目标，再明确选择“抓起观察 / 放 A / 放 B”；点击本身绝不驱动机械臂。
+// 先选目标，再明确选择”抓起观察 / 放左侧 / 放右侧”；点击本身绝不驱动机械臂。
 const probeMode = ref(false)
+// 录制状态由节点回报（sb.recording），不靠前端自己记：刷新页面/多端打开都一致
+const recording = computed(() => !!sb.value?.recording?.active)
+const recordFile = computed(() => sb.value?.recording?.file || '')
+const recordSecs = computed(() => sb.value?.recording?.seconds || 0)
 const selected = ref(null)
 const selectedDet = computed(() => selected.value == null ? null : detRows.value[selected.value])
 function onPick(e) {
@@ -211,6 +253,16 @@ function analyzeSelected() {
   send({ action: 'analyze_grasp_at', u: Math.round(d.u), v: Math.round(d.v) }, '正在分析候选下探姿态，不会驱动机械臂')
 }
 function placeHeld(bin) { send({ action: 'place_held', bin }, `已下发投放到 ${bin} 区`) }
+
+function toggleRecording() {
+  if (recording.value) {
+    send({ action: 'stop_recording' }, '录制已停止')
+    recording.value = false
+  } else {
+    send({ action: 'start_recording' }, '开始录制抓取流程')
+    recording.value = true
+  }
+}
 
 function send(obj, tip) {
   if (!actions.snackCmd(obj)) return message.error('rosbridge 未连接')
@@ -378,9 +430,9 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
             <code v-if="selectedDet.xyz">{{ selectedDet.xyz.map(v => v.toFixed(3)).join(', ') }}</code>
             <a-tag v-if="!selectedDet.reachable" color="default">当前够不着</a-tag>
             <a-space v-if="selectedDet.reachable" wrap>
-              <a-button size="small" type="primary" @click="runSelected('inspect')">抓起后观察</a-button>
-              <a-button size="small" @click="runSelected('A')">抓取放左侧</a-button>
-              <a-button size="small" @click="runSelected('B')">抓取放右侧</a-button>
+              <a-button type="primary" @click="runSelected('inspect')">抓起后观察</a-button>
+              <a-button type="primary" @click="runSelected('A')">抓取放左侧</a-button>
+              <a-button type="primary" @click="runSelected('B')">抓取放右侧</a-button>
             </a-space>
             <a-space v-else wrap>
               <a-button size="small" type="primary" :disabled="!cfg.auto_drive_grasp_enabled"
@@ -398,6 +450,11 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
           <a-button :disabled="!online" @click="send({ action: 'detect' }, '识别一次')">只识别</a-button>
           <a-switch v-model:checked="probeMode" checked-children="只算不抓" un-checked-children="选择目标" />
           <a-button danger :disabled="!online" @click="send({ action: 'stop' }, '已停止')">停止</a-button>
+          <a-divider type="vertical" />
+          <a-button :type="recording ? 'primary' : 'default'" :danger="recording" :disabled="!online"
+            @click="toggleRecording">
+            {{ recording ? '⏹ 停止录制' : '⏺ 开始录制' }}
+          </a-button>
           <a-divider type="vertical" />
           <a-button size="small" :disabled="!online" @click="send({ action: 'observe' }, '回观察位')">观察位</a-button>
           <a-button size="small" :disabled="!online" @click="send({ action: 'home' }, '收臂')">收臂</a-button>
