@@ -70,17 +70,58 @@ onUnmounted(() => { if (retryT) clearTimeout(retryT) })
 const imgEl = ref(null)
 const canvasEl = ref(null)
 const showOffsetPreview = ref(false)  // 是否显示补偿预览绿框
+const showSafeZone = ref(false)       // 是否显示安全抓取区域
 // 流卡住(web_video_server 重启等)时 <img> 不报错，只是不再更新——靠采样比对发现
 useStreamWatch(() => imgEl.value, reloadVideo)
 
-// 绘制补偿后的预览框
+// 绘制选中目标的绿色高亮框
+function drawSelectionBox(ctx, scale) {
+  const sel = selectedDet.value
+  if (!sel || !sel.bbox) return
+
+  const [x, y, w, h] = sel.bbox
+  ctx.strokeStyle = '#00ff00'
+  ctx.lineWidth = 4
+  ctx.setLineDash([])
+  ctx.strokeRect(x * scale, y * scale, w * scale, h * scale)
+
+  // 四个角的加强标记
+  const cornerLen = 20 * scale
+  ctx.lineWidth = 5
+  // 左上
+  ctx.beginPath()
+  ctx.moveTo(x * scale, y * scale + cornerLen)
+  ctx.lineTo(x * scale, y * scale)
+  ctx.lineTo(x * scale + cornerLen, y * scale)
+  ctx.stroke()
+  // 右上
+  ctx.beginPath()
+  ctx.moveTo((x + w) * scale - cornerLen, y * scale)
+  ctx.lineTo((x + w) * scale, y * scale)
+  ctx.lineTo((x + w) * scale, y * scale + cornerLen)
+  ctx.stroke()
+  // 左下
+  ctx.beginPath()
+  ctx.moveTo(x * scale, (y + h) * scale - cornerLen)
+  ctx.lineTo(x * scale, (y + h) * scale)
+  ctx.lineTo(x * scale + cornerLen, (y + h) * scale)
+  ctx.stroke()
+  // 右下
+  ctx.beginPath()
+  ctx.moveTo((x + w) * scale - cornerLen, (y + h) * scale)
+  ctx.lineTo((x + w) * scale, (y + h) * scale)
+  ctx.lineTo((x + w) * scale, (y + h) * scale - cornerLen)
+  ctx.stroke()
+}
+
+// 绘制补偿后的预览框 + 安全抓取区域
 function drawOffsetPreview() {
   const canvas = canvasEl.value
   const img = imgEl.value
   if (!canvas || !img || !img.naturalWidth) return
 
-  // 开关关闭时清空并退出
-  if (!showOffsetPreview.value) {
+  // 两个开关都关闭时清空并退出
+  if (!showOffsetPreview.value && !showSafeZone.value) {
     const ctx = canvas.getContext('2d')
     ctx.clearRect(0, 0, canvas.width, canvas.height)
     return
@@ -100,19 +141,38 @@ function drawOffsetPreview() {
   const ctx = canvas.getContext('2d')
   ctx.clearRect(0, 0, canvas.width, canvas.height)
 
+  // ---- 安全抓取区域：可达的检测框画绿、不可达画红 ----
+  // 真值来自节点的 reachable（IK 已解算过），不在前端重算工作区
+  if (showSafeZone.value) {
+    for (const d of dets.value) {
+      if (!d.bbox) continue
+      const [bx, by, bw, bh] = d.bbox
+      const ok = !!d.reachable
+      ctx.setLineDash(ok ? [] : [5, 4])
+      ctx.strokeStyle = ok ? 'rgba(67,160,71,.95)' : 'rgba(225,75,75,.9)'
+      ctx.lineWidth = 2
+      ctx.strokeRect(bx * scale, by * scale, bw * scale, bh * scale)
+      ctx.fillStyle = ok ? 'rgba(67,160,71,.16)' : 'rgba(225,75,75,.12)'
+      ctx.fillRect(bx * scale, by * scale, bw * scale, bh * scale)
+      ctx.setLineDash([])
+      ctx.fillStyle = ok ? '#43a047' : '#e14b4b'
+      ctx.font = `bold ${12 * scale}px sans-serif`
+      ctx.fillText(ok ? '可夹' : '够不着', bx * scale + 3, by * scale - 4)
+    }
+  }
+
+  drawSelectionBox(ctx, scale)
+
+  if (!showOffsetPreview.value) return
+
   const xOff = cfg.value.x_offset_hack || 0
   const yOff = cfg.value.y_offset_hack || 0
   const zOff = cfg.value.z_offset_hack || 0
 
-  console.log('[Offset Preview]', { xOff, yOff, zOff, dets: dets.value.length, scale, dw, dh })
-
   if (Math.abs(xOff) < 0.001 && Math.abs(yOff) < 0.001 && Math.abs(zOff) < 0.001) return
 
   const detections = dets.value.filter(d => d.xyz && d.u != null && d.v != null)
-  if (!detections.length) {
-    console.log('[Offset Preview] No detections with valid u,v,xyz')
-    return
-  }
+  if (!detections.length) return
 
   detections.forEach(d => {
     // 原始像素坐标转换到显示坐标
@@ -163,44 +223,6 @@ function drawOffsetPreview() {
     ctx.fillText(label, newU + 35 * scale, newV - 10 * scale)
     ctx.shadowBlur = 0
   })
-
-  // 绘制选中目标的绿色高亮框
-  const sel = selectedDet.value
-  if (sel && sel.bbox) {
-    const [x, y, w, h] = sel.bbox
-    ctx.strokeStyle = '#00ff00'
-    ctx.lineWidth = 4
-    ctx.setLineDash([])
-    ctx.strokeRect(x * scale, y * scale, w * scale, h * scale)
-
-    // 四个角的加强标记
-    const cornerLen = 20 * scale
-    ctx.lineWidth = 5
-    // 左上
-    ctx.beginPath()
-    ctx.moveTo(x * scale, y * scale + cornerLen)
-    ctx.lineTo(x * scale, y * scale)
-    ctx.lineTo(x * scale + cornerLen, y * scale)
-    ctx.stroke()
-    // 右上
-    ctx.beginPath()
-    ctx.moveTo((x + w) * scale - cornerLen, y * scale)
-    ctx.lineTo((x + w) * scale, y * scale)
-    ctx.lineTo((x + w) * scale, y * scale + cornerLen)
-    ctx.stroke()
-    // 左下
-    ctx.beginPath()
-    ctx.moveTo(x * scale, (y + h) * scale - cornerLen)
-    ctx.lineTo(x * scale, (y + h) * scale)
-    ctx.lineTo(x * scale + cornerLen, (y + h) * scale)
-    ctx.stroke()
-    // 右下
-    ctx.beginPath()
-    ctx.moveTo((x + w) * scale - cornerLen, (y + h) * scale)
-    ctx.lineTo((x + w) * scale, (y + h) * scale)
-    ctx.lineTo((x + w) * scale, (y + h) * scale - cornerLen)
-    ctx.stroke()
-  }
 }
 
 // 先选目标，再明确选择”抓起观察 / 放左侧 / 放右侧”；点击本身绝不驱动机械臂。
@@ -228,7 +250,7 @@ async function loadRecordings() {
 watch(recording, (now, before) => { if (before && !now) setTimeout(loadRecordings, 600) })
 loadRecordings()
 
-watch([dets, cfg, showOffsetPreview, selected, () => imgEl.value?.naturalWidth], () => {
+watch([dets, cfg, showOffsetPreview, showSafeZone, selected, () => imgEl.value?.naturalWidth], () => {
   requestAnimationFrame(drawOffsetPreview)
 }, { deep: true, immediate: true })
 function onPick(e) {
@@ -493,6 +515,10 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
                 { value: 'color', label: '仅颜色' },
               ]"
               @change="v => send({ action: 'set_config', patch: { detector_mode: v } }, '识别模式已切换')" />
+            <a-tooltip title="在画面上标出每个识别目标能不能抓：实线绿框=垂直夹爪 IK 有解，虚线红框=够不着。判定来自节点，不是前端估算。">
+              <a-switch v-model:checked="showSafeZone" size="small"
+                checked-children="可夹区域" un-checked-children="可夹区域" />
+            </a-tooltip>
             <a-divider type="vertical" style="height:28px" />
             <span class="label">安全</span>
             <a-tooltip title="抓取后回观察位，扫描原位置：还在就松爪">
