@@ -45,9 +45,11 @@ class ColorDetector:
                     continue
                 u, v = M['m10'] / M['m00'], M['m01'] / M['m00']
                 x, y, w, h = cv2.boundingRect(c)
-                (_, _), (rw, rh), ang = cv2.minAreaRect(c)   # 长边朝向 -> 夹爪转多少度
+                (_, _), (rw, rh), ang = cv2.minAreaRect(c)   # 旋转矩形：长边朝向
+                # 夹爪应该垂直于长边夹（更稳），所以 angle_px = 长边角度 + 90°
                 if rw < rh:
-                    ang += 90.0
+                    ang += 90.0  # ang 现在是长边角度
+                ang += 90.0      # 再 +90° 得到夹爪角度（垂直于长边）
                 out.append({'label': name, 'u': float(u), 'v': float(v), 'area': float(area),
                             'bbox': [int(x), int(y), int(w), int(h)],
                             'angle_px': float(ang),
@@ -226,7 +228,9 @@ def detect_depth_objects(depth_img, rgb_shape, K, T_bo, table_z, cfg):
         if M['m00'] <= 0:
             continue
         (_, _), (rw, rh), ang = cv2.minAreaRect(c)
-        if rw < rh: ang += 90.0
+        # 夹爪应该垂直于长边夹（更稳），所以 angle_px = 长边角度 + 90°
+        if rw < rh: ang += 90.0  # ang 现在是长边角度
+        ang += 90.0              # 再 +90° 得到夹爪角度（垂直于长边）
         out.append({'label': 'object', 'u': M['m10']/M['m00'], 'v': M['m01']/M['m00'],
                     'area': float(area), 'bbox': [x, y, ww, hh], 'angle_px': float(ang),
                     'fill': float(area/max(1, ww*hh)), 'confidence': 1.0,

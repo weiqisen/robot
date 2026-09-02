@@ -1265,7 +1265,8 @@ class SnackButler(Node):
         y += cfg.get('y_offset_hack', 0.0)
         zs += cfg.get('z_offset_hack', 0.0)
         gz = self.grasp_z(zs)
-        # 腕部自转对齐物体长边：画面右 = base -Y，所以像素角度取负
+        # 腕部自转对齐：angle_px 已经是「垂直于物体长边」的夹爪角度
+        # 画面右 = base -Y，所以像素角度取负
         roll = clamp(math.radians(-tgt.get('angle_px', 0.0)), -1.5, 1.5)
 
         tool = cfg['tool_len']
