@@ -47,7 +47,6 @@ class Bridge(Node):
 
 def main():
     rclpy.init(); bridge = Bridge()
-    threading.Thread(target=rclpy.spin, args=(bridge,), daemon=True).start()
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_): pass
         def do_GET(self):
@@ -68,7 +67,15 @@ def main():
         rclpy.shutdown()
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    server.serve_forever()
-    server.server_close()
+    # Keep ROS spinning on the process main thread.  With the Jetson's DDS
+    # build, an executor created in a worker thread can discover a topic yet
+    # never dispatch its image callbacks.
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        rclpy.spin(bridge)
+    finally:
+        server.shutdown()
+        server.server_close()
+        bridge.destroy_node()
 
 if __name__ == '__main__': main()
