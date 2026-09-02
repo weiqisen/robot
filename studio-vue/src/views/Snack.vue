@@ -203,18 +203,18 @@ function drawOffsetPreview() {
   }
 }
 
-watch([dets, cfg, showOffsetPreview, selected, () => imgEl.value?.naturalWidth], () => {
-  requestAnimationFrame(drawOffsetPreview)
-}, { deep: true, immediate: true })
-
 // 先选目标，再明确选择”抓起观察 / 放左侧 / 放右侧”；点击本身绝不驱动机械臂。
 const probeMode = ref(false)
+const selected = ref(null)
+const selectedDet = computed(() => selected.value == null ? null : detRows.value[selected.value])
 // 录制状态由节点回报（sb.recording），不靠前端自己记：刷新页面/多端打开都一致
 const recording = computed(() => !!sb.value?.recording?.active)
 const recordFile = computed(() => sb.value?.recording?.file || '')
 const recordSecs = computed(() => sb.value?.recording?.seconds || 0)
-const selected = ref(null)
-const selectedDet = computed(() => selected.value == null ? null : detRows.value[selected.value])
+
+watch([dets, cfg, showOffsetPreview, selected, () => imgEl.value?.naturalWidth], () => {
+  requestAnimationFrame(drawOffsetPreview)
+}, { deep: true, immediate: true })
 function onPick(e) {
   const el = imgEl.value
   if (!el || !el.naturalWidth) return
