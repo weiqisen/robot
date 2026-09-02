@@ -421,6 +421,16 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
               checked-children="自动驾驶抓取" un-checked-children="自动补位关闭"
               @change="v => send({ action: 'set_config', patch: { auto_drive_grasp_enabled: v } }, v ? '自动驾驶抓取已开启' : '自动驾驶抓取已关闭')" />
           </a-tooltip>
+          <a-tooltip title="抓取后回观察位，扫描原目标位置附近 5.5cm：还在就松爪（空抓），不在了就认为可能夹住。误判时会空中松爪，可关掉此开关跳过视觉复核。">
+            <a-switch :checked="cfg.post_grasp_verify !== false" :disabled="!online" size="small"
+              checked-children="抓取视觉复核" un-checked-children="跳过复核"
+              @change="v => send({ action: 'set_config', patch: { post_grasp_verify: v } }, v ? '抓取视觉复核已开启' : '已关闭抓取视觉复核')" />
+          </a-tooltip>
+          <a-tooltip title="开着时抓起后必须人工点投放/松爪；关了就按选中的动作（inspect / A / B）自动投放。">
+            <a-switch :checked="cfg.manual_confirm_before_place !== false" :disabled="!online" size="small"
+              checked-children="投放前人工确认" un-checked-children="复核通过自动投"
+              @change="v => send({ action: 'set_config', patch: { manual_confirm_before_place: v } }, v ? '投放前需人工确认' : '复核通过后自动投放')" />
+          </a-tooltip>
         </div>
 
         <a-space wrap style="margin-top:8px">

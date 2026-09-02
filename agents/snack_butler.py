@@ -98,9 +98,14 @@ DEFAULT_CONFIG = {
     "lift_h": 0.10,            # 抓起来先抬到多高再搬运
     "safe_z": 0.08,            # 安全高度：从观察位移动到目标前，先移到这个高度避免撞机身
     # 合爪并抬起后回观察位复看原目标。仍在原处说明很可能空抓：不去投放，保留现场。
+    # 复核会误判：观察位看不到夹爪，桌面残留阴影/相似物都会被当成「目标还在」。
+    # 误判的代价是抬起高度松爪、夹着的东西掉下去，所以这一项允许关掉。
     "post_grasp_verify": True,
     "post_grasp_verify_frames": 3,
     "post_grasp_verify_radius_m": 0.055,
+    # 投放前人工确认。开着（默认）时抓起后一律停在 HOLDING 等人点投放/松爪，
+    # 复核结论只作为提示，绝不自己松爪；关掉才按 outcome 自动投放。
+    "manual_confirm_before_place": True,
     # 自动驾驶抓取：必须由页面显式开启；仅正前方、最多 15cm 的分段补位。
     "auto_drive_grasp_enabled": False,
     "auto_drive_grasp_max_m": 0.15,
@@ -901,8 +906,11 @@ class SnackButler(Node):
     def verify_grasp(self, tgt):
         """回观察位复看原抓取坐标。
 
-        机械臂没有夹爪力/电流反馈，且观察位刻意看不到夹爪；“桌上没再看到
-        目标”只能证明画面变化，不能证明夹住。因此只返回确定空抓或待人工确认。
+        机械臂没有夹爪力/电流反馈，且观察位刻意看不到夹爪；"桌上没再看到
+        目标"只能证明画面变化，不能证明夹住。返回：
+        - 'remains': 目标还在原位，大概率空抓
+        - 'absent': 目标已消失，可能夹住了（也可能掉了/飞了）
+        - 'uncertain': 跳过了复核（post_grasp_verify 关了）
         """
         if not self.cfg.get('post_grasp_verify', True):
             return 'uncertain'
@@ -919,8 +927,8 @@ class SnackButler(Node):
             self.get_logger().warning('[grasp_verify] target remains near (%.3f, %.3f): %s' %
                                       (tx, ty, [d.get('label') for d in remains]))
             return 'remains'
-        self.get_logger().warning('[grasp_verify] target absent, but no gripper force feedback; require confirmation')
-        return 'uncertain'
+        self.get_logger().info('[grasp_verify] target absent from original position')
+        return 'absent'
 
     # ---------------- 状态机：每个 yield 返回「等待秒数」 ----------------
     def start(self, gen, name=None):
@@ -1337,19 +1345,46 @@ class SnackButler(Node):
         yield from self.seq_goto_observe()
         verify = self.verify_grasp(tgt)
         if verify == 'remains':
-            self.gripper(True)  # 不确定是否夹住时松爪，避免带着物品穿越桌面上方
+            self.gripper(True)  # 疑似空抓：目标还在原位，松爪避免带着物品穿越桌面上方
             self.target = None
             self.clear_action_journal()  # 已回观察位、已松爪，属于受控失败而不是中断恢复
             return False
 
-        # 即使用户先点了 A/B，也不能把“暂未见到桌面目标”伪装成“已夹起”。
-        # 必须先目视确认，之后才允许 place_held 投放。
-        self.held_target = dict(tgt, verification='unconfirmed')
-        self.target = None
-        self.clear_action_journal()
-        self.state = 'HOLDING'
-        self.step = '桌面目标暂未见：无法证明已夹起，请目视确认后投放或松爪'
-        return True
+        # manual_confirm_before_place 开着时，抓起后必须人工确认才能投放——
+        # 即使复核显示「目标不在了」也不能证明夹住（可能掉了/飞了），即使用户点了 A/B
+        # 也不能擅自投。关掉才自动投放。
+        if cfg.get('manual_confirm_before_place', True):
+            vstr = 'confirmed' if verify == 'absent' else 'unconfirmed'
+            self.held_target = dict(tgt, verification=vstr)
+            self.target = None
+            self.clear_action_journal()
+            self.state = 'HOLDING'
+            if verify == 'absent':
+                self.step = '复核通过：桌面目标已消失，请目视确认后投放'
+            else:
+                self.step = '桌面目标暂未见：无法证明已夹起，请目视确认后投放或松爪'
+            return True
+
+        # 人工确认关了：复核通过就自动投 outcome 指定的筐，否则视为失败、不投。
+        if verify == 'absent':
+            self.held_target = dict(tgt, verification='confirmed')
+            binname = cfg['route'].get(tgt.get('label'), cfg.get('default_bin', 'A')) if outcome == 'route' else outcome
+            if outcome not in ('inspect', 'route'):
+                yield from self.seq_place(binname)
+            self.held_target = None
+            self.target = None
+            self.clear_action_journal()
+            self.state = 'IDLE'
+            self.step = '已投放' if outcome not in ('inspect', 'route') else '抓取完成，等待下一条指令'
+            return True
+        else:
+            # 复核「不确定」但人工确认关了：当失败，不松爪也不投，停在 HOLDING 等人处理
+            self.held_target = dict(tgt, verification='unconfirmed')
+            self.target = None
+            self.clear_action_journal()
+            self.state = 'HOLDING'
+            self.step = '复核不确定且自动投放已关闭，停在 HOLDING 等人工处理'
+            return True
 
     def seq_place_held(self, binname):
         if not self.held_target:
@@ -1698,7 +1733,8 @@ class SnackButler(Node):
                      'detector_mode', 'yolo_weights', 'yolo_size', 'yolo_conf',
                      'home_deg', 'x_offset_hack', 'y_offset_hack', 'z_offset_hack', 'idle_detect_hz',
                      'auto_drive_grasp_enabled', 'auto_drive_grasp_max_m', 'auto_drive_grasp_step_m',
-                     'auto_drive_grasp_speed', 'auto_drive_grasp_min_v')},
+                     'auto_drive_grasp_speed', 'auto_drive_grasp_min_v',
+                     'post_grasp_verify', 'manual_confirm_before_place')},
             'stats': dict(self.stats, uptime=round(time.time() - self.stats['started'])),
         }, ensure_ascii=False)
         self.pub_state.publish(m)
