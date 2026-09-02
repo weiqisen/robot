@@ -38,7 +38,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import Image, CameraInfo, JointState, CompressedImage
 from std_msgs.msg import String, UInt16
 
-from arm_kinematics import (ik_best, ik_auto_pitch, fk, fk_wrist, ServoMap, TOOL_LEN,
+from arm_kinematics import (ik_best, fk, fk_wrist, ServoMap, TOOL_LEN,
                             SERVO_IDS, GRIPPER_ID, JOINT_NAMES, clamp)
 import vision_geometry as vg
 from snack_detector import UniversalDetector, COLOR_BGR, detect_depth_objects, locate as locate_3d
@@ -68,6 +68,10 @@ ACTION_JOURNAL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '
 PROFILE_KEYS = ('table_z', 'x_offset_hack', 'y_offset_hack', 'z_offset_hack',
                 'assume_object_h', 'grasp_z_offset', 'approach_h', 'lift_h',
                 'gripper_open', 'gripper_close')
+
+# 抓取工具轴始终垂直桌面。肩/肘可以伸展，joint4 必须补偿它们的角度；
+# 无法补偿即为垂直夹爪不可达，绝不可偷偷改成斜爪下探。
+GRASP_PITCH = math.pi
 
 DEFAULT_CONFIG = {
     # --- 姿态 ---
@@ -813,9 +817,10 @@ class SnackButler(Node):
             d['depth_src'] = how
             d['reachable'] = False
             if p is not None and self.in_workspace(p):
-                q, pitch = ik_auto_pitch(p[0], p[1], self.grasp_z(p[2]), tool=self.cfg['tool_len'])
+                q = ik_best(p[0], p[1], self.grasp_z(p[2]), GRASP_PITCH,
+                            tool=self.cfg['tool_len'])
                 d['reachable'] = q is not None
-                d['pitch_deg'] = None if pitch is None else round(math.degrees(pitch), 1)
+                d['pitch_deg'] = 180.0 if q is not None else None
             d['extrinsic'] = src
             out.append(d)
         self.detections = out
@@ -1010,11 +1015,11 @@ class SnackButler(Node):
             return None, (f'点击处 {det["xyz"]} 不在工作区内 '
                           f'(x{self.cfg["workspace_rel"]["x"]} y{self.cfg["workspace_rel"]["y"]} '
                           f'离桌面 z{self.cfg["workspace_rel"]["z"]})')
-        q, pitch = ik_auto_pitch(p[0], p[1], self.grasp_z(p[2]), tool=self.cfg['tool_len'])
+        q = ik_best(p[0], p[1], self.grasp_z(p[2]), GRASP_PITCH, tool=self.cfg['tool_len'])
         if q is None:
-            return None, f'点击处 {det["xyz"]} IK 无解'
+            return None, f'点击处 {det["xyz"]} 垂直夹爪 IK 无解（请把物品或车身移近）'
         det['reachable'] = True
-        det['pitch_deg'] = round(math.degrees(pitch), 1)
+        det['pitch_deg'] = 180.0
         return det, ''
 
     def analyze_grasp(self, tgt):
@@ -1034,15 +1039,15 @@ class SnackButler(Node):
                 p = [x0 + dx, y0 + dy, z0]
                 if not self.in_workspace(p):
                     continue
-                q, pitch = ik_auto_pitch(p[0], p[1], self.grasp_z(p[2]), wrist_roll=roll,
-                                         tool=cfg['tool_len'])
+                q = ik_best(p[0], p[1], self.grasp_z(p[2]), GRASP_PITCH, seed=self.q_cmd,
+                            wrist_roll=roll, tool=cfg['tool_len'])
                 if q is None:
                     continue
                 # 垂直下探最抗标定误差；同时避开关节限位附近的解。
                 limit_margin = min(2.09 - abs(a) for a in q)
-                score = abs(pitch - math.pi) * 1.8 + max(0.0, .22 - limit_margin) * 5.0
+                score = max(0.0, .22 - limit_margin) * 5.0
                 samples.append({'dx_mm': round(dx * 1000), 'dy_mm': round(dy * 1000),
-                                'pitch_deg': round(math.degrees(pitch), 1),
+                                'pitch_deg': 180.0,
                                 'limit_margin_deg': round(math.degrees(limit_margin), 1),
                                 'score': round(score, 3), 'q_deg': [round(math.degrees(a), 1) for a in q]})
         if not samples:
@@ -1050,7 +1055,7 @@ class SnackButler(Node):
         samples.sort(key=lambda s: (s['score'], abs(s['dx_mm']) + abs(s['dy_mm'])))
         best = samples[0]
         center = next((s for s in samples if s['dx_mm'] == 0 and s['dy_mm'] == 0), None)
-        stable = len(samples) >= 7 and best['limit_margin_deg'] >= 14 and abs(best['pitch_deg'] - 180) <= 20
+        stable = len(samples) >= 7 and best['limit_margin_deg'] >= 14
         return {'target_xyz': [round(x0, 4), round(y0, 4), round(z0, 4)],
                 'stable': stable, 'reachable_samples': len(samples), 'best': best, 'center': center,
                 'samples': samples, 'note': ('姿态稳定，可先空跑验证' if stable else
@@ -1145,25 +1150,25 @@ class SnackButler(Node):
         roll = clamp(math.radians(-tgt.get('angle_px', 0.0)), -1.5, 1.5)
 
         tool = cfg['tool_len']
-        q_grasp, pitch = ik_auto_pitch(x, y, gz, wrist_roll=roll, tool=tool)
+        pitch = GRASP_PITCH
+        q_grasp = ik_best(x, y, gz, pitch, seed=self.q_cmd, wrist_roll=roll, tool=tool)
         if q_grasp is None:
             self.state = 'IDLE'
             self.step = '够不着'
-            self.last_error = f'IK 无解 ({x:.3f},{y:.3f},{gz:.3f})'
+            self.last_error = f'垂直夹爪 IK 无解 ({x:.3f},{y:.3f},{gz:.3f})；请移近目标或车身'
             self.stats['failed'] += 1
             self.auto = False
             return False
-        q_pre = (ik_best(x, y, gz + cfg['approach_h'], pitch, seed=q_grasp, wrist_roll=roll, tool=tool)
-                 or ik_auto_pitch(x, y, gz + cfg['approach_h'], seed=q_grasp,
-                                  wrist_roll=roll, tool=tool)[0]
-                 or q_grasp)          # 悬停点算不出来就直接从当前位姿下探
+        q_pre = (ik_best(x, y, gz + cfg['approach_h'], pitch, seed=q_grasp,
+                         wrist_roll=roll, tool=tool)
+                 or q_grasp)          # 悬停点算不出来就保持垂直夹爪下探
         q_lift = (ik_best(x, y, gz + cfg['lift_h'], pitch, seed=q_grasp, wrist_roll=roll, tool=tool)
                   or q_pre)
 
         # 安全中间点：从观察位先移到目标 XY + 安全高度，避免大臂下探时撞到机身
         # 只保留 joint1 转向目标，joint2~4 保持在一个安全的抬起姿态
         safe_z = cfg.get('safe_z', 0.08)
-        q_safe, _ = ik_auto_pitch(x, y, safe_z, wrist_roll=0, tool=tool)
+        q_safe = ik_best(x, y, safe_z, pitch, seed=q_pre, wrist_roll=0, tool=tool)
 
         self.journal_begin(tgt, q_safe, q_lift)
         self.state = 'GRASP'
@@ -1229,7 +1234,8 @@ class SnackButler(Node):
         self.state = 'PLACE'
         self.step = f'搬运到 {b.get("label", binname)}'
         self.journal_phase('place_over')
-        q_over, pitch = ik_auto_pitch(bx, by, bz + 0.05, tool=cfg['tool_len'])
+        pitch = GRASP_PITCH
+        q_over = ik_best(bx, by, bz + 0.05, pitch, seed=self.q_cmd, tool=cfg['tool_len'])
         q_drop = (ik_best(bx, by, bz, pitch, seed=q_over, tool=cfg['tool_len'])
                   if q_over else None)
         if q_over is None:
@@ -1490,8 +1496,8 @@ class SnackButler(Node):
                     self.step = '抓取诊断失败'
             elif a == 'goto':
                 self.auto = False
-                q, _ = ik_auto_pitch(float(c['x']), float(c['y']), float(c['z']),
-                                     tool=self.cfg['tool_len'])
+                q = ik_best(float(c['x']), float(c['y']), float(c['z']), GRASP_PITCH,
+                            seed=self.q_cmd, tool=self.cfg['tool_len'])
                 if q:
                     self.send_arm(q, self.cfg['move_time'])
                     self.step = f"手动到位 ({c['x']},{c['y']},{c['z']})"
