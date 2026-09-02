@@ -3,6 +3,7 @@
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import cv2
+import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
@@ -20,7 +21,7 @@ class Bridge(Node):
 
     def on_image(self, msg):
         try:
-            img = __import__('numpy').frombuffer(msg.data, dtype=__import__('numpy').uint8).reshape(msg.height, msg.width, 3)
+            img = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, 3)
             ok, data = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 75])
             if ok:
                 with self.lock: self.jpeg = data.tobytes()
