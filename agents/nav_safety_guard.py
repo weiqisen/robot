@@ -32,8 +32,8 @@ class NavSafetyGuard(Node):
         self.last_scan = 0.0
         self.last_cmd = 0.0
         self.scan = None
-        self.nav_cmd = Twist(); self.manual_cmd = Twist()
-        self.last_nav_cmd = 0.0; self.last_manual_cmd = 0.0
+        self.nav_cmd = Twist(); self.manual_cmd = Twist(); self.grasp_cmd = Twist()
+        self.last_nav_cmd = 0.0; self.last_manual_cmd = 0.0; self.last_grasp_cmd = 0.0
         self.source = None
         self.zero_ticks = 0
         self.last_legacy_cmd = 0.0
@@ -44,6 +44,8 @@ class NavSafetyGuard(Node):
         self.create_subscription(LaserScan, '/scan', self.on_scan, qos_profile_sensor_data)
         self.create_subscription(Twist, '/nav_cmd_vel', self.on_cmd, 10)
         self.create_subscription(Twist, '/manual_cmd_vel', self.on_manual_cmd, 10)
+        # 视觉抓取的自动补位是独立控制源，限为只许低速直行。
+        self.create_subscription(Twist, '/grasp_cmd_vel', self.on_grasp_cmd, 10)
         self.create_subscription(Twist, '/cmd_vel', self.on_legacy_cmd, 10)
         self.create_subscription(String, '/nav_safety/cmd', self.on_control, 10)
         self.create_subscription(String, '/snack_butler/state', self.on_vision, 10)
@@ -105,6 +107,10 @@ class NavSafetyGuard(Node):
         self.manual_cmd = msg
         self.last_manual_cmd = time.monotonic()
 
+    def on_grasp_cmd(self, msg):
+        self.grasp_cmd = msg
+        self.last_grasp_cmd = time.monotonic()
+
     def on_legacy_cmd(self, msg):
         # 厂商程序可能仍直接订阅 /cmd_vel；本节点无法阻止同一消息被它收到，
         # 只能尽快锁定并向受控底盘入口连续补零。真机调试前仍须核对订阅关系。
@@ -132,7 +138,7 @@ class NavSafetyGuard(Node):
         if action == 'arm':
             if self.legacy_active():
                 self.armed, self.source, self.reason = False, None, '拒绝解锁：旧 /cmd_vel 仍有非零指令'
-            elif source not in ('nav', 'manual'):
+            elif source not in ('nav', 'manual', 'grasp'):
                 self.armed, self.source, self.reason = False, None, '拒绝解锁：控制源无效'
             elif self.scan_fresh():
                 self.armed, self.source, self.reason = True, source, '%s 驱动已解锁' % source
@@ -177,6 +183,7 @@ class NavSafetyGuard(Node):
             return None, '雷达数据中断，已自动锁定'
         if self.source == 'nav': cmd, stamp = self.nav_cmd, self.last_nav_cmd
         elif self.source == 'manual': cmd, stamp = self.manual_cmd, self.last_manual_cmd
+        elif self.source == 'grasp': cmd, stamp = self.grasp_cmd, self.last_grasp_cmd
         else: return None, '没有已授权的控制源'
         if now - stamp > 0.35: return None, '%s 速度指令超时' % self.source
         if (self.last_vision and now-self.last_vision < 1.0 and self.vision_guard_m is not None and
@@ -185,8 +192,12 @@ class NavSafetyGuard(Node):
             # Frontier 脱困会傻停原地；这两种动作继续由下面的全车雷达检查兜底。
             return self.make_twist(0, 0, 0), '%s，禁止继续前进' % (self.vision_guard_reason or '视觉检测到车体上方障碍')
 
+        # 自动驾驶抓取不允许横移或旋转，且速度远低于人工/导航上限。
+        req_vx = min(0.04, max(0.0, cmd.linear.x)) if self.source == 'grasp' else cmd.linear.x
+        req_vy = 0.0 if self.source == 'grasp' else cmd.linear.y
+        req_wz = 0.0 if self.source == 'grasp' else cmd.angular.z
         vx, vy, wz, reason = safe_velocity(
-            cmd.linear.x, cmd.linear.y, cmd.angular.z, self.scan,
+            req_vx, req_vy, req_wz, self.scan,
             max_vx=self.max_vx, max_vy=self.max_vy, max_wz=self.max_wz,
             stop_distance=self.stop_distance, slow_distance=self.slow_distance,
             turn_stop_distance=self.turn_stop_distance,

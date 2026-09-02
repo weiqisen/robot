@@ -182,6 +182,13 @@ function runSelected(outcome) {
   send({ action: 'pick_at', u: Math.round(d.u), v: Math.round(d.v), outcome },
     outcome === 'inspect' ? '开始抓起复核，完成后会停在观察位' : `开始抓取并投放到 ${outcome} 区`)
 }
+function autoDriveSelected(outcome = 'inspect') {
+  const d = selectedDet.value
+  if (!d) return message.warning('请先选择一个识别目标')
+  Modal.confirm({ title: '自动驾驶抓取？', okText: '开始受限补位', cancelText: '取消',
+    content: '机械臂会先收回；仅可正前方低速前进，每次 3–5cm、累计不超过 15cm。每段停车并重新识别，雷达、视觉或电压异常会立即停止。',
+    onOk: () => send({ action: 'auto_drive_pick_at', u: Math.round(d.u), v: Math.round(d.v), outcome }, '已开始自动驾驶抓取') })
+}
 function analyzeSelected() {
   const d = selectedDet.value
   if (!d) return message.warning('请先选择一个目标，再做只算不动的抓取诊断')
@@ -354,10 +361,15 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
             <b>{{ CN[selectedDet.label] || selectedDet.label }}</b>
             <code v-if="selectedDet.xyz">{{ selectedDet.xyz.map(v => v.toFixed(3)).join(', ') }}</code>
             <a-tag v-if="!selectedDet.reachable" color="default">当前够不着</a-tag>
-            <a-space v-else wrap>
+            <a-space v-if="selectedDet.reachable" wrap>
               <a-button size="small" type="primary" @click="runSelected('inspect')">抓起后观察</a-button>
               <a-button size="small" @click="runSelected('A')">抓取放 A</a-button>
               <a-button size="small" @click="runSelected('B')">抓取放 B</a-button>
+            </a-space>
+            <a-space v-else wrap>
+              <a-button size="small" type="primary" :disabled="!cfg.auto_drive_grasp_enabled"
+                @click="autoDriveSelected('inspect')">自动驾驶抓取</a-button>
+              <span style="color:var(--text-3);font-size:12px">仅正前方不可达目标；需先开启下方开关</span>
             </a-space>
           </template>
           <span v-else>已选择目标后，才会显示抓取动作。点击画面不会立即驱动机械臂。</span>
@@ -387,6 +399,11 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
             <a-switch :checked="!!cfg.dry_run" :disabled="!online" size="small"
               checked-children="空跑" un-checked-children="实动"
               @change="v => send({ action: 'set_config', patch: { dry_run: v } }, v ? '已切到空跑模式' : '已切到实际动作')" />
+          </a-tooltip>
+          <a-tooltip title="仅用于正前方够不到的物品：收臂后低速分段前进，每段重新识别。雷达、视觉、电压异常会立即停下。">
+            <a-switch :checked="!!cfg.auto_drive_grasp_enabled" :disabled="!online" size="small"
+              checked-children="自动驾驶抓取" un-checked-children="自动补位关闭"
+              @change="v => send({ action: 'set_config', patch: { auto_drive_grasp_enabled: v } }, v ? '自动驾驶抓取已开启' : '自动驾驶抓取已关闭')" />
           </a-tooltip>
         </div>
 

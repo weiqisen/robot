@@ -36,6 +36,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import Image, CameraInfo, JointState, CompressedImage
+from geometry_msgs.msg import Twist
 from std_msgs.msg import String, UInt16
 
 from arm_kinematics import (ik_best, fk, fk_wrist, ServoMap, TOOL_LEN,
@@ -100,6 +101,12 @@ DEFAULT_CONFIG = {
     "post_grasp_verify": True,
     "post_grasp_verify_frames": 3,
     "post_grasp_verify_radius_m": 0.055,
+    # 自动驾驶抓取：必须由页面显式开启；仅正前方、最多 15cm 的分段补位。
+    "auto_drive_grasp_enabled": False,
+    "auto_drive_grasp_max_m": 0.15,
+    "auto_drive_grasp_step_m": 0.04,
+    "auto_drive_grasp_speed": 0.035,
+    "auto_drive_grasp_min_v": 10.5,
 
     # --- 工作区裁剪：投影落在这个盒子外的检测结果直接丢掉（挡住误检最有效的一招）---
     # 相对桌面来写：[下界, 上界] 都是「离 table_z 多高」，换桌子高度不用重调
@@ -252,6 +259,7 @@ class SnackButler(Node):
         self._low_n = 0             # 连续低压计数
         self.low_volt = False       # 已触发低压保护（latch，回到 clear 阈值才解除）
         self._last_buzzer_silence = 0.0
+        self.nav_safety = {}
 
         self._task = None
         self._wait_until = 0.0
@@ -274,6 +282,7 @@ class SnackButler(Node):
                                      self.on_servos, 10)
         self.create_subscription(String, '/snack_butler/cmd', self.on_cmd, 10)
         self.create_subscription(UInt16, '/ros_robot_controller/battery', self.on_batt, 10)
+        self.create_subscription(String, '/nav_safety/state', self.on_nav_safety, 10)
 
         self.pub_servo = self.create_publisher(
             ServosPosition, '/ros_robot_controller/bus_servo/set_position', 10)
@@ -286,6 +295,8 @@ class SnackButler(Node):
         self.pub_state = self.create_publisher(String, '/snack_butler/state', 10)
         self.pub_img = self.create_publisher(Image, '/snack_butler/image_result', 1)
         self.pub_buzz = self.create_publisher(BuzzerState, '/ros_robot_controller/set_buzzer', 1)
+        self.pub_grasp_vel = self.create_publisher(Twist, '/grasp_cmd_vel', 10)
+        self.pub_safety_cmd = self.create_publisher(String, '/nav_safety/cmd', 10)
 
         # tf2 可选：有就用官方 tf（最准），没有就用 URDF 静态链自己算
         self.tfbuf = None
@@ -637,6 +648,12 @@ class SnackButler(Node):
                 return cv2.cvtColor(buf.reshape(msg.height, msg.width), cv2.COLOR_GRAY2BGR)
         except Exception:
             pass
+
+    def on_nav_safety(self, msg):
+        try:
+            self.nav_safety = json.loads(msg.data)
+        except Exception:
+            self.nav_safety = {}
         return None
 
     # ---------------- 运动原语 ----------------
@@ -1083,6 +1100,76 @@ class SnackButler(Node):
             yield from self.seq_goto_observe()
             self.clear_action_journal()
 
+    def target_at_any(self, uv):
+        """点击自动补位时允许选择“尚不可抓”的目标，但仍要求命中识别框。"""
+        if not uv:
+            return None
+        u, v = uv
+        hit = [d for d in self.detections if d.get('xyz') and
+               d.get('u') is not None and d.get('v') is not None and
+               ((d['u'] - u) ** 2 + (d['v'] - v) ** 2) ** .5 <= self.cfg['pick_radius_px']]
+        return min(hit, key=lambda d: (d['u'] - u) ** 2 + (d['v'] - v) ** 2) if hit else None
+
+    def drive_grasp_forward(self, distance):
+        """安全闸门授权下的单段低速直行；绝不直发 controller/cmd_vel。"""
+        safety = self.nav_safety
+        if (not safety.get('scan_ready') or safety.get('legacy_active') or
+                safety.get('vision_guard_m') is not None and safety['vision_guard_m'] < .50):
+            return False, '雷达/视觉安全检查未通过'
+        if self.batt_v is None or self.batt_v < self.cfg['auto_drive_grasp_min_v']:
+            return False, '电池不足或无遥测，拒绝自动补位'
+        self.pub_safety_cmd.publish(String(data=json.dumps({'action': 'arm', 'source': 'grasp'})))
+        yield .5
+        if not (self.nav_safety.get('armed') and self.nav_safety.get('source') == 'grasp'):
+            return False, '安全闸门拒绝自动补位：' + str(self.nav_safety.get('reason', '无状态'))
+        speed = min(.04, max(.02, float(self.cfg['auto_drive_grasp_speed'])))
+        deadline = time.monotonic() + distance / speed
+        while time.monotonic() < deadline:
+            if not self.nav_safety.get('armed') or self.nav_safety.get('source') != 'grasp':
+                self.pub_grasp_vel.publish(Twist())
+                self.pub_safety_cmd.publish(String(data=json.dumps({'action': 'disarm'})))
+                return False, '安全闸门中途锁定：' + str(self.nav_safety.get('reason', ''))
+            cmd = Twist(); cmd.linear.x = speed; self.pub_grasp_vel.publish(cmd)
+            yield .05
+        self.pub_grasp_vel.publish(Twist())
+        self.pub_safety_cmd.publish(String(data=json.dumps({'action': 'disarm'})))
+        yield .3
+        return True, ''
+
+    def seq_auto_drive_pick(self, uv, outcome='inspect'):
+        """收臂、低速补位、重新观察；每段均重新识别与垂直 IK，不沿用旧坐标。"""
+        if not self.cfg.get('auto_drive_grasp_enabled'):
+            self.state, self.step = 'IDLE', '自动驾驶抓取未开启'
+            self.last_error = '请先在页面显式开启“自动驾驶抓取”开关'
+            return
+        moved = 0.0; max_m = min(.15, max(.03, float(self.cfg['auto_drive_grasp_max_m'])))
+        while moved < max_m:
+            yield from self.seq_detect()
+            tgt = self.target_at_any(uv)
+            if not tgt:
+                self.state, self.step = 'IDLE', '自动补位停止：目标未稳定识别'
+                return
+            self.target = tgt
+            x, y, z = tgt['xyz']
+            if abs(y) > .06 or x < .20:
+                self.state, self.step = 'IDLE', '自动补位拒绝：目标不在正前方安全走廊'
+                self.last_error = '仅支持正前方、横向偏差 ≤ 6cm 的目标'
+                return
+            if ik_best(x, y, self.grasp_z(z), GRASP_PITCH, tool=self.cfg['tool_len']):
+                yield from self.seq_grasp(tgt, outcome=outcome)
+                return
+            step = min(float(self.cfg['auto_drive_grasp_step_m']), max_m - moved,
+                       max(.02, x - .245))
+            self.step = '自动补位：收臂，准备前进 %.0f mm' % (step * 1000)
+            yield from self.seq_home()
+            ok, why = yield from self.drive_grasp_forward(step)
+            if not ok:
+                self.state, self.step, self.last_error = 'IDLE', '自动补位已安全停止', why
+                return
+            moved += step
+        self.state, self.step = 'IDLE', '自动补位到达上限，仍无垂直抓取解'
+        self.last_error = '累计前进 %.0f mm 后仍不可达，请人工调整车身' % (moved * 1000)
+
     def seq_recover(self):
         """只在用户确认后执行：先抬到已记录的安全高度，再收臂。"""
         journal = self.recovery_journal or {}
@@ -1414,6 +1501,10 @@ class SnackButler(Node):
                 self.auto = False
                 outcome = c.get('outcome', 'inspect')
                 self.start(self.seq_pick(uv=(float(c['u']), float(c['v'])), outcome=outcome))
+            elif a == 'auto_drive_pick_at':
+                self.auto = False
+                outcome = c.get('outcome', 'inspect')
+                self.start(self.seq_auto_drive_pick((float(c['u']), float(c['v'])), outcome=outcome), 'AUTO_DRIVE')
             elif a == 'place_held':
                 self.auto = False
                 self.start(self.seq_place_held(str(c.get('bin') or 'A')))
@@ -1561,7 +1652,9 @@ class SnackButler(Node):
                      'low_volt_buzzer_enabled', 'low_volt_buzzer_threshold',
                      'observe_deg', 'dry_run', 'min_area_px', 'require_calibration',
                      'detector_mode', 'yolo_weights', 'yolo_size', 'yolo_conf',
-                     'home_deg', 'x_offset_hack', 'y_offset_hack', 'z_offset_hack', 'idle_detect_hz')},
+                     'home_deg', 'x_offset_hack', 'y_offset_hack', 'z_offset_hack', 'idle_detect_hz',
+                     'auto_drive_grasp_enabled', 'auto_drive_grasp_max_m', 'auto_drive_grasp_step_m',
+                     'auto_drive_grasp_speed', 'auto_drive_grasp_min_v')},
             'stats': dict(self.stats, uptime=round(time.time() - self.stats['started'])),
         }, ensure_ascii=False)
         self.pub_state.publish(m)
