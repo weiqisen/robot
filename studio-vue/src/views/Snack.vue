@@ -368,8 +368,8 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
             <a-tag :color="sb.held_target.verification === 'unconfirmed' ? 'orange' : 'gold'">
               {{ sb.held_target.verification === 'unconfirmed' ? '待确认：' : '已夹起：' }}{{ CN[sb.held_target.label] || sb.held_target.label }}</a-tag>
             <span>{{ sb.held_target.verification === 'unconfirmed' ? '请目视确认后再投放：' : '复核已通过，请决定投放位置：' }}</span>
-            <a-button size="small" type="primary" @click="placeHeld('A')">确认夹起后放 A</a-button>
-            <a-button size="small" @click="placeHeld('B')">确认夹起后放 B</a-button>
+            <a-button size="small" type="primary" @click="placeHeld('A')">确认夹起后放左侧</a-button>
+            <a-button size="small" @click="placeHeld('B')">确认夹起后放右侧</a-button>
             <a-button size="small" danger @click="send({ action: 'gripper', open: true }, '已松爪')">原地松爪</a-button>
           </template>
           <template v-else-if="selectedDet">
@@ -379,8 +379,8 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
             <a-tag v-if="!selectedDet.reachable" color="default">当前够不着</a-tag>
             <a-space v-if="selectedDet.reachable" wrap>
               <a-button size="small" type="primary" @click="runSelected('inspect')">抓起后观察</a-button>
-              <a-button size="small" @click="runSelected('A')">抓取放 A</a-button>
-              <a-button size="small" @click="runSelected('B')">抓取放 B</a-button>
+              <a-button size="small" @click="runSelected('A')">抓取放左侧</a-button>
+              <a-button size="small" @click="runSelected('B')">抓取放右侧</a-button>
             </a-space>
             <a-space v-else wrap>
               <a-button size="small" type="primary" :disabled="!cfg.auto_drive_grasp_enabled"
@@ -478,7 +478,7 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
       <a-card size="small" title="自然语言指令" style="margin-top:16px">
         <template #extra><span style="color:var(--text-3);font-size:13px">llm_agent :8092</span></template>
         <a-input-search v-model:value="nl" :loading="nlBusy" enter-button="发送" allow-clear
-          placeholder="例如：把红色的目标放到 A 区；桌上还有什么？；先别动" @search="askLLM" />
+          placeholder="例如：把红色的目标放到左侧；桌上还有什么？；先别动" @search="askLLM" />
         <div v-if="nlLog.length" class="chat">
           <div v-for="(m, i) in nlLog" :key="i" :class="['msg', m.role]">
             <b>{{ m.role === 'user' ? '我' : m.role === 'err' ? '×' : 'AI' }}</b>
@@ -621,10 +621,10 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
             清除</a-button>
           <a-button size="small" :disabled="!online" @click="send({ action: 'calibrate' }, '开始标定，别挡着机械臂')">
             自动标定舵机</a-button>
-          <a-button size="small" :disabled="!online" @click="send({ action: 'teach_bin', name: 'A' }, '当前位置记为 A 区')">
-            当前位置记为 A 区</a-button>
-          <a-button size="small" :disabled="!online" @click="send({ action: 'teach_bin', name: 'B' }, '当前位置记为 B 区')">
-            记为 B 区</a-button>
+          <a-button size="small" :disabled="!online" @click="send({ action: 'teach_bin', name: 'A' }, '当前位置记为左侧')">
+            当前位置记为左侧</a-button>
+          <a-button size="small" :disabled="!online" @click="send({ action: 'teach_bin', name: 'B' }, '当前位置记为右侧')">
+            记为右侧</a-button>
         </a-space>
         <div v-if="sb?.servo_map" class="mono">
           方向 {{ JSON.stringify(sb.servo_map.dirs) }}　零位 {{ sb.servo_map.centers.map(c => Math.round(c)).join(', ') }}

@@ -74,6 +74,8 @@ PROFILE_KEYS = ('table_z', 'x_offset_hack', 'y_offset_hack', 'z_offset_hack',
 # 无法补偿即为垂直夹爪不可达，绝不可偷偷改成斜爪下探。
 GRASP_PITCH = math.pi
 
+BIN_LABELS = {'A': '左侧', 'B': '右侧'}
+
 DEFAULT_CONFIG = {
     # --- 姿态 ---
     # 观察位：搜索目标 = 「机械臂够得到 ∧ 相机看得见 ∧ 没被自己底盘挡住」的地面点最多。
@@ -126,8 +128,8 @@ DEFAULT_CONFIG = {
 
     # --- 投放区（base_link 坐标）---
     "bins": {
-        "A": {"xyz": [0.20, 0.155, -0.03], "label": "零食筐 A"},
-        "B": {"xyz": [0.20, -0.155, -0.03], "label": "零食筐 B"}
+        "A": {"xyz": [0.20, 0.155, -0.03], "label": "左侧"},
+        "B": {"xyz": [0.20, -0.155, -0.03], "label": "右侧"}
     },
     "route": {"red": "A", "yellow": "A", "orange": "A", "green": "B", "blue": "B", "purple": "B"},
     "default_bin": "A",
@@ -1605,7 +1607,7 @@ class SnackButler(Node):
                 p = fk(self.current_q(), tool=self.cfg['tool_len'])[:3]
                 name = c.get('name', 'A')
                 self.cfg['bins'].setdefault(name, {})['xyz'] = [round(v, 4) for v in p]
-                self.cfg['bins'][name].setdefault('label', f'零食筐 {name}')
+                self.cfg['bins'][name].setdefault('label', BIN_LABELS.get(name, name))
                 self.save_config()
                 self.step = f'投放区 {name} 已记为 ({p[0]:.3f},{p[1]:.3f},{p[2]:.3f})'
             elif a == 'set_config':
