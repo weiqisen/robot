@@ -450,7 +450,7 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
         <div class="stage" @click="onPick">
           <img ref="imgEl" :src="src" @error="onImgError" />
           <canvas ref="canvasEl" class="overlay-canvas" />
-          <div class="hint">{{ probeMode ? '只算不抓：点一下看它算出来的坐标' : '点画面或列表选择目标；选择动作后才会抓取' }}</div>
+          <div class="hint">{{ probeMode ? '只算不抓：点一下看它算出来的坐标' : `点画面选择目标 · 当前识别到 ${dets.length} 个` }}</div>
         </div>
 
         <div class="target-workbench">
