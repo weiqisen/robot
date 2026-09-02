@@ -211,6 +211,22 @@ const selectedDet = computed(() => selected.value == null ? null : detRows.value
 const recording = computed(() => !!sb.value?.recording?.active)
 const recordFile = computed(() => sb.value?.recording?.file || '')
 const recordSecs = computed(() => sb.value?.recording?.seconds || 0)
+// 投放区名字统一从节点配置取，别在前端再写一份「A/B」
+const binLabel = k => cfg.value.bins?.[k]?.label || k
+
+// ---- 录像列表：webctl 的 /api/recordings（和 rosbridge 无关，节点没起也能看历史）----
+const recordings = ref([])
+async function loadRecordings() {
+  try {
+    const r = await fetch(`http://${HOST}:8000/api/recordings`)
+    recordings.value = (await r.json()).files || []
+  } catch (e) {
+    message.error('读取录像列表失败：' + e.message)
+  }
+}
+// 录制刚停下时自动刷一次，省得手点
+watch(recording, (now, before) => { if (before && !now) setTimeout(loadRecordings, 600) })
+loadRecordings()
 
 watch([dets, cfg, showOffsetPreview, selected, () => imgEl.value?.naturalWidth], () => {
   requestAnimationFrame(drawOffsetPreview)
@@ -770,9 +786,32 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
         </a-descriptions>
         <div class="tip" style="margin-top:10px">
           分拣规则：<a-tag v-for="(v, k) in (cfg.route || {})" :key="k">
-            <span class="dot" :style="{ background: CHIP[k] }" />{{ CN[k] || k }} → {{ v }}</a-tag>
+            <span class="dot" :style="{ background: CHIP[k] }" />{{ CN[k] || k }} → {{ binLabel(v) }}</a-tag>
         </div>
       </a-card>
+        </a-collapse-panel>
+        <a-collapse-panel key="recordings" header="抓取录像">
+          <a-card size="small">
+            <template #extra>
+              <a-space>
+                <a-tag v-if="recording" color="red">录制中 {{ recordSecs.toFixed(0) }}s</a-tag>
+                <a-button size="small" @click="loadRecordings">刷新列表</a-button>
+              </a-space>
+            </template>
+            <a-list :data-source="recordings" size="small"
+              :locale="{ emptyText: '还没有录像；用画面下方的「开始录制」录一次完整流程' }">
+              <template #renderItem="{ item }">
+                <a-list-item>
+                  <a-list-item-meta :title="item.name"
+                    :description="`${(item.size / 1048576).toFixed(1)} MB · ${new Date(item.mtime * 1000).toLocaleString('zh-CN', { hour12: false })}`" />
+                  <template #actions>
+                    <a :href="item.url" target="_blank">播放</a>
+                    <a :href="item.url" :download="item.name">下载</a>
+                  </template>
+                </a-list-item>
+              </template>
+            </a-list>
+          </a-card>
         </a-collapse-panel>
       </a-collapse>
     </a-col>

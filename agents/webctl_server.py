@@ -385,6 +385,46 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(404, {'error': 'not saved yet'})
             except Exception as e:
                 return self._json(500, {'error': str(e)})
+        if path == '/api/recordings':
+            # 列出录像文件
+            try:
+                rec_dir = os.path.expanduser('~/recordings')
+                if not os.path.isdir(rec_dir):
+                    return self._json(200, {'files': []})
+                files = []
+                for fname in sorted(os.listdir(rec_dir), reverse=True):
+                    if fname.endswith('.mp4'):
+                        fpath = os.path.join(rec_dir, fname)
+                        stat = os.stat(fpath)
+                        files.append({
+                            'name': fname,
+                            'size': stat.st_size,
+                            'mtime': stat.st_mtime,
+                            'url': f'/api/recordings/{fname}'
+                        })
+                return self._json(200, {'files': files})
+            except Exception as e:
+                return self._json(500, {'error': str(e)})
+        if path.startswith('/api/recordings/'):
+            # 下载/播放单个录像
+            fname = path[len('/api/recordings/'):]
+            if '/' in fname or '..' in fname:
+                return self._json(403, {'error': 'invalid filename'})
+            fpath = os.path.expanduser(os.path.join('~/recordings', fname))
+            if not os.path.isfile(fpath):
+                return self._json(404, {'error': 'file not found'})
+            try:
+                with open(fpath, 'rb') as f:
+                    content = f.read()
+                self.send_response(200)
+                self.send_header('Content-Type', 'video/mp4')
+                self.send_header('Content-Length', len(content))
+                self.send_header('Accept-Ranges', 'bytes')
+                self.end_headers()
+                self.wfile.write(content)
+                return
+            except Exception as e:
+                return self._json(500, {'error': str(e)})
         return super().do_GET()
 
     def do_POST(self):
