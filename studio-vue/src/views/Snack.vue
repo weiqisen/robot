@@ -74,20 +74,20 @@ const showSafeZone = ref(false)       // 是否显示安全抓取区域
 // 流卡住(web_video_server 重启等)时 <img> 不报错，只是不再更新——靠采样比对发现
 useStreamWatch(() => imgEl.value, reloadVideo)
 
-// 绘制选中目标的绿色高亮框
+// 绘制选中目标的黄色高亮框
 function drawSelectionBox(ctx, scale) {
   const sel = selectedDet.value
   if (!sel || !sel.bbox) return
 
   const [x, y, w, h] = sel.bbox
-  ctx.strokeStyle = '#00ff00'
-  ctx.lineWidth = 4
+  ctx.strokeStyle = '#ffc107'  // 黄色
+  ctx.lineWidth = 5
   ctx.setLineDash([])
   ctx.strokeRect(x * scale, y * scale, w * scale, h * scale)
 
   // 四个角的加强标记
-  const cornerLen = 20 * scale
-  ctx.lineWidth = 5
+  const cornerLen = 22 * scale
+  ctx.lineWidth = 6
   // 左上
   ctx.beginPath()
   ctx.moveTo(x * scale, y * scale + cornerLen)
@@ -112,6 +112,15 @@ function drawSelectionBox(ctx, scale) {
   ctx.lineTo((x + w) * scale, (y + h) * scale)
   ctx.lineTo((x + w) * scale, (y + h) * scale - cornerLen)
   ctx.stroke()
+
+  // 在框上方显示目标名称
+  ctx.fillStyle = '#ffc107'
+  ctx.font = `bold ${16 * scale}px sans-serif`
+  ctx.shadowColor = 'rgba(0,0,0,0.9)'
+  ctx.shadowBlur = 6
+  const label = `已选：${CN[sel.label] || sel.label}`
+  ctx.fillText(label, x * scale + 5, y * scale - 8)
+  ctx.shadowBlur = 0
 }
 
 // 绘制补偿后的预览框 + 安全抓取区域
@@ -141,23 +150,35 @@ function drawOffsetPreview() {
   const ctx = canvas.getContext('2d')
   ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-  // ---- 安全抓取区域：可达的检测框画绿、不可达画红 ----
-  // 真值来自节点的 reachable（IK 已解算过），不在前端重算工作区
+  // ---- 安全抓取区域：在节点已绘制的框上标注「可夹/够不着」 ----
+  // 节点的标注图已经画了检测框，这里只加文字标注，避免重复画框导致偏移
   if (showSafeZone.value) {
     for (const d of dets.value) {
       if (!d.bbox) continue
       const [bx, by, bw, bh] = d.bbox
       const ok = !!d.reachable
-      ctx.setLineDash(ok ? [] : [5, 4])
-      ctx.strokeStyle = ok ? 'rgba(67,160,71,.95)' : 'rgba(225,75,75,.9)'
-      ctx.lineWidth = 2
-      ctx.strokeRect(bx * scale, by * scale, bw * scale, bh * scale)
-      ctx.fillStyle = ok ? 'rgba(67,160,71,.16)' : 'rgba(225,75,75,.12)'
-      ctx.fillRect(bx * scale, by * scale, bw * scale, bh * scale)
-      ctx.setLineDash([])
-      ctx.fillStyle = ok ? '#43a047' : '#e14b4b'
-      ctx.font = `bold ${12 * scale}px sans-serif`
-      ctx.fillText(ok ? '可夹' : '够不着', bx * scale + 3, by * scale - 4)
+
+      // 只在框的左上角显示状态标签
+      ctx.fillStyle = ok ? 'rgba(67,160,71,0.95)' : 'rgba(225,75,75,0.95)'
+      ctx.font = `bold ${14 * scale}px sans-serif`
+      ctx.shadowColor = 'rgba(0,0,0,0.9)'
+      ctx.shadowBlur = 4
+
+      // 带背景的标签
+      const text = ok ? '✓ 可夹' : '✗ 够不着'
+      const metrics = ctx.measureText(text)
+      const padding = 4 * scale
+      const labelX = bx * scale + 2
+      const labelY = by * scale + 16 * scale
+
+      // 背景
+      ctx.fillStyle = ok ? 'rgba(67,160,71,0.9)' : 'rgba(225,75,75,0.9)'
+      ctx.fillRect(labelX, labelY - 14 * scale, metrics.width + padding * 2, 16 * scale)
+
+      // 文字
+      ctx.fillStyle = '#fff'
+      ctx.fillText(text, labelX + padding, labelY - 2 * scale)
+      ctx.shadowBlur = 0
     }
   }
 
