@@ -8,6 +8,7 @@ URL = 'http://127.0.0.1:8082/stream'
 CHECK_INTERVAL = 10
 FAILURES_BEFORE_RESTART = 2
 RESTART_COOLDOWN = 45
+STARTUP_GRACE = 45
 
 
 def has_jpeg_frame():
@@ -25,6 +26,9 @@ def has_jpeg_frame():
 
 
 def main():
+    # source ~/.zshrc + importing ROS/OpenCV is slow on Jetson.  Do not mistake
+    # that cold start for an outage and restart the bridge before it can bind.
+    time.sleep(STARTUP_GRACE)
     failures = 0
     last_restart = 0.0
     while True:
@@ -38,6 +42,7 @@ def main():
                 subprocess.run(['/usr/bin/systemctl', 'restart', 'vision-video.service'], check=False)
                 last_restart = time.monotonic()
                 failures = 0
+                time.sleep(STARTUP_GRACE)
         time.sleep(CHECK_INTERVAL)
 
 
