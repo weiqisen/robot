@@ -47,7 +47,7 @@ from service_watchdog import ServiceWatchdog
 
 # 视频录制器
 class GraspRecorder:
-    """录制抓取流程为 MP4，主画面 + 右上角 LLM 推理小窗"""
+    """录制抓取流程为 MP4，主画面 + 右上角执行日志小窗"""
     def __init__(self, output_dir='~/recordings'):
         self.output_dir = os.path.expanduser(output_dir)
         os.makedirs(self.output_dir, exist_ok=True)
@@ -55,6 +55,8 @@ class GraspRecorder:
         self.recording = False
         self.start_time = None
         self.filename = None
+        self.log_entries = []  # [(timestamp, state, step), ...]
+        self.last_state_step = (None, None)  # 去重：只在 state/step 变化时才记一条
 
     def start(self):
         if self.recording:
@@ -64,9 +66,11 @@ class GraspRecorder:
         self.recording = True
         self.start_time = time.time()
         self.writer = None  # 延迟创建，等第一帧确定尺寸
+        self.log_entries = []
+        self.last_state_step = (None, None)
 
-    def add_frame(self, img, state, step, llm_text=None):
-        """添加一帧：img 是 BGR 图像，叠加状态信息和可选的 LLM 推理"""
+    def add_frame(self, img, state, step):
+        """添加一帧：img 是 BGR 图像，叠加状态信息和执行日志"""
         if not self.recording:
             return
 
@@ -77,43 +81,55 @@ class GraspRecorder:
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
             self.writer = cv2.VideoWriter(self.filename, fourcc, 10.0, (w, h))
 
+        # state/step 变化时记一条日志
+        if (state, step) != self.last_state_step and step:
+            elapsed = time.time() - self.start_time
+            self.log_entries.append((elapsed, state, step))
+            self.last_state_step = (state, step)
+            # 只保留最近 8 条
+            if len(self.log_entries) > 8:
+                self.log_entries.pop(0)
+
         frame = img.copy()
 
-        # 右上角 LLM 推理小窗（如果有）
-        if llm_text:
-            box_w, box_h = 320, 180
-            box_x, box_y = w - box_w - 10, 10
+        # 右上角执行日志小窗（缩小尺寸，避免挡住画面）
+        if self.log_entries:
+            box_w, box_h = 280, 140
+            box_x, box_y = w - box_w - 10, 30
             overlay = frame.copy()
             cv2.rectangle(overlay, (box_x, box_y), (box_x + box_w, box_y + box_h),
-                         (30, 30, 30), -1)
-            cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
+                         (20, 20, 20), -1)
+            cv2.addWeighted(overlay, 0.75, frame, 0.25, 0, frame)
             cv2.rectangle(frame, (box_x, box_y), (box_x + box_w, box_y + box_h),
-                         (100, 200, 100), 2)
+                         (80, 180, 80), 1)
 
-            # 绘制 LLM 文本（支持中文）
+            # 绘制执行日志（支持中文）
             try:
                 from PIL import Image, ImageDraw, ImageFont
                 pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
                 draw = ImageDraw.Draw(pil_img)
                 try:
-                    font = ImageFont.truetype('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc', 14)
+                    font = ImageFont.truetype('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc', 11)
                 except:
                     font = ImageFont.load_default()
 
-                lines = llm_text.split('\n')[:8]  # 最多 8 行
-                y_offset = box_y + 8
-                for line in lines:
-                    draw.text((box_x + 8, y_offset), line[:35], font=font, fill=(200, 255, 200))
-                    y_offset += 20
+                y_offset = box_y + 6
+                for elapsed, st, step_text in self.log_entries[-6:]:  # 最多 6 条
+                    time_str = f'{int(elapsed//60):02d}:{int(elapsed%60):02d}'
+                    line = f'{time_str} {st[:4]} {step_text[:25]}'
+                    draw.text((box_x + 6, y_offset), line, font=font, fill=(180, 255, 180))
+                    y_offset += 22
 
                 frame = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
             except Exception as e:
                 # PIL 不可用，回退到纯 ASCII
-                y_offset = box_y + 18
-                for line in llm_text.split('\n')[:8]:
-                    cv2.putText(frame, ascii_only(line[:35]), (box_x + 8, y_offset),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 255, 200), 1, cv2.LINE_AA)
-                    y_offset += 18
+                y_offset = box_y + 16
+                for elapsed, st, step_text in self.log_entries[-6:]:
+                    time_str = f'{int(elapsed//60):02d}:{int(elapsed%60):02d}'
+                    line = f'{time_str} {ascii_only(st[:4])} {ascii_only(step_text[:20])}'
+                    cv2.putText(frame, line, (box_x + 6, y_offset),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 255, 180), 1, cv2.LINE_AA)
+                    y_offset += 20
 
         # 底部状态栏（时间戳）
         elapsed = time.time() - self.start_time
@@ -1889,7 +1905,7 @@ class SnackButler(Node):
         # 录像走同一张已标注的图：网页看到什么，录下来就是什么
         if self.recorder.recording:
             try:
-                self.recorder.add_frame(img, self.state, self.step, self.llm_note or None)
+                self.recorder.add_frame(img, self.state, self.step)
             except Exception as e:
                 self.get_logger().warn('录像写帧失败，已停止录制：%s' % e)
                 self.recorder.stop()
