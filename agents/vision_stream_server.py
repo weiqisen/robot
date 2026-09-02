@@ -21,6 +21,7 @@ class Bridge(Node):
         super().__init__('vision_stream_server')
         self.lock, self.jpeg = threading.Lock(), None
         self.frames = 0
+        self.seen = 0
         # snack_butler publishes reliably; match it exactly.  Some DDS versions
         # on the Jetson fail to deliver a reliable publisher to a best-effort
         # Python subscriber even though the profile is nominally compatible.
@@ -31,6 +32,9 @@ class Bridge(Node):
 
     def on_image(self, msg):
         try:
+            self.seen += 1
+            if self.seen == 1:
+                self.get_logger().info('received first image (%dx%d %s)' % (msg.width, msg.height, msg.encoding))
             img = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, 3)
             ok, data = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 75])
             if ok:
