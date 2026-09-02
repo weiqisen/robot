@@ -68,6 +68,34 @@ SERVICE_UNITS = {
 }
 SERVICE_RESTART_PATH = re.compile(r'^/api/services/([a-z0-9-]+)/restart$')
 
+
+def vision_health():
+    """抓取图像链路的人工可读自检；只读，不触发任何重启。"""
+    def active(unit):
+        try:
+            return subprocess.run(['systemctl', 'is-active', unit], capture_output=True,
+                                  text=True, timeout=2).stdout.strip() == 'active'
+        except Exception:
+            return False
+    out = {'checked_at': time.time(), 'checks': []}
+    for unit, label in (('start_app_node.service', '相机 / ROS 主节点'),
+                        ('snack-butler.service', '视觉抓取 / 标注发布')):
+        ok = active(unit)
+        out['checks'].append({'id': unit, 'label': label, 'ok': ok,
+                              'detail': '运行中' if ok else '服务未运行'})
+    try:
+        r = urllib.request.urlopen(
+            'http://127.0.0.1:8080/stream?topic=/snack_butler/image_result&type=mjpeg', timeout=5)
+        data = r.read(4096)
+        ok = b'\xff\xd8' in data
+        out['checks'].append({'id': 'mjpeg', 'label': '标注图 → 视频服务', 'ok': ok,
+                              'detail': '已收到 JPEG 帧' if ok else 'HTTP 已连接但未收到 JPEG 帧'})
+    except Exception as e:
+        out['checks'].append({'id': 'mjpeg', 'label': '标注图 → 视频服务', 'ok': False,
+                              'detail': '视频流请求失败：' + type(e).__name__})
+    out['ok'] = all(c['ok'] for c in out['checks'])
+    return out
+
 # 动作组。幻尔桌面端 arm_pc 的 .d6a 其实就是 SQLite：
 #   ActionGroup(Index INTEGER PK, Time INT, Servo1..Servo6 INT)
 #   Servo1..5 -> 舵机 ID 1..5，Servo6 -> ID 10(夹爪)
@@ -322,6 +350,8 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split('?', 1)[0]
+        if path == '/api/vision/health':
+            return self._json(200, vision_health())
         if path == '/api/gpu_bench':
             try:
                 with open(GB_STATUS, encoding='utf-8') as f:
