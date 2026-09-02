@@ -506,13 +506,17 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
           </a-tooltip>
         </div>
 
-        <a-space wrap style="margin-top:8px">
-          <span style="color:var(--text-3);font-size:13px">按颜色抓：</span>
-          <a-button v-for="c in (cfg.enabled_colors || [])" :key="c" size="small" :disabled="!online"
-            @click="send({ action: 'pick', label: c }, `抓取${CN[c] || c}色目标`)">
-            <span class="dot" :style="{ background: CHIP[c] }" />{{ CN[c] || c }}
-          </a-button>
-        </a-space>
+        <a-divider style="margin:16px 0">快捷抓取</a-divider>
+
+        <div class="quick-pick-section">
+          <div class="section-label">按颜色抓取</div>
+          <div class="pick-grid">
+            <a-button v-for="c in (cfg.enabled_colors || [])" :key="c" :disabled="!online"
+              @click="send({ action: 'pick', label: c }, `抓取${CN[c] || c}色目标`)">
+              <span class="dot" :style="{ background: CHIP[c] }" />{{ CN[c] || c }}
+            </a-button>
+          </div>
+        </div>
       </a-card>
 
       <a-card size="small" title="已识别目标 · 点击选择" style="margin-top:16px">
@@ -868,6 +872,32 @@ code { font-family: ui-monospace, monospace; font-size: 13px; }
 }
 .status-desc :deep(.ant-descriptions-item-content) {
   min-width: 0;
+}
+
+/* 快捷抓取区域 */
+.quick-pick-section {
+  margin-top: 12px;
+}
+.section-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin-bottom: 10px;
+}
+.pick-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 10px;
+}
+.pick-grid .ant-btn {
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 500;
+}
+.status-desc :deep(.ant-descriptions-item-content) {
   overflow-wrap: anywhere;
 }
 .status-sources { display: flex; max-width: 100%; }
