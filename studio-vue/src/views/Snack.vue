@@ -14,20 +14,6 @@ const online = computed(() => !!sb.value)
 const dets = computed(() => sb.value?.detections || [])
 const cfg = computed(() => sb.value?.cfg || {})
 const stats = computed(() => sb.value?.stats || {})
-const taskStep = computed(() => {
-  if (sb.value?.held_target) return 3
-  const state = sb.value?.state
-  if (['GRASP', 'PLACE'].includes(state)) return 2
-  return selectedDet.value ? 1 : 0
-})
-const taskItems = computed(() => [
-  { title: '选择目标', description: selectedDet.value ? (CN[selectedDet.value.label] || selectedDet.value.label) : '点击画面或列表' },
-  { title: '确认结果', description: '抓起观察 / 放入 A / 放入 B' },
-  { title: '执行与复核', description: sb.value?.step || '等待执行' },
-  { title: '完成处置', description: sb.value?.held_target
-    ? (sb.value.held_target.verification === 'unconfirmed' ? '待目视确认后投放' : '物体已夹起，等待投放')
-    : '回观察位继续识别' },
-])
 
 const STATE_COLOR = {
   INIT: 'default', IDLE: 'default', OBSERVE: 'processing', DETECT: 'processing',
@@ -36,6 +22,36 @@ const STATE_COLOR = {
 const CHIP = { red: '#e14b4b', orange: '#ef8c2d', yellow: '#e8c020',
                green: '#43a047', blue: '#2e7ddb', purple: '#8e5bc4' }
 const CN = { red: '红', orange: '橙', yellow: '黄', green: '绿', blue: '蓝', purple: '紫' }
+const inferenceLog = ref([])
+const inferSig = computed(() => JSON.stringify({
+  state: sb.value?.state, step: sb.value?.step, error: sb.value?.error,
+  n: dets.value.length, target: sb.value?.target?.xyz, held: !!sb.value?.held_target,
+  live: sb.value?.analysis?.live,
+}))
+function inferLine() {
+  if (!online.value) return '等待视觉抓取节点连接'
+  const s = sb.value
+  if (s.error) return `安全拦截：${s.error}`
+  if (s.step) return `执行：${s.step}`
+  if (!s.has_rgb) return '视觉输入：等待 RGB 相机帧'
+  const source = s.has_depth ? 'RGB + 深度' : 'RGB + 桌面平面兜底'
+  return `视觉输入：${source}；识别到 ${dets.value.length} 个目标`
+}
+watch(inferSig, () => {
+  const text = inferLine()
+  const last = inferenceLog.value.at(-1)
+  if (!last || last.text !== text) {
+    inferenceLog.value.push({ t: new Date().toLocaleTimeString('zh-CN', { hour12: false }), text,
+      kind: sb.value?.error ? 'bad' : sb.value?.state === 'GRASP' ? 'active' : 'ok' })
+    inferenceLog.value.splice(0, Math.max(0, inferenceLog.value.length - 14))
+  }
+}, { immediate: true })
+const inferenceSummary = computed(() => {
+  const t = selectedDet.value || sb.value?.target
+  if (!t?.xyz) return '等待选择目标；系统仅展示真实视觉、IK 与安全状态。'
+  const xyz = t.xyz.map(v => Number(v).toFixed(3)).join(', ')
+  return `${CN[t.label] || t.label || '目标'} @ (${xyz}) · ${t.reachable ? '垂直夹爪 IK 可解' : '垂直夹爪暂不可达'}`
+})
 
 // ---- 视频：节点发的标注图 ----
 const stamp = ref(Date.now())
@@ -465,29 +481,22 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
       </a-card>
     </a-col>
 
-    <!-- 右：任务状态 + 高级设置 -->
+    <!-- 右：实时决策 + 高级设置 -->
     <a-col :xs="24" :xl="9">
-      <a-card size="small" title="2 · 任务工作台" class="mission-workbench">
-        <a-steps direction="vertical" size="small" :current="taskStep" :items="taskItems" />
-        <a-alert v-if="selectedDet && !sb?.held_target" type="info" show-icon style="margin-top:10px"
-          :message="`已选择：${CN[selectedDet.label] || selectedDet.label}`"
-          :description="selectedDet.reachable ? '请在左侧选择抓起观察或投放区；抓取后会自动视觉复核。' : '该目标不在当前工作区，机械臂不会执行。'" />
+      <a-card size="small" title="LLM 推理" class="inference-panel">
+        <template #extra><a-tag :color="online ? 'processing' : 'default'">实时决策</a-tag></template>
+        <div class="infer-summary">{{ inferenceSummary }}</div>
+        <div class="infer-terminal">
+          <div v-for="(line, i) in inferenceLog" :key="i" :class="['infer-line', line.kind]">
+            <time>{{ line.t }}</time><b>{{ line.kind === 'bad' ? '安全' : line.kind === 'active' ? '执行' : '视觉' }}</b><span>{{ line.text }}</span>
+          </div>
+        </div>
         <a-button v-if="selectedDet && !sb?.held_target" block size="small" style="margin-top:8px"
           @click="analyzeSelected">分析此位置 · 不动机械臂</a-button>
-        <a-alert v-if="sb?.grasp_analysis" :type="sb.grasp_analysis.stable ? 'success' : 'warning'" show-icon style="margin-top:10px"
-          :message="sb.grasp_analysis.stable ? '抓取姿态诊断：稳定' : '抓取姿态诊断：不建议直接实抓'">
-          <template #description>
-            邻域可行 {{ sb.grasp_analysis.reachable_samples }}/9；最佳下探 {{ sb.grasp_analysis.best.pitch_deg }}°；
-            关节余量 {{ sb.grasp_analysis.best.limit_margin_deg }}°；建议偏移
-            X {{ sb.grasp_analysis.best.dx_mm }} mm / Y {{ sb.grasp_analysis.best.dy_mm }} mm。
-            {{ sb.grasp_analysis.note }}
-          </template>
-        </a-alert>
-        <a-alert v-if="sb?.held_target" type="warning" show-icon style="margin-top:10px"
-          :message="sb.held_target.verification === 'unconfirmed'
-            ? '桌面目标暂未见，但没有夹爪力反馈，不能判定已夹起。'
-            : '物体已夹起，等待人工决定投放位置。'"
-          :description="sb.held_target.verification === 'unconfirmed' ? '请先目视确认物体是否在夹爪中；确认后再投放，未夹到请原地松爪。' : ''" />
+        <div v-if="sb?.grasp_analysis" class="infer-detail">
+          IK 邻域 {{ sb.grasp_analysis.reachable_samples }}/9 · 关节余量 {{ sb.grasp_analysis.best.limit_margin_deg }}° ·
+          Roll/夹爪垂直 {{ sb.grasp_analysis.best.pitch_deg }}°
+        </div>
       </a-card>
       <CudaInferenceCard style="margin:10px 0" />
       <a-card id="snack-status" size="small" title="运行与安全状态">
@@ -714,7 +723,12 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
   background:var(--surface-2); font-size:13px; color:var(--text-2); }
 .quick-control { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-top:12px;
   padding-top:10px; border-top:1px solid var(--border); }
-.mission-workbench :deep(.ant-steps-item-description) { font-size:12px; line-height:1.5; max-width:250px; }
+.inference-panel { overflow:hidden; }
+.infer-summary { padding:8px 10px; border:1px solid var(--border); border-radius:7px; background:var(--surface-2); font-size:12px; line-height:1.55; color:var(--text-2); }
+.infer-terminal { margin-top:9px; padding:8px 0; min-height:180px; max-height:250px; overflow:auto; border-radius:7px; background:#101821; font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; }
+.infer-line { display:grid; grid-template-columns:58px 34px minmax(0,1fr); gap:6px; padding:2px 9px; color:#c5d1df; }
+.infer-line time { color:#6f8295; }.infer-line b { color:#5dc3ff; font-weight:600; }.infer-line.active b { color:#ffbc5b; }.infer-line.bad b,.infer-line.bad span { color:#ff8e8e; }
+.infer-line span { overflow-wrap:anywhere; }.infer-detail { margin-top:8px; font-size:12px; line-height:1.6; color:var(--text-3); }
 .advanced-panels :deep(.ant-collapse-item) { border:1px solid var(--border); border-radius:8px!important; margin-bottom:8px; overflow:hidden; }
 .advanced-panels :deep(.ant-collapse-header) { font-weight:600; font-size:13px; background:var(--surface-2); }
 .advanced-panels :deep(.ant-collapse-content-box) { padding:8px!important; }
