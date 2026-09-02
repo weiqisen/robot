@@ -7,7 +7,7 @@ import InfoNote from '../components/InfoNote.vue'
 import { useMjpegGate } from '../composables/useMjpeg'
 import CudaInferenceCard from '../components/CudaInferenceCard.vue'
 
-const { state, actions, HOST, VIDEO_PORT } = useRos()
+const { state, actions, HOST, VISION_VIDEO_PORT } = useRos()
 
 const sb = computed(() => state.snack)
 const online = computed(() => !!sb.value)
@@ -40,7 +40,7 @@ const CN = { red: '红', orange: '橙', yellow: '黄', green: '绿', blue: '蓝'
 // ---- 视频：节点发的标注图 ----
 const stamp = ref(Date.now())
 const active = useMjpegGate()   // 页面被 keep-alive 挂起时释放连接，见 useMjpeg
-const src = computed(() => (active.value ? videoUrl(HOST, VIDEO_PORT, '/snack_butler/image_result', stamp.value) : ''))
+const src = computed(() => (active.value ? videoUrl(HOST, VISION_VIDEO_PORT, '/stream', stamp.value) : ''))
 let retryT = null
 function reloadVideo() { stamp.value = Date.now() }
 // 图流断了(节点没起/相机没数据/web_video_server 刚好没订阅上)就每 3 秒换个 t 重连。

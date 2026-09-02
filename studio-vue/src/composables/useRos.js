@@ -11,6 +11,7 @@ export const ROBOT_HOST = query.get('robot') || (query.get('sim') === '1'
       ? location.hostname : '192.168.3.63'))
 export const ROSBRIDGE_PORT = query.get('sim') === '1' ? Number(query.get('simPort') || 19090) : 9090
 export const VIDEO_PORT = 8080
+export const VISION_VIDEO_PORT = 8082
 export const WEBRTC_PORT = 8091
 export const BATT_MIN = 9.0, BATT_MAX = 12.6, BATT_WARN = 10.0
 
@@ -244,7 +245,7 @@ const actions = {
 export function useRos() {
   if (!started) { started = true; connect() }
   return { state: readonly(state), rawState: state, actions,
-    HOST: ROBOT_HOST, VIDEO_PORT, WEBRTC_PORT, BATT_MIN, BATT_MAX, BATT_WARN }
+    HOST: ROBOT_HOST, VIDEO_PORT, VISION_VIDEO_PORT, WEBRTC_PORT, BATT_MIN, BATT_MAX, BATT_WARN }
 }
 
 // 工具
