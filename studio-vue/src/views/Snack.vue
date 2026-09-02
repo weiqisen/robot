@@ -311,7 +311,23 @@ function analyzeSelected() {
   if (!d) return message.warning('请先选择一个目标，再做只算不动的抓取诊断')
   send({ action: 'analyze_grasp_at', u: Math.round(d.u), v: Math.round(d.v) }, '正在分析候选下探姿态，不会驱动机械臂')
 }
-function placeHeld(bin) { send({ action: 'place_held', bin }, `已下发投放到 ${bin} 区`) }
+function placeHeld(bin) {
+  confirmModalVisible.value = false
+  send({ action: 'place_held', bin }, `已下发投放到 ${bin} 区`)
+}
+function releaseHeld() {
+  confirmModalVisible.value = false
+  send({ action: 'gripper', open: true }, '已松爪')
+}
+
+// 人工确认弹窗：held_target 变为 unconfirmed 时自动弹出
+const confirmModalVisible = ref(false)
+watch(() => sb.value?.held_target, (newVal, oldVal) => {
+  if (newVal?.verification === 'unconfirmed' && !oldVal?.verification) {
+    confirmModalVisible.value = true
+  }
+}, { deep: true })
+
 
 function toggleRecording() {
   if (recording.value) {
@@ -476,12 +492,12 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
 
         <div class="target-workbench">
           <template v-if="sb?.held_target">
-            <a-tag :color="sb.held_target.verification === 'unconfirmed' ? 'orange' : 'gold'">
-              {{ sb.held_target.verification === 'unconfirmed' ? '待确认：' : '已夹起：' }}{{ CN[sb.held_target.label] || sb.held_target.label }}</a-tag>
-            <span>{{ sb.held_target.verification === 'unconfirmed' ? '请目视确认后再投放：' : '复核已通过，请决定投放位置：' }}</span>
-            <a-button size="small" type="primary" @click="placeHeld('A')">确认夹起后放左侧</a-button>
-            <a-button size="small" @click="placeHeld('B')">确认夹起后放右侧</a-button>
-            <a-button size="small" danger @click="send({ action: 'gripper', open: true }, '已松爪')">原地松爪</a-button>
+            <a-tag color="gold">已夹起</a-tag>
+            <b>{{ CN[sb.held_target.label] || sb.held_target.label }}</b>
+            <code v-if="sb.held_target.xyz">{{ sb.held_target.xyz.map(v => v.toFixed(3)).join(', ') }}</code>
+            <span v-if="sb.held_target.verification === 'unconfirmed'" style="color:var(--warning)">
+              · 等待人工确认投放
+            </span>
           </template>
           <template v-else-if="selectedDet">
             <a-tag :color="selectedDet.reachable ? 'blue' : 'default'">已选目标</a-tag>
@@ -862,6 +878,40 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
       </a-collapse>
     </a-col>
   </a-row>
+
+  <!-- 人工确认弹窗 -->
+  <a-modal
+    v-model:open="confirmModalVisible"
+    title="人工确认投放"
+    :width="500"
+    :closable="false"
+    :maskClosable="false"
+    :keyboard="false"
+  >
+    <div style="text-align:center;padding:24px 0">
+      <div style="font-size:18px;margin-bottom:12px">
+        <a-tag color="gold" style="font-size:16px;padding:6px 16px">已夹起</a-tag>
+        <b style="font-size:20px;margin-left:8px">{{ CN[sb?.held_target?.label] || sb?.held_target?.label || '目标' }}</b>
+      </div>
+      <div style="color:var(--text-2);margin-bottom:24px">
+        请目视确认机械臂是否真的夹起了目标
+      </div>
+      <a-space direction="vertical" style="width:100%" :size="12">
+        <a-button type="primary" size="large" block @click="placeHeld('A')">
+          ✓ 确认夹起，投放到左侧
+        </a-button>
+        <a-button size="large" block @click="placeHeld('B')">
+          ✓ 确认夹起，投放到右侧
+        </a-button>
+        <a-button danger size="large" block @click="releaseHeld">
+          ✗ 没夹起，原地松爪
+        </a-button>
+      </a-space>
+    </div>
+    <template #footer>
+      <span></span>
+    </template>
+  </a-modal>
 </template>
 
 <style scoped>
