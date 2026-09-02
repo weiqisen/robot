@@ -1223,6 +1223,28 @@ class SnackButler(Node):
             return True
         return False
 
+    @staticmethod
+    def _roll_delta(a, b):
+        """平行夹爪每 180° 等价，返回两条夹爪轴的最小夹角。"""
+        return abs((a - b + math.pi / 2) % math.pi - math.pi / 2)
+
+    def refine_roll_at_pregrasp(self, tgt, old_roll):
+        """悬停位重新识别同一物体，仅在可信时更新 wrist roll。"""
+        fresh = self.scan_once()
+        xyz = tgt.get('xyz')
+        if not xyz:
+            return old_roll, '无目标坐标，保持初始角度'
+        cands = [d for d in fresh if d.get('xyz') and d.get('label') == tgt.get('label') and
+                 d.get('detector') != 'yolov5' and
+                 math.dist(d['xyz'], xyz) <= .065]
+        if not cands:
+            return old_roll, '预抓未得到可信方向，保持初始角度'
+        d = min(cands, key=lambda v: math.dist(v['xyz'], xyz))
+        roll = clamp(math.radians(-float(d.get('angle_px', 0.0))), -1.5, 1.5)
+        if self._roll_delta(roll, old_roll) > math.radians(50):
+            return old_roll, '预抓方向与初次识别差异过大，保持初始角度'
+        return roll, '预抓方向复核 %.0f°' % math.degrees(roll)
+
     def seq_grasp(self, tgt, outcome='route'):
         if self._blocked_lowvolt() or self._blocked_uncalibrated():
             return False
@@ -1272,6 +1294,28 @@ class SnackButler(Node):
             self.gripper(True)
         self.send_arm(q_pre, cfg['move_time'])
         yield cfg['move_time'] + cfg['settle']
+
+        # eye-in-hand 相机已到悬停位；此时重识别主方向，只校正 joint5，不改变垂直 pitch。
+        self.step = '预抓复核物体方向'
+        refined_roll, note = self.refine_roll_at_pregrasp(tgt, roll)
+        if abs(refined_roll - roll) > math.radians(2):
+            refined_pre = ik_best(x, y, gz + cfg['approach_h'], pitch, seed=q_pre,
+                                  wrist_roll=refined_roll, tool=tool)
+            refined_grasp = ik_best(x, y, gz, pitch, seed=q_grasp,
+                                    wrist_roll=refined_roll, tool=tool)
+            refined_lift = ik_best(x, y, gz + cfg['lift_h'], pitch, seed=q_lift,
+                                   wrist_roll=refined_roll, tool=tool)
+            if refined_pre and refined_grasp:
+                q_pre, q_grasp = refined_pre, refined_grasp
+                q_lift = refined_lift or q_lift
+                roll = refined_roll
+                self.step = note + '，腕部旋转对齐'
+                self.send_arm(q_pre, .35)
+                yield .35 + cfg['settle']
+            else:
+                self.step = '预抓方向可见但腕部 IK 无解，保持初始角度'
+        else:
+            self.step = note
 
         self.step = '下探'
         self.journal_phase('descending')
