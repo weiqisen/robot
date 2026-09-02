@@ -329,7 +329,7 @@ class Brain:
         messages = [{'role': 'user', 'content':
                      f'【当前机器人状态】\n{json.dumps(ctx, ensure_ascii=False)}\n\n【用户说】\n{text}'}]
         reply = ''
-        for _ in range(MAX_TOOL_ROUNDS):
+        for round_i in range(MAX_TOOL_ROUNDS):
             r = self._create(model=MODEL, max_tokens=8000, system=SYSTEM, tools=TOOLS,
                              thinking={'type': 'adaptive'},
                              output_config={'effort': EFFORT},
@@ -337,7 +337,22 @@ class Brain:
             if r.stop_reason == 'refusal':
                 cat = getattr(getattr(r, 'stop_details', None), 'category', None)
                 return {'reply': f'这个请求我没法处理（{cat or "safety"}）。', 'commands': executed}
-            reply = ''.join(b.text for b in r.content if b.type == 'text').strip()
+
+            # 提取 thinking 和 reply，实时推送到录像
+            thinking = ''.join(b.thinking for b in r.content if hasattr(b, 'thinking'))
+            reply_text = ''.join(b.text for b in r.content if b.type == 'text').strip()
+
+            # 推送推理过程到 snack_butler（供录像右上角小窗显示）
+            llm_note = ''
+            if thinking:
+                llm_note += f'🧠 思考中...\n{thinking[:200]}\n\n'
+            if reply_text:
+                llm_note += f'💬 {reply_text[:200]}'
+            if llm_note:
+                ros.publish('/snack_butler/cmd', 'std_msgs/msg/String',
+                           {'data': json.dumps({'action': 'llm_note', 'text': llm_note})})
+
+            reply = reply_text
             uses = [b for b in r.content if b.type == 'tool_use']
             if r.stop_reason == 'end_turn' or not uses:
                 break
@@ -351,6 +366,10 @@ class Brain:
                     out, err = {'error': f'{type(e).__name__}: {e}'}, True
                     traceback.print_exc()
                 print(f'[tool] {b.name}({b.input}) -> {out}', flush=True)
+                # 工具调用也推送到录像
+                tool_note = f'🔧 {b.name}({json.dumps(b.input, ensure_ascii=False)[:80]})\n→ {json.dumps(out, ensure_ascii=False)[:120]}'
+                ros.publish('/snack_butler/cmd', 'std_msgs/msg/String',
+                           {'data': json.dumps({'action': 'llm_note', 'text': tool_note})})
                 results.append({'type': 'tool_result', 'tool_use_id': b.id,
                                 'content': json.dumps(out, ensure_ascii=False),
                                 **({'is_error': True} if err else {})})
