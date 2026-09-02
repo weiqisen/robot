@@ -63,7 +63,7 @@ const analysisText = computed(() => {
   return `AI 分析 · ${a.detections ?? 0} 个目标`
 })
 const camSrc = computed(() => camActive.value
-  ? videoUrl(HOST, VISION_VIDEO_PORT, '/stream', camStamp.value) : '')
+  ? videoUrl(HOST, VISION_VIDEO_PORT, '/snack_butler/image_result', camStamp.value) : '')
 let camRetry = null
 function reloadCam() { camStamp.value = Date.now(); camState.value = 'wait' }
 function toggleYolo(v) {
