@@ -1269,4 +1269,25 @@ onBeforeUnmount(() => {
   line-height: 1.5; font-family: ui-monospace, monospace; resize: vertical; }
 @media (max-width: 820px) { .tele { width: 150px; } .ctrl { width: 190px; } }
 @media (max-width: 560px) { .tele { display: none; } }
+
+/* ---- Twin 移动端适配 ---- */
+@media (max-width: 1024px) {
+  .tools { right:10px; top:10px; gap:6px; }
+  .tbtn { width:38px; height:36px; font-size:10px; }
+  .det-feed { right:56px; top:10px; width:180px; }
+  .df-head { padding:4px 7px; }
+  .df-head b { font-size:10px; }
+  .df-close { font-size:12px; }
+  .df-stat { padding:3px 7px; font-size:8px; }
+}
+
+@media (max-width: 640px) {
+  .tools { right:6px; top:6px; gap:5px; }
+  .tbtn { width:34px; height:32px; font-size:9px; border-radius:9px; }
+  .det-feed { right:46px; top:6px; width:150px; border-radius:9px; }
+  .df-head { padding:3px 6px; }
+  .df-head b { font-size:9px; }
+  .df-close { font-size:11px; }
+  .df-stat { font-size:7px; }
+}
 </style>

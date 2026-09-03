@@ -747,4 +747,32 @@ onUnmounted(() => {
   .scene-status>div { min-width:70px; padding:8px; }
   .scene-safety { display:none; }
 }
+
+/* ---- 移动端 & iPad 适配 ---- */
+@media (max-width: 1024px) {
+  .body { grid-template-columns: 1fr; gap:8px; padding:8px; }
+  .left, .right { display:none; }  /* 左右栏藏掉，专注模式常驻 */
+  .topbar { height:44px; padding:0 12px; gap:12px; }
+  .logo { font-size:14px; }
+  .conn { font-size:11px; }
+  .clock { font-size:14px; }
+  .date { font-size:9px; }
+  /* 驾驶盘和机械臂浮窗在移动端默认收起，点标题栏展开 */
+  .drive-pad, .scene-arm { max-width:280px; }
+  .drive-pad:not(.collapsed), .scene-arm:not(.collapsed) { max-width:none; }
+}
+
+@media (max-width: 640px) {
+  .topbar { flex-wrap:wrap; height:auto; padding:8px 10px; }
+  .logo { order:-2; }
+  .conn { order:-1; font-size:10px; }
+  .clock { order:1; font-size:12px; margin-left:auto; }
+  .date { font-size:8px; }
+  .focus-btn, .nav-btn { height:28px; font-size:10px; padding:0 10px; }
+  /* 手机屏幕窄，浮窗更靠边 */
+  .drive-pad { left:8px; bottom:8px; max-width:240px; }
+  .scene-arm { right:8px; top:54px; max-width:240px; }
+  .scene-status { left:8px; bottom:8px; font-size:10px; }
+  .scene-status>div { min-width:60px; padding:6px; }
+}
 </style>
