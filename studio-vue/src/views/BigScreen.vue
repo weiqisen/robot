@@ -340,6 +340,26 @@ onUnmounted(() => {
             <div><small>航向</small><b>{{ deg(euler.yaw).toFixed(1) }}<em>°</em></b></div>
             <div><small>雷达回波</small><b :class="{ dangerText: !scanN }">{{ scanN }}</b></div>
           </div>
+          <!-- 专注视图下左栏被藏了，机械臂控制搬到画面里来，压在安全状态上方 -->
+          <div v-if="focusMode" class="scene-arm">
+            <div class="sa-head">
+              <b>机械臂姿态</b>
+              <button :class="['sa-lock', { open: armControlUnlocked }]"
+                @click="armControlUnlocked = !armControlUnlocked">{{ armControlUnlocked ? '控制已解锁' : '只读监控' }}</button>
+            </div>
+            <div v-for="j in JOINTS" :key="j.id" class="sa-row">
+              <span class="sa-l">{{ j.l }}<em v-if="j.cn">{{ j.cn }}</em></span>
+              <input type="range" min="0" max="1000" step="1" :value="jval[j.id]"
+                :disabled="!armControlUnlocked" @input="e => onJoint(j.id, e.target.value)" />
+              <b class="sa-v">{{ jval[j.id] }}</b>
+            </div>
+            <div class="sa-btns">
+              <button :disabled="!armControlUnlocked" @click="armHome">复位</button>
+              <button :disabled="!armControlUnlocked" @click="gripOpen">张开</button>
+              <button :disabled="!armControlUnlocked" @click="gripClose">闭合</button>
+            </div>
+          </div>
+
           <div :class="['scene-safety', { warn: driveArmed }]"><span>{{ driveArmed ? '驱动已解锁' : '安全锁定' }}</span><small>{{ driveArmed ? '车辆可能运动' : '底盘不会响应速度指令' }}</small></div>
 
           <!-- 手动驾驶：摇杆浮在画面右下角，锁定时整块压暗且不接收指针事件 -->
@@ -402,12 +422,14 @@ onUnmounted(() => {
 
     <!-- 底控栏 -->
     <footer class="ctrlbar">
-      <div class="cb">
+      <!-- 专注视图下这几个已经搬进画面里的 scene-arm 了，底栏不再重复 -->
+      <div v-show="!focusMode" class="cb">
         <button class="cbtn" :disabled="!armControlUnlocked" @click="armHome">复位姿态</button>
         <button class="cbtn" :disabled="!armControlUnlocked" @click="gripOpen">夹爪张开</button>
         <button class="cbtn" :disabled="!armControlUnlocked" @click="gripClose">夹爪闭合</button>
         <button class="cbtn" @click="beep">蜂鸣提示</button>
       </div>
+      <div v-show="focusMode" class="cb" />
       <div class="cb r">
         <button class="cbtn ghost" @click="emit('open-admin')">控制台</button>
         <button class="cbtn danger" @click="estop">急停 · STOP</button>
@@ -622,7 +644,7 @@ onUnmounted(() => {
 .scene-head span { color:#64748B; font-size:10px; letter-spacing:2px; text-transform:uppercase; }
 .scene-head b { font-size:18px; letter-spacing:1px; }
 /* 右侧留出驾驶盘的宽度，读数带别铺到它底下 */
-.scene-status { position:absolute; z-index:3; left:28px; right:210px; bottom:28px; display:flex; flex-wrap:wrap; gap:10px; pointer-events:none; }
+.scene-status { position:absolute; z-index:3; left:28px; right:262px; bottom:28px; display:flex; flex-wrap:wrap; gap:10px; pointer-events:none; }
 .scene-status>div { min-width:98px; padding:10px 12px; border:1px solid rgba(255,255,255,.08); border-radius:8px; background:rgba(8,11,18,.78); backdrop-filter:blur(8px); }
 .scene-status small { display:block; color:#64748B; font-size:9px; margin-bottom:5px; }
 .scene-status b { font:600 16px/1 Inter,monospace; }
@@ -634,8 +656,33 @@ onUnmounted(() => {
 .scene-safety.warn { border-color:rgba(245,158,11,.45); background:rgba(41,25,8,.82); }
 .scene-safety.warn span { color:#F59E0B; }
 
+/* ---- 专注视图下的机械臂控制：压在安全状态标签上方 ---- */
+.scene-arm { position:absolute; z-index:4; left:28px; bottom:160px; width:236px;
+  padding:11px 12px 10px; border:1px solid rgba(148,163,184,.22); border-radius:10px;
+  background:rgba(8,12,18,.82); backdrop-filter:blur(6px);
+  display:flex; flex-direction:column; gap:6px; }
+.sa-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:2px; }
+.sa-head b { color:#E2E8F0; font-size:11px; letter-spacing:.4px; }
+.sa-lock { padding:2px 8px; border:1px solid rgba(148,163,184,.3); border-radius:5px;
+  background:transparent; color:#64748B; font-size:9px; cursor:pointer; }
+.sa-lock.open { border-color:rgba(52,211,153,.45); background:rgba(6,78,59,.3); color:#34D399; }
+.sa-row { display:flex; align-items:center; gap:7px; }
+.sa-l { color:#94A3B8; font-size:9px; width:44px; flex-shrink:0; }
+.sa-l em { font-style:normal; color:#64748B; margin-left:3px; }
+.sa-row input { flex:1; min-width:0; accent-color:#38BDF8; }
+.sa-row input:disabled { accent-color:#475569; }
+.sa-v { color:#CBD5E1; font:9px/1 ui-monospace,SFMono-Regular,Menlo,monospace;
+  width:26px; text-align:right; flex-shrink:0; }
+.sa-btns { display:flex; gap:5px; margin-top:2px; }
+.sa-btns button { flex:1; padding:4px 0; border:1px solid rgba(148,163,184,.24); border-radius:5px;
+  background:transparent; color:#94A3B8; font-size:10px; cursor:pointer; }
+.sa-btns button:hover:not(:disabled) { border-color:rgba(56,189,248,.45); color:#38BDF8; }
+.sa-btns button:disabled { opacity:.4; cursor:not-allowed; }
+
 /* ---- 手动驾驶盘：浮在孪生画面右下角 ---- */
-.drive-pad { position:absolute; z-index:4; right:24px; bottom:24px; width:168px;
+/* right 留出 Twin 自己那列工具按钮（44px 宽 + 14px 右距）的位置，否则会压在
+   「坐标轴 / 视角 / 材质」上面。 */
+.drive-pad { position:absolute; z-index:4; right:76px; bottom:24px; width:168px;
   padding:11px 12px 10px; border:1px solid rgba(148,163,184,.22); border-radius:10px;
   background:rgba(8,12,18,.78); backdrop-filter:blur(6px);
   display:flex; flex-direction:column; gap:8px; }
