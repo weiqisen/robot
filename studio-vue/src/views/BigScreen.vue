@@ -76,6 +76,8 @@ onUnmounted(() => clearInterval(timer))
 function estop() { resetJoy(); for (const k in keys) keys[k] = false; actions.emergencyStop(); lastZero = true }
 function beep() { actions.buzzer(1900, 0.15, 0.05, 1) }
 const armControlUnlocked = ref(false)
+// 专注视图：藏掉左右两栏，中央孪生铺满。演示和调姿态时用得上。
+const focusMode = ref(false)
 
 // ---- 底盘手动驾驶：摇杆 + WASD，和实时控制页同一套安全前提 ----
 // 解锁条件、限速、发布频率都跟 Control.vue 对齐，避免两个入口行为不一致。
@@ -205,9 +207,15 @@ const JOINTS = [{ id: 1, l: 'J1', cn: '底座' }, { id: 2, l: 'J2', cn: '大臂'
                 { id: 3, l: 'J3', cn: '小臂' }, { id: 4, l: 'J4', cn: '腕俯仰' },
                 { id: 5, l: 'J5', cn: '腕自转' }, { id: 10, l: '夹爪', cn: '' }]
 const jval = reactive({ 1: 500, 2: 500, 3: 500, 4: 500, 5: 500, 10: 500 })
+// 下发后多久才重新采信 /servo_states 的回传。原来写死 600ms 且用 setTimeout 清零，
+// 连续拖滑块时后一个 timer 会提前把窗口关掉，回传的旧位置就把滑块拽回原处。
+const SERVO_SETTLE = 1400
 let dragging = 0
 watch(() => state.servos, list => {
-  if (dragging) return
+  // dragging 是时间戳，600ms 窗口内不接受回传，避免下发后立刻被拽回去
+  // dragging 是「最后一次下发」的时间戳。舵机走到位有几百毫秒延迟，这段时间里
+  // 回传的还是旧位置，直接采信就会把滑块拽回原处 —— 所以给足静默窗口再放开跟随。
+  if (dragging && Date.now() - dragging < SERVO_SETTLE) return
   for (const s of list || []) if (s.id in jval) jval[s.id] = s.position
 })
 let sq = {}, st = null
@@ -217,7 +225,6 @@ const twinRef = ref(null)
 function pushTwin(id, pulse) { twinRef.value?.setJointByServoId(id, pulse) }
 function onJoint(id, v) {
   jval[id] = +v
-  dragging = Date.now()
   pushTwin(id, v)
   sq[id] = +v
   if (st) return
@@ -226,18 +233,17 @@ function onJoint(id, v) {
     const position = Object.entries(sq).map(([i, p]) => ({ id: +i, position: +p }))
     sq = {}
     actions.setServos(position, 0.3)
-    setTimeout(() => { dragging = 0 }, 600)   // 下发后给驱动一点时间再放开跟随
+    dragging = Date.now()      // 以「下发时刻」起算静默窗口，见 SERVO_SETTLE
   }, 60)
 }
 
 // 这三个按钮也是「我下发的目标」，同样先把模型摆过去
-function gripOpen() { jval[10] = 200; pushTwin(10, 200); actions.setServos([{ id: 10, position: 200 }], 1) }
-function gripClose() { jval[10] = 800; pushTwin(10, 800); actions.setServos([{ id: 10, position: 800 }], 1) }
+function gripOpen() { jval[10] = 200; pushTwin(10, 200); actions.setServos([{ id: 10, position: 200 }], 1); dragging = Date.now() }
+function gripClose() { jval[10] = 800; pushTwin(10, 800); actions.setServos([{ id: 10, position: 800 }], 1); dragging = Date.now() }
 function armHome() {
-  dragging = Date.now()
   for (const id of [1, 2, 3, 4, 5]) { jval[id] = 500; pushTwin(id, 500) }
   actions.setServos([1, 2, 3, 4, 5].map(id => ({ id, position: 500 })), 1.5)
-  setTimeout(() => { dragging = 0 }, 1800)
+  dragging = Date.now() + 600   // 复位要走 1.5s，把窗口起点往后推一点
 }
 const clock = ref(''), date = ref('')
 let clockTimer = null
@@ -273,12 +279,14 @@ onUnmounted(() => {
       <div class="top-state"><span class="mode-icon">◎</span><div><small>任务模式</small><b>{{ taskMode }}</b></div></div>
       <div class="top-state battery"><div><small>剩余电量</small><b :class="{ dangerText: volt != null && volt < BATT_WARN }">{{ pct }}<em>%</em></b></div></div>
       <div class="tb-sep" />
+      <button :class="['focus-btn', { on: focusMode }]" :title="focusMode ? '恢复两侧面板' : '只看数字孪生'"
+        @click="focusMode = !focusMode">{{ focusMode ? '退出专注' : '专注视图' }}</button>
       <div class="clock">{{ clock }}<span class="date">{{ date }}</span></div>
     </header>
 
-    <div class="body">
+    <div :class="['body', { focus: focusMode }]">
       <!-- 左栏 -->
-      <div class="col">
+      <div v-show="!focusMode" class="col">
         <section class="panel">
           <div class="ph"><i class="tick" />设备健康<span class="ph-r">{{ status.filter(s => s.on).length }}/{{ status.length }} ONLINE</span></div>
           <div class="pb" style="display:flex;gap:12px;align-items:center">
@@ -365,7 +373,7 @@ onUnmounted(() => {
       </div>
 
       <!-- 右栏 -->
-      <div class="col">
+      <div v-show="!focusMode" class="col">
         <section class="panel">
           <div class="ph"><i class="tick" />CPU 趋势<span class="chart-now">{{ cpuAvg }}<em>%</em></span><span class="ph-r">近 120s</span></div>
           <div class="pb"><MiniChart :data="cpuHist" :min="0" :max="100" :threshold="90" :height="120" /></div>
@@ -423,10 +431,17 @@ onUnmounted(() => {
 .ldot { width: 7px; height: 7px; border-radius: 50%; background: #F43F5E; box-shadow: 0 0 8px #F43F5E; }
 .ldot.on { background: #34D399; box-shadow: 0 0 8px #34D399; }
 .tb-sep { flex: 1; height: 1px; margin: 0 22px; background: linear-gradient(90deg, rgba(56,189,248,.18), transparent); }
+.focus-btn { padding: 6px 14px; border: 1px solid rgba(56,189,248,.28); border-radius: 6px;
+  background: rgba(12,74,110,.24); color: #38BDF8; font-size: 11px; font-weight: 500;
+  cursor: pointer; transition: 0.2s; letter-spacing: 0.5px; }
+.focus-btn:hover { background: rgba(12,74,110,.38); border-color: rgba(56,189,248,.42); }
+.focus-btn.on { border-color: rgba(245,158,11,.45); background: rgba(120,53,15,.3); color: #F59E0B; }
 .clock { display: flex; flex-direction: column; align-items: flex-end; font: 500 16px/1.1 Inter, monospace; color: #E2E8F0; font-variant-numeric: tabular-nums; letter-spacing: 1.5px; }
 .date { font-size: 10px; color: #556072; letter-spacing: 1.5px; margin-top: 3px; text-transform: uppercase; }
 /* 主体 */
 .body { flex: 1; display: grid; grid-template-columns: 350px 1fr 350px; gap: 10px; padding: 10px; min-height: 0; position: relative; z-index: 1; }
+/* 专注视图：两侧栏 v-show 隐藏后，把网格收成单列让孪生铺满 */
+.body.focus { grid-template-columns: 1fr; }
 .col { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
 .center { min-width: 0; }
 .jctrl { display: flex; flex-direction: column; gap: 7px; }
@@ -606,15 +621,17 @@ onUnmounted(() => {
 .scene-head { position:absolute; z-index:3; top:20px; left:28px; display:flex; flex-direction:column; gap:5px; pointer-events:none; }
 .scene-head span { color:#64748B; font-size:10px; letter-spacing:2px; text-transform:uppercase; }
 .scene-head b { font-size:18px; letter-spacing:1px; }
-.scene-status { position:absolute; z-index:3; left:28px; bottom:28px; display:flex; gap:10px; pointer-events:none; }
+/* 右侧留出驾驶盘的宽度，读数带别铺到它底下 */
+.scene-status { position:absolute; z-index:3; left:28px; right:210px; bottom:28px; display:flex; flex-wrap:wrap; gap:10px; pointer-events:none; }
 .scene-status>div { min-width:98px; padding:10px 12px; border:1px solid rgba(255,255,255,.08); border-radius:8px; background:rgba(8,11,18,.78); backdrop-filter:blur(8px); }
 .scene-status small { display:block; color:#64748B; font-size:9px; margin-bottom:5px; }
 .scene-status b { font:600 16px/1 Inter,monospace; }
-/* 右下角让给驾驶盘，安全状态挪到左下 */
-.scene-safety { position:absolute; z-index:3; left:28px; bottom:28px; padding:9px 12px; border:1px solid rgba(52,211,153,.28); border-radius:8px; background:rgba(6,78,59,.14); display:flex; flex-direction:column; gap:3px; pointer-events:none; }
+/* 右下角让给驾驶盘。安全状态挪到左下，但要叠在 scene-status 上方 ——
+   两个都写 bottom:28px 的话会重叠在一起。 */
+.scene-safety { position:absolute; z-index:3; left:28px; bottom:96px; padding:9px 12px; border:1px solid rgba(52,211,153,.28); border-radius:8px; background:rgba(8,11,18,.78); backdrop-filter:blur(8px); display:inline-flex; flex-direction:column; gap:3px; pointer-events:none; }
 .scene-safety span { color:#34D399; font-size:12px; font-weight:700; }
 .scene-safety small { color:#64748B; font-size:9px; }
-.scene-safety.warn { border-color:rgba(245,158,11,.45); background:rgba(120,53,15,.16); }
+.scene-safety.warn { border-color:rgba(245,158,11,.45); background:rgba(41,25,8,.82); }
 .scene-safety.warn span { color:#F59E0B; }
 
 /* ---- 手动驾驶盘：浮在孪生画面右下角 ---- */
