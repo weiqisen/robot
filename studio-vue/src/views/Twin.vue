@@ -1,19 +1,20 @@
 <script setup>
-import { ref, watch, onMounted, onBeforeUnmount, onActivated, onDeactivated, reactive, computed } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount, onActivated, onDeactivated, reactive, computed, nextTick } from 'vue'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
 import { ColladaLoader } from 'three/examples/jsm/loaders/ColladaLoader.js'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import URDFLoader from 'urdf-loader'
-import { useRos, quatToEuler, deg } from '../composables/useRos'
+import { useRos, quatToEuler, deg, videoUrl } from '../composables/useRos'
 const props = defineProps({ bare: { type: Boolean, default: false } })
-const { state, actions, HOST } = useRos()
+const emit = defineEmits(['focus'])
+const { state, actions, HOST, VISION_VIDEO_PORT } = useRos()
 
 const host = ref(null)
 const loading = ref(true), loadErr = ref('')
 const tools = reactive({ lidar: true, grid: true, points: false, ik: false, tags: true,
-  workspace: true, selfbody: true, dimensions: true, angles: false, cameraFov: false, axes: true, detections: true })
+  workspace: true, selfbody: true, dimensions: true, angles: false, cameraFov: false, axes: true, detections: true, detectionFeed: false })
 
 // ---- 外观参数：集中一份，材质面板直接改它，改完实时生效并存 localStorage ----
 // 默认值来自官网实物图 jetrover.webp 取色（见 git log fix(twin) 那几条）。
@@ -92,6 +93,25 @@ function revertLook() {
 }
 
 const matOpen = ref(false)
+
+// ---- YOLO 识别画面小窗 ----
+// snack_butler 已经把带框的标注图发到 /snack_butler/image_result，
+// web_video_server 转成 MJPEG。直接给 <img> 一个流地址就行，不用自己逐帧拉。
+// 关掉时必须把 src 清空：MJPEG 是永不结束的长连接，挂着会占满浏览器并发额度。
+const detFeedStamp = ref(0)
+const detFeedSrc = computed(() => (tools.detectionFeed
+  ? videoUrl(HOST, VISION_VIDEO_PORT, '/snack_butler/image_result', detFeedStamp.value) : ''))
+const detFeedStat = computed(() => {
+  const sb = state.snack
+  if (!sb) return '视觉节点未运行'
+  const n = (sb.detections || []).length
+  const yolo = sb.detector
+  if (yolo?.yolo_error) return 'YOLO 加载失败'
+  if (yolo?.yolo_loading) return 'YOLO 加载中…'
+  return `${n} 个目标 · ${sb.state || '—'}`
+})
+function reloadDetFeed() { detFeedStamp.value = Date.now() }
+watch(() => tools.detectionFeed, v => { if (v) reloadDetFeed() })
 const matGroups = {}          // 档位名 -> 这一档下所有 material，改参数时批量刷
 let hemiL = null, keyL = null, rimL = null
 let robotReady = false
@@ -190,7 +210,10 @@ function init() {
     loading.value = false
     // 给 scripts/shot.mjs 的场景探针用：改完能直接查对象在不在、位姿对不对
     window.__twin = { scene, robot, camera, renderer, world, THREE, matGroups,
-                      get screenMesh() { return screenMesh } }
+                      get screenMesh() { return screenMesh },
+                      get tagGroup() { return tagGroup },
+                      get tagSprites() { return tagSprites },
+                      get detectGroup() { return detectGroup } }
   }
   mgr.onLoad = onRobotReady
   loadLook()
@@ -965,15 +988,24 @@ const viewIdx = ref(0)
 
 // ---- 全屏 ----
 // 全屏目标是最外层 .twin，工具栏和面板一起进全屏；退出用 Esc 或再点一次。
+// 进全屏时自动打开专注视图（大屏那边的 focusMode）。
 const isFs = ref(false)
 function toggleFullscreen() {
   const el = host.value?.parentElement
   if (!el) return
-  if (document.fullscreenElement) document.exitFullscreen?.()
-  else el.requestFullscreen?.().catch(() => {})
+  if (document.fullscreenElement) {
+    document.exitFullscreen?.()
+  } else {
+    el.requestFullscreen?.().then(() => {
+      // 全屏成功后触发专注模式：通知父组件（大屏）打开 focusMode
+      emit('focus', true)
+    }).catch(() => {})
+  }
 }
 function onFsChange() {
   isFs.value = !!document.fullscreenElement
+  // 退出全屏时也退出专注模式
+  if (!isFs.value) emit('focus', false)
   // 全屏切换会改容器尺寸，renderer 得跟着重算，否则画面被拉伸
   requestAnimationFrame(fit)
 }
@@ -1041,6 +1073,18 @@ onBeforeUnmount(() => {
         @click="toggleFullscreen">{{ isFs ? '退出' : '全屏' }}</div>
       <div :class="['glass tbtn', { on: matOpen }]" title="材质与光照，实时生效"
         @click="matOpen = !matOpen">材质</div>
+      <div :class="['glass tbtn', { on: tools.detectionFeed }]" title="YOLO 识别画面"
+        @click="tools.detectionFeed = !tools.detectionFeed">识别流</div>
+    </div>
+
+    <!-- YOLO 识别画面小窗：浮在右上角，工具列左边 -->
+    <div v-if="tools.detectionFeed" class="det-feed">
+      <div class="df-head">
+        <b>实时识别</b>
+        <span class="df-close" title="关闭" @click="tools.detectionFeed = false">✕</span>
+      </div>
+      <img class="df-img" :src="detFeedSrc" alt="" @error="reloadDetFeed" />
+      <div class="df-stat">{{ detFeedStat }}</div>
     </div>
 
     <!-- 材质面板：拖滑块实时看效果，自动存本机，调好一键导出成代码贴回本文件 -->
@@ -1151,6 +1195,21 @@ onBeforeUnmount(() => {
 .tools { position: absolute; right: 14px; top: 14px; z-index: 10; display: flex; flex-direction: column; gap: 8px; }
 .tbtn { width: 44px; height: 40px; display: flex; align-items: center; justify-content: center; font-size: 11px; border-radius: 11px; cursor: pointer; color: rgba(255,255,255,.6); }
 .tbtn.on { color: #fff; box-shadow: inset 0 0 0 1px #2e9bff; background: rgba(46,155,255,.16); }
+
+/* ---- YOLO 识别画面小窗 ----
+   高度按「四个按钮」算：4×40 + 3×8 = 184px。画面 4:3，所以宽 = 画面 184-42(头尾)
+   ≈ 142 高 → 190 宽，取整 208px。right 让开工具列（44 + 14 + 14 间距）。 */
+.det-feed { position: absolute; right: 72px; top: 14px; z-index: 9; width: 208px;
+  background: rgba(8,12,18,.88); backdrop-filter: blur(8px); border-radius: 11px;
+  border: 1px solid rgba(148,163,184,.22); overflow: hidden; }
+.df-head { display: flex; align-items: center; justify-content: space-between;
+  padding: 5px 9px; background: rgba(15,23,42,.55); }
+.df-head b { color: #E2E8F0; font-size: 11px; letter-spacing: .4px; }
+.df-close { color: #64748B; font-size: 13px; line-height: 1; cursor: pointer; padding: 0 2px; }
+.df-close:hover { color: #CBD5E1; }
+.df-img { display: block; width: 100%; aspect-ratio: 4/3; object-fit: contain; background: #000; }
+.df-stat { padding: 4px 9px; font-size: 9px; color: #94A3B8; text-align: right;
+  background: rgba(15,23,42,.4); }
 .panel { position: absolute; z-index: 10; border-radius: 12px; padding: 14px; }
 .sep { height: 1px; background: rgba(255,255,255,.12); margin: 8px 0; }
 .joints { left: 14px; bottom: 14px; min-width: 210px; }

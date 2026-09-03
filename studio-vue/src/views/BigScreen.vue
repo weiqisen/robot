@@ -78,6 +78,9 @@ function beep() { actions.buzzer(1900, 0.15, 0.05, 1) }
 const armControlUnlocked = ref(false)
 // 专注视图：藏掉左右两栏，中央孪生铺满。演示和调姿态时用得上。
 const focusMode = ref(false)
+// 两块浮窗都能点标题栏收起，只留一行标题，腾出画面
+const drivePadCollapsed = ref(false)
+const armPanelCollapsed = ref(false)
 
 // ---- 底盘手动驾驶：摇杆 + WASD，和实时控制页同一套安全前提 ----
 // 解锁条件、限速、发布频率都跟 Control.vue 对齐，避免两个入口行为不一致。
@@ -333,7 +336,7 @@ onUnmounted(() => {
       <!-- 中央 3D 孪生。不加标题字，画面自己说明自己。 -->
       <div class="col center">
         <div class="viewport">
-          <Twin ref="twinRef" :bare="true" />
+          <Twin ref="twinRef" :bare="true" @focus="v => focusMode = v" />
           <div class="scene-head"><span>数字孪生</span><b>实时姿态</b></div>
           <div class="scene-status">
             <div><small>线速度</small><b>{{ vx.toFixed(2) }} <em>m/s</em></b></div>
@@ -341,12 +344,14 @@ onUnmounted(() => {
             <div><small>雷达回波</small><b :class="{ dangerText: !scanN }">{{ scanN }}</b></div>
           </div>
           <!-- 专注视图下左栏被藏了，机械臂控制搬到画面里来，压在安全状态上方 -->
-          <div v-if="focusMode" class="scene-arm">
-            <div class="sa-head">
+          <div v-if="focusMode" :class="['scene-arm', { collapsed: armPanelCollapsed }]">
+            <div class="sa-head" @click="armPanelCollapsed = !armPanelCollapsed">
               <b>机械臂姿态</b>
               <button :class="['sa-lock', { open: armControlUnlocked }]"
-                @click="armControlUnlocked = !armControlUnlocked">{{ armControlUnlocked ? '控制已解锁' : '只读监控' }}</button>
+                @click.stop="armControlUnlocked = !armControlUnlocked">{{ armControlUnlocked ? '控制已解锁' : '只读监控' }}</button>
+              <span class="sa-toggle" :title="armPanelCollapsed ? '展开' : '收起'">{{ armPanelCollapsed ? '▼' : '▲' }}</span>
             </div>
+            <div v-show="!armPanelCollapsed" class="sa-body">
             <div v-for="j in JOINTS" :key="j.id" class="sa-row">
               <span class="sa-l">{{ j.l }}<em v-if="j.cn">{{ j.cn }}</em></span>
               <input type="range" min="0" max="1000" step="1" :value="jval[j.id]"
@@ -358,34 +363,38 @@ onUnmounted(() => {
               <button :disabled="!armControlUnlocked" @click="gripOpen">张开</button>
               <button :disabled="!armControlUnlocked" @click="gripClose">闭合</button>
             </div>
+            </div>
           </div>
 
           <div :class="['scene-safety', { warn: driveArmed }]"><span>{{ driveArmed ? '驱动已解锁' : '安全锁定' }}</span><small>{{ driveArmed ? '车辆可能运动' : '底盘不会响应速度指令' }}</small></div>
 
           <!-- 手动驾驶：摇杆浮在画面右下角，锁定时整块压暗且不接收指针事件 -->
-          <div :class="['drive-pad', { locked: !manualArmed }]">
-            <div class="dp-head">
+          <div :class="['drive-pad', { locked: !manualArmed, collapsed: drivePadCollapsed }]">
+            <div class="dp-head" @click="drivePadCollapsed = !drivePadCollapsed">
               <b>手动驾驶</b>
-              <button v-if="!manualArmed" class="dp-unlock" @click="unlockManual">解锁</button>
-              <button v-else class="dp-unlock on" @click="lockManual">锁定</button>
+              <button v-if="!manualArmed" class="dp-unlock" @click.stop="unlockManual">解锁</button>
+              <button v-else class="dp-unlock on" @click.stop="lockManual">锁定</button>
+              <span class="dp-toggle" :title="drivePadCollapsed ? '展开' : '收起'">{{ drivePadCollapsed ? '▼' : '▲' }}</span>
             </div>
-            <canvas ref="joy" width="130" height="130" class="dp-joy"
-              @pointerdown="jDown" @pointermove="jMove" @pointerup="resetJoy" @pointercancel="resetJoy" />
-            <div class="dp-seg">
-              <button :class="{ on: driveMode2 === 'turn' }" @click="driveMode2 = 'turn'">转向</button>
-              <button :class="{ on: driveMode2 === 'pan' }" @click="driveMode2 = 'pan'">平移</button>
+            <div v-show="!drivePadCollapsed" class="dp-body">
+              <canvas ref="joy" width="130" height="130" class="dp-joy"
+                @pointerdown="jDown" @pointermove="jMove" @pointerup="resetJoy" @pointercancel="resetJoy" />
+              <div class="dp-seg">
+                <button :class="{ on: driveMode2 === 'turn' }" @click="driveMode2 = 'turn'">转向</button>
+                <button :class="{ on: driveMode2 === 'pan' }" @click="driveMode2 = 'pan'">平移</button>
+              </div>
+              <div class="dp-row">
+                <small>限速</small>
+                <input type="range" min="10" max="100" step="5" v-model.number="driveSpeed" />
+                <b>{{ driveSpeed }}%</b>
+              </div>
+              <div class="dp-tele">
+                <span>vx <b>{{ tele.vx }}</b></span>
+                <span>vy <b>{{ tele.vy }}</b></span>
+                <span>wz <b>{{ tele.wz }}</b></span>
+              </div>
+              <div class="dp-hint">WASD 行进 · QE 转向 · 空格急停</div>
             </div>
-            <div class="dp-row">
-              <small>限速</small>
-              <input type="range" min="10" max="100" step="5" v-model.number="driveSpeed" />
-              <b>{{ driveSpeed }}%</b>
-            </div>
-            <div class="dp-tele">
-              <span>vx <b>{{ tele.vx }}</b></span>
-              <span>vy <b>{{ tele.vy }}</b></span>
-              <span>wz <b>{{ tele.wz }}</b></span>
-            </div>
-            <div class="dp-hint">WASD 行进 · QE 转向 · 空格急停</div>
           </div>
 
           <span class="vp c tl" /><span class="vp c tr" /><span class="vp c bl" /><span class="vp c br" />
@@ -661,8 +670,12 @@ onUnmounted(() => {
   padding:11px 12px 10px; border:1px solid rgba(148,163,184,.22); border-radius:10px;
   background:rgba(8,12,18,.82); backdrop-filter:blur(6px);
   display:flex; flex-direction:column; gap:6px; }
-.sa-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:2px; }
-.sa-head b { color:#E2E8F0; font-size:11px; letter-spacing:.4px; }
+.scene-arm.collapsed { width:auto; }
+.sa-head { display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none; }
+.sa-head b { color:#E2E8F0; font-size:11px; letter-spacing:.4px; margin-right:auto; }
+.sa-toggle { color:#64748B; font-size:9px; }
+.sa-head:hover .sa-toggle { color:#CBD5E1; }
+.sa-body { display:flex; flex-direction:column; gap:6px; margin-top:4px; }
 .sa-lock { padding:2px 8px; border:1px solid rgba(148,163,184,.3); border-radius:5px;
   background:transparent; color:#64748B; font-size:9px; cursor:pointer; }
 .sa-lock.open { border-color:rgba(52,211,153,.45); background:rgba(6,78,59,.3); color:#34D399; }
@@ -691,8 +704,12 @@ onUnmounted(() => {
 .drive-pad.locked .dp-joy,
 .drive-pad.locked .dp-seg,
 .drive-pad.locked .dp-row { pointer-events:none; filter:grayscale(.7); }
-.dp-head { display:flex; align-items:center; justify-content:space-between; }
-.dp-head b { color:#E2E8F0; font-size:11px; letter-spacing:.4px; }
+.drive-pad.collapsed { width:auto; }
+.dp-head { display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none; }
+.dp-head b { color:#E2E8F0; font-size:11px; letter-spacing:.4px; margin-right:auto; }
+.dp-toggle { color:#64748B; font-size:9px; }
+.dp-head:hover .dp-toggle { color:#CBD5E1; }
+.dp-body { display:flex; flex-direction:column; gap:8px; }
 .dp-unlock { padding:2px 9px; border:1px solid rgba(52,211,153,.45); border-radius:5px;
   background:rgba(6,78,59,.3); color:#34D399; font-size:10px; cursor:pointer; }
 .dp-unlock.on { border-color:rgba(245,158,11,.5); background:rgba(120,53,15,.3); color:#F59E0B; }
