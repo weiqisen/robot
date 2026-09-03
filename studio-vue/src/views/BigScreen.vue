@@ -766,8 +766,11 @@ onUnmounted(() => {
   .topbar { height: 48px; padding: 0 12px; gap: 12px; }
   .brand { min-width: 0; }
   .brand small { display: none; }
+  /* 顶栏状态卡片：平板上只留「通信链路」和「电池」，藏掉「安全状态」和「任务模式」 */
   .top-state { min-width: 0; gap: 6px; }
   .top-state small { display: none; }
+  .top-state:nth-of-type(2),
+  .top-state:nth-of-type(3) { display: none; }
   .top-state.battery b { font-size: 18px; }
   .tb-sep { margin: 0 8px; }
   .clock { font-size: 14px; }

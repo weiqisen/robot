@@ -1272,7 +1272,7 @@ onBeforeUnmount(() => {
 
 /* ---- Twin 移动端适配 ---- */
 @media (max-width: 1024px) {
-  .tools { right:10px; top:10px; gap:6px; }
+  .tools { right:10px; top:10px; gap:6px; flex-direction:column !important; }
   .tbtn { width:38px; height:36px; font-size:10px; }
   .det-feed { right:56px; top:10px; width:180px; }
   .df-head { padding:4px 7px; }
@@ -1282,7 +1282,7 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 640px) {
-  .tools { right:6px; top:6px; gap:5px; }
+  .tools { right:6px; top:6px; gap:5px; flex-direction:column !important; }
   .tbtn { width:34px; height:32px; font-size:9px; border-radius:9px; }
   .det-feed { right:46px; top:6px; width:150px; border-radius:9px; }
   .df-head { padding:3px 6px; }
