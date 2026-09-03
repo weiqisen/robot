@@ -211,9 +211,14 @@ watch(() => state.servos, list => {
   for (const s of list || []) if (s.id in jval) jval[s.id] = s.position
 })
 let sq = {}, st = null
+// 中央那台 3D 模型。拖滑块时直接推它，别等 /joint_states 回传 ——
+// 舵机走到位要几百毫秒，只靠回传模型会明显拖在滑块后面。
+const twinRef = ref(null)
+function pushTwin(id, pulse) { twinRef.value?.setJointByServoId(id, pulse) }
 function onJoint(id, v) {
   jval[id] = +v
   dragging = Date.now()
+  pushTwin(id, v)
   sq[id] = +v
   if (st) return
   st = setTimeout(() => {
@@ -225,9 +230,15 @@ function onJoint(id, v) {
   }, 60)
 }
 
-function gripOpen() { actions.setServos([{ id: 10, position: 200 }], 1) }
-function gripClose() { actions.setServos([{ id: 10, position: 800 }], 1) }
-function armHome() { actions.setServos([1, 2, 3, 4, 5].map(id => ({ id, position: 500 })), 1.5) }
+// 这三个按钮也是「我下发的目标」，同样先把模型摆过去
+function gripOpen() { jval[10] = 200; pushTwin(10, 200); actions.setServos([{ id: 10, position: 200 }], 1) }
+function gripClose() { jval[10] = 800; pushTwin(10, 800); actions.setServos([{ id: 10, position: 800 }], 1) }
+function armHome() {
+  dragging = Date.now()
+  for (const id of [1, 2, 3, 4, 5]) { jval[id] = 500; pushTwin(id, 500) }
+  actions.setServos([1, 2, 3, 4, 5].map(id => ({ id, position: 500 })), 1.5)
+  setTimeout(() => { dragging = 0 }, 1800)
+}
 const clock = ref(''), date = ref('')
 let clockTimer = null
 function updateClock() {
@@ -314,7 +325,7 @@ onUnmounted(() => {
       <!-- 中央 3D 孪生。不加标题字，画面自己说明自己。 -->
       <div class="col center">
         <div class="viewport">
-          <Twin :bare="true" />
+          <Twin ref="twinRef" :bare="true" />
           <div class="scene-head"><span>数字孪生</span><b>实时姿态</b></div>
           <div class="scene-status">
             <div><small>线速度</small><b>{{ vx.toFixed(2) }} <em>m/s</em></b></div>

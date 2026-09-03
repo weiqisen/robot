@@ -578,6 +578,14 @@ function driveModelJoint(name, pulse) {
 }
 function syncArm() { actions.once('/controller_manager/servo_states', 'servo_controller_msgs/msg/ServoStateList', m => { (m.servo_state || []).forEach(s => { if (jval[s.id] != null) { jval[s.id] = s.position; const mp = SERVO_MAP.find(x => x.id === s.id); if (mp) driveModelJoint(mp.joint, s.position) } }) }) }
 
+// 给父组件（大屏）用：拖它自己的滑块时立刻把模型摆过去，不等 /joint_states 回传。
+// 舵机走到位要几百毫秒，只靠回传的话模型会明显拖后于滑块。
+function setJointByServoId(id, pulse) {
+  const mp = SERVO_MAP.find(m => m.id === +id)
+  if (mp) driveModelJoint(mp.joint, +pulse)
+}
+defineExpose({ setJointByServoId })
+
 // ---- CCD IK ----
 const IK_CHAIN = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5']
 const EE_OFFSET = new THREE.Vector3(0, 0, 0.08)
