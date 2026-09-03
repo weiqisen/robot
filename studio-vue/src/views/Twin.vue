@@ -162,6 +162,8 @@ function init() {
     for (const k in matGroups) delete matGroups[k]
     robot.traverse(o => {
       if (!o.isMesh || !o.material) return
+      // 辅助图层的 mesh 打了 userData.helperLayer，跳过不换材质
+      if (o.userData.helperLayer) return
       const mname = (o.material.name || '').toLowerCase()
       // 绿=车身/机械臂(阳极氧化铝)；空名的那个是深度相机外壳(URDF 里 rgba 0.753)
       const key = mname === 'green' ? 'green'
@@ -215,6 +217,10 @@ function init() {
     buildSelfBody(selfbodyGroup)
     buildDimensions(dimensionsGroup)
     buildAxes(axesGroup)
+    // 给所有辅助图层的 mesh 打标记，skinRobot 会跳过它们
+    for (const g of [workspaceGroup, selfbodyGroup, dimensionsGroup, axesGroup]) {
+      g.traverse(o => { if (o.isMesh) o.userData.helperLayer = true })
+    }
     for (const [k, g] of [['workspace', workspaceGroup], ['selfbody', selfbodyGroup],
                           ['dimensions', dimensionsGroup], ['angles', anglesGroup],
                           ['cameraFov', cameraFovGroup], ['axes', axesGroup]]) g.visible = tools[k]
@@ -614,6 +620,7 @@ function shellBox(group, x, y, z, color, fillOpacity) {
     toneMapped: false,  // 半透材质不走色调映射，否则会被 ACES 压暗
   }))
   mesh.renderOrder = -1  // 先画盒子，再画模型，这样模型能穿透盒子显示
+  mesh.userData.helperLayer = true   // skinRobot 据此跳过，别被换成不透明的车身材质
   group.add(mesh)
 
   const edge = new THREE.LineSegments(
