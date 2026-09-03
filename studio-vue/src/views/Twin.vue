@@ -142,27 +142,6 @@ function init() {
   rimL = new THREE.DirectionalLight(0x9fc4ff, lit.rim); rimL.position.set(-2.5, 1.5, -2); scene.add(rimL)
   world = new THREE.Group(); world.rotation.x = -Math.PI / 2; scene.add(world)
   grid = new THREE.GridHelper(10, 40, 0x2a3340, 0x161b22); grid.rotation.x = Math.PI / 2; world.add(grid)
-
-  // 辅助图层
-  workspaceGroup = new THREE.Group()
-  selfbodyGroup = new THREE.Group()
-  dimensionsGroup = new THREE.Group()
-  anglesGroup = new THREE.Group()
-  cameraFovGroup = new THREE.Group()
-  axesGroup = new THREE.Group()
-  world.add(workspaceGroup)
-  world.add(selfbodyGroup)
-  world.add(dimensionsGroup)
-  world.add(anglesGroup)
-  world.add(cameraFovGroup)
-  world.add(axesGroup)
-
-  // 构建辅助图层（单位：米，与 URDF 一致）
-  buildWorkspace(workspaceGroup)
-  buildSelfBody(selfbodyGroup)
-  buildDimensions(dimensionsGroup)
-  buildAxes(axesGroup)
-
   fit(); loop()
   // urdf-loader 的 load() 回调在 URDF **解析完**就触发，而 STL 网格是异步加载的。
   // 在那个回调里 traverse 根本遍历不到网格 —— 网格随后带着 loader 默认的
@@ -217,6 +196,29 @@ function init() {
     robot = rb
     world.add(robot)
     info.jointN = Object.keys(robot.joints).filter(n => robot.joints[n].jointType !== 'fixed').length + ' 关节'
+
+    // 辅助图层挂在 base_link 下，跟着车一起走一起转。
+    // 必须是 base_link 而不是 robot 根节点：根 link 是 base_footprint（轮子接地面），
+    // 比 base_link 低 0.116m，挂错了整套图层会整体下沉一个车高。
+    const anchor = (robot.links && robot.links.base_link) || robot
+    workspaceGroup = new THREE.Group()
+    selfbodyGroup = new THREE.Group()
+    dimensionsGroup = new THREE.Group()
+    anglesGroup = new THREE.Group()
+    cameraFovGroup = new THREE.Group()
+    axesGroup = new THREE.Group()
+    for (const g of [workspaceGroup, selfbodyGroup, dimensionsGroup,
+                     anglesGroup, cameraFovGroup, axesGroup]) anchor.add(g)
+
+    // 构建辅助图层（单位：米，base_link 坐标系）
+    buildWorkspace(workspaceGroup)
+    buildSelfBody(selfbodyGroup)
+    buildDimensions(dimensionsGroup)
+    buildAxes(axesGroup)
+    for (const [k, g] of [['workspace', workspaceGroup], ['selfbody', selfbodyGroup],
+                          ['dimensions', dimensionsGroup], ['angles', anglesGroup],
+                          ['cameraFov', cameraFovGroup], ['axes', axesGroup]]) g.visible = tools[k]
+
     // 兜底：万一这台车的 URDF 没有任何外部网格，onLoad 可能已经先触发过了
     if (mgr.itemsLoaded >= mgr.itemsTotal) onRobotReady()
   }, undefined, e => { loadErr.value = String(e); loading.value = false })
@@ -573,144 +575,142 @@ function syncArm() { actions.once('/controller_manager/servo_states', 'servo_con
 // ---- CCD IK ----
 const IK_CHAIN = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5']
 const EE_OFFSET = new THREE.Vector3(0, 0, 0.08)
-// ---- 辅助图层构建函数（单位：米） ----
-function buildWorkspace(group) {
-  // 工作区：12-34cm X, 1-16cm Z (相对地面), -8~8cm Y
-  const BODY_CX = 0.12
-  const x = [BODY_CX + 0.10, BODY_CX + 0.34]
-  const z = [-0.116 + 0.01, -0.116 + 0.16]  // 地面 -0.116m
-  const y = [-0.08, 0.08]
+// ---- 辅助图层（base_link 米制，数值与 snack_butler.py 的 DEFAULT_CONFIG 一致）----
+// TABLE_Z：机器人所站的那个台面在 base_link 系里的高度。base_link 在接地面上方
+// 0.116m，所以台面是 -0.116 而不是 0 —— snack_butler 的 table_z 就是这个值。
+const TABLE_Z = -0.116
+// workspace_rel：x/y 是 base_link 绝对坐标，z 是「离台面多高」
+const WS_REL = { x: [0.17, 0.32], y: [-0.20, 0.20], z: [-0.03, 0.12] }
+// self_body_boxes：底盘顶板 + 麦轮占的盒子，落在里面的检测结果直接丢弃
+const SELF_BOX = [0.05, 0.21, -0.17, 0.17, -0.045, 0.08]
+const CM = m => (m * 100).toFixed(1) + ' cm'
 
+function boxTriangles(x, y, z) {
   const verts = [
     [x[0], y[0], z[0]], [x[1], y[0], z[0]], [x[1], y[1], z[0]], [x[0], y[1], z[0]],
-    [x[0], y[0], z[1]], [x[1], y[0], z[1]], [x[1], y[1], z[1]], [x[0], y[1], z[1]]
+    [x[0], y[0], z[1]], [x[1], y[0], z[1]], [x[1], y[1], z[1]], [x[0], y[1], z[1]],
   ]
-  const faces = [[0,1,2,3], [4,5,6,7], [0,1,5,4], [2,3,7,6], [0,3,7,4], [1,2,6,5]]
+  const faces = [[0, 1, 2, 3], [4, 5, 6, 7], [0, 1, 5, 4], [2, 3, 7, 6], [0, 3, 7, 4], [1, 2, 6, 5]]
   const pos = []
   for (const f of faces) {
     const v = f.map(i => verts[i])
-    for (const tri of [[0,1,2], [0,2,3]]) {
-      for (const idx of tri) pos.push(v[idx][0], v[idx][1], v[idx][2])
-    }
+    for (const tri of [[0, 1, 2], [0, 2, 3]]) for (const i of tri) pos.push(v[i][0], v[i][1], v[i][2])
   }
-  const fgeo = new THREE.BufferGeometry()
-  fgeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
-  fgeo.computeVertexNormals()
-  const mesh = new THREE.Mesh(fgeo, new THREE.MeshPhysicalMaterial({
-    color: 0x3fb950,
-    transparent: true,
-    opacity: 0.08,
-    side: THREE.DoubleSide,
-    roughness: 0.3,
-    metalness: 0.0,
-    depthWrite: false,
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+  geo.computeVertexNormals()
+  return geo
+}
+
+// 半透盒 + 描边。depthWrite:false，否则会把盒子里的机械臂挡掉。
+function shellBox(group, x, y, z, color, fillOpacity) {
+  const mesh = new THREE.Mesh(boxTriangles(x, y, z), new THREE.MeshBasicMaterial({
+    color, transparent: true, opacity: fillOpacity, side: THREE.DoubleSide, depthWrite: false,
   }))
   group.add(mesh)
-
   const edge = new THREE.LineSegments(
     new THREE.EdgesGeometry(new THREE.BoxGeometry(x[1] - x[0], y[1] - y[0], z[1] - z[0])),
-    new THREE.LineBasicMaterial({ color: 0x3fb950, transparent: true, opacity: 0.35 })
-  )
+    new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.55 }))
   edge.position.set((x[0] + x[1]) / 2, (y[0] + y[1]) / 2, (z[0] + z[1]) / 2)
   group.add(edge)
+  return { mesh, edge }
+}
+
+function buildWorkspace(group) {
+  const x = WS_REL.x, y = WS_REL.y
+  const z = [TABLE_Z + WS_REL.z[0], TABLE_Z + WS_REL.z[1]]
+  shellBox(group, x, y, z, 0x3fb950, 0.07)
+  const tag = layerLabel('可抓取区', `${CM(x[1] - x[0])} × ${CM(y[1] - y[0])} × ${CM(z[1] - z[0])}`)
+  tag.position.set((x[0] + x[1]) / 2, (y[0] + y[1]) / 2, z[1] + 0.03)
+  group.add(tag)
 }
 
 function buildSelfBody(group) {
-  // 车身遮挡区
-  const BODY_CX = 0.12
-  const box = [BODY_CX - 0.07, BODY_CX + 0.09, -0.16, 0.16, -0.116, -0.116 + 0.137]
-  const x = [box[0], box[1]], y = [box[2], box[3]], z = [box[4], box[5]]
-
-  const verts = [
-    [x[0], y[0], z[0]], [x[1], y[0], z[0]], [x[1], y[1], z[0]], [x[0], y[1], z[0]],
-    [x[0], y[0], z[1]], [x[1], y[0], z[1]], [x[1], y[1], z[1]], [x[0], y[1], z[1]]
-  ]
-  const faces = [[0,1,2,3], [4,5,6,7], [0,1,5,4], [2,3,7,6], [0,3,7,4], [1,2,6,5]]
-  const pos = []
-  for (const f of faces) {
-    const v = f.map(i => verts[i])
-    for (const tri of [[0,1,2], [0,2,3]]) {
-      for (const idx of tri) pos.push(v[idx][0], v[idx][1], v[idx][2])
-    }
-  }
-  const fgeo = new THREE.BufferGeometry()
-  fgeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
-  fgeo.computeVertexNormals()
-  const mesh = new THREE.Mesh(fgeo, new THREE.MeshPhysicalMaterial({
-    color: 0xf85149,
-    transparent: true,
-    opacity: 0.10,
-    side: THREE.DoubleSide,
-    roughness: 0.4,
-    metalness: 0.0,
-    depthWrite: false,
-  }))
-  group.add(mesh)
-
-  const edge = new THREE.LineSegments(
-    new THREE.EdgesGeometry(new THREE.BoxGeometry(x[1] - x[0], y[1] - y[0], z[1] - z[0])),
-    new THREE.LineBasicMaterial({ color: 0xf85149, transparent: true, opacity: 0.35 })
-  )
-  edge.position.set((x[0] + x[1]) / 2, (y[0] + y[1]) / 2, (z[0] + z[1]) / 2)
-  group.add(edge)
+  const b = SELF_BOX
+  shellBox(group, [b[0], b[1]], [b[2], b[3]], [b[4], b[5]], 0xf85149, 0.09)
+  const tag = layerLabel('车身遮挡区', '此范围内的检测结果丢弃')
+  tag.position.set((b[0] + b[1]) / 2, b[3] + 0.02, b[5] + 0.02)
+  group.add(tag)
 }
 
+// 三条高度标尺：安全高度 / 预抓悬停 / 抬起，都从台面量起
 function buildDimensions(group) {
-  // 尺寸标注：安全高度
-  const BODY_CX = 0.12
-  const x = BODY_CX + 0.10
-  const y = 0.22
-  const zb = -0.116 + 0.01
-  const zt = -0.116 + 0.09
-
-  const p1 = new THREE.Vector3(x, y, zb)
-  const p2 = new THREE.Vector3(x, y, zt)
-  const line = new THREE.Line(
-    new THREE.BufferGeometry().setFromPoints([p1, p2]),
-    new THREE.LineBasicMaterial({ color: 0xd29922, transparent: true, opacity: 0.5 })
-  )
-  group.add(line)
-
-  for (const p of [p1, p2]) {
-    const dot = new THREE.Mesh(new THREE.SphereGeometry(0.004, 8, 8),
-      new THREE.MeshBasicMaterial({ color: 0xd29922 }))
-    dot.position.copy(p)
-    group.add(dot)
+  const items = [
+    { h: 0.08, c: 0xd29922, t: '安全高度', sub: 'safe_z' },
+    { h: 0.07, c: 0xbc8cff, t: '预抓悬停', sub: 'approach_h' },
+    { h: 0.10, c: 0x56d4dd, t: '抬起高度', sub: 'lift_h' },
+  ]
+  let xo = WS_REL.x[1] + 0.03
+  for (const it of items) {
+    const y = WS_REL.y[0] - 0.04
+    const p1 = new THREE.Vector3(xo, y, TABLE_Z)
+    const p2 = new THREE.Vector3(xo, y, TABLE_Z + it.h)
+    group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([p1, p2]),
+      new THREE.LineBasicMaterial({ color: it.c })))
+    for (const p of [p1, p2]) {
+      const d = new THREE.Mesh(new THREE.SphereGeometry(0.005, 10, 10),
+        new THREE.MeshBasicMaterial({ color: it.c }))
+      d.position.copy(p); group.add(d)
+    }
+    const tag = layerLabel(`${it.t} ${CM(it.h)}`, it.sub)
+    tag.position.set(xo, y, TABLE_Z + it.h + 0.022)
+    group.add(tag)
+    xo += 0.035
   }
+  // 台面参考线：z=table_z 这个平面是所有高度的基准
+  const g = new THREE.GridHelper(0.5, 10, 0x3a4550, 0x232a33)
+  g.rotation.x = Math.PI / 2
+  g.position.set(0.19, 0, TABLE_Z)
+  group.add(g)
+  const tag = layerLabel(`台面 z = ${CM(TABLE_Z)}`, 'table_z · 高度基准')
+  tag.position.set(0.19, -0.26, TABLE_Z)
+  group.add(tag)
 }
 
 function buildAxes(group) {
-  // 坐标轴
-  const BODY_CX = 0.12
-  const len = 0.10
-  const origin = new THREE.Vector3(BODY_CX - 0.08, 0, -0.116 + 0.01)
-  const data = [
-    { d: [len, 0, 0], c: 0xf85149 },  // X 红
-    { d: [0, len, 0], c: 0x3fb950 },  // Y 绿
-    { d: [0, 0, len], c: 0x58a6ff },  // Z 蓝
-  ]
-  for (const ax of data) {
-    const end = new THREE.Vector3(ax.d[0], ax.d[1], ax.d[2]).add(origin)
-    const line = new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints([origin, end]),
-      new THREE.LineBasicMaterial({ color: ax.c })
-    )
-    group.add(line)
-
-    const dir = end.clone().sub(origin).normalize()
-    const cone = new THREE.Mesh(
-      new THREE.ConeGeometry(0.010, 0.020, 8),
-      new THREE.MeshBasicMaterial({ color: ax.c })
-    )
+  const len = 0.12
+  for (const ax of [{ d: [len, 0, 0], c: 0xf85149, t: 'X 前' },
+                    { d: [0, len, 0], c: 0x3fb950, t: 'Y 左' },
+                    { d: [0, 0, len], c: 0x58a6ff, t: 'Z 上' }]) {
+    const end = new THREE.Vector3(...ax.d)
+    group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), end]),
+      new THREE.LineBasicMaterial({ color: ax.c })))
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(0.008, 0.022, 10),
+      new THREE.MeshBasicMaterial({ color: ax.c }))
     cone.position.copy(end)
-    cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir)
+    cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), end.clone().normalize())
     group.add(cone)
+    const tag = layerLabel(ax.t, 'base_link')
+    tag.position.copy(end).multiplyScalar(1.18)
+    group.add(tag)
   }
-
-  const dot = new THREE.Mesh(new THREE.SphereGeometry(0.006, 12, 12),
+  const o = new THREE.Mesh(new THREE.SphereGeometry(0.008, 12, 12),
     new THREE.MeshBasicMaterial({ color: 0xe6edf3 }))
-  dot.position.copy(origin)
-  group.add(dot)
+  group.add(o)
+}
+
+// 辅助图层的简单标签（半透背景 + 白字）
+function layerLabel(text, sub = '') {
+  const c = document.createElement('canvas')
+  const ctx = c.getContext('2d')
+  c.width = 512; c.height = 128
+  ctx.fillStyle = 'rgba(13,17,23,0.85)'
+  ctx.fillRect(0, 0, c.width, c.height)
+  ctx.textBaseline = 'top'
+  ctx.fillStyle = '#e6edf3'
+  ctx.font = 'bold 42px Inter, sans-serif'
+  ctx.fillText(text, 16, 16)
+  if (sub) {
+    ctx.fillStyle = 'rgba(230,237,243,0.5)'
+    ctx.font = '28px ui-monospace, monospace'
+    ctx.fillText(sub, 16, 68)
+  }
+  const tex = new THREE.CanvasTexture(c)
+  tex.needsUpdate = true
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false })
+  const sp = new THREE.Sprite(mat)
+  sp.scale.set(0.16, 0.04, 1)
+  return sp
 }
 
 let ikTarget = null, dragging = false
