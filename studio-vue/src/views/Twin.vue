@@ -1,5 +1,6 @@
 <script setup>
 import { ref, watch, onMounted, onBeforeUnmount, onActivated, onDeactivated, reactive, computed, nextTick } from 'vue'
+import { message } from 'ant-design-vue'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
@@ -7,21 +8,27 @@ import { ColladaLoader } from 'three/examples/jsm/loaders/ColladaLoader.js'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import URDFLoader from 'urdf-loader'
 import { useRos, quatToEuler, deg, videoUrl } from '../composables/useRos'
+import { useStreamWatch } from '../composables/useStreamWatch'
 const props = defineProps({ bare: { type: Boolean, default: false } })
 const emit = defineEmits(['focus'])
 const { state, actions, HOST, VISION_VIDEO_PORT } = useRos()
 
 const host = ref(null)
 const loading = ref(true), loadErr = ref('')
+// 默认开的只留「看车」必需的几层：示意盒子和坐标轴平时是干扰，识别流才是常看的。
+// 尺寸标注（dimensions）对调试抓取高度有用，默认开着。
 const tools = reactive({ lidar: true, grid: true, points: false, ik: false, tags: true,
-  workspace: true, selfbody: true, dimensions: true, angles: false, cameraFov: false, axes: true, detections: true, detectionFeed: false })
+  workspace: false, selfbody: false, dimensions: true, angles: false, cameraFov: false,
+  axes: false, detections: true, detectionFeed: true })
 
 // ---- 外观参数：集中一份，材质面板直接改它，改完实时生效并存 localStorage ----
 // 默认值来自官网实物图 jetrover.webp 取色（见 git log fix(twin) 那几条）。
 const MAT_DEFAULT = {
   green:  { cn: '车身绿（阳极氧化铝）', color: '#45c95e', metalness: 0.60, roughness: 0.33, env: 1.25 },
   black:  { cn: '黑色件（屏壳/雷达/夹爪）', color: '#15171a', metalness: 0.25, roughness: 0.68, env: 1.05 },
-  silver: { cn: '深度相机外壳', color: '#c0c0c0', metalness: 0.55, roughness: 0.35, env: 1.25 },
+  // Orbbec Dabai 实物是深灰哑光塑料外壳，不是亮银 —— 原来那档 #c0c0c0 +
+  // 高金属度渲出来就是一块反光的灰疙瘩。镜头细节由 decorateDepthCam 另外补。
+  silver: { cn: '深度相机外壳', color: '#3a4048', metalness: 0.30, roughness: 0.55, env: 1.10 },
   white:  { cn: '白色件', color: '#d2d6d8', metalness: 0.50, roughness: 0.38, env: 1.25 },
   gray:   { cn: '灰色件', color: '#6e7478', metalness: 0.55, roughness: 0.40, env: 1.25 },
   other:  { cn: '其它', color: '#2b333a', metalness: 0.45, roughness: 0.50, env: 1.15 },
@@ -99,6 +106,7 @@ const matOpen = ref(false)
 // web_video_server 转成 MJPEG。直接给 <img> 一个流地址就行，不用自己逐帧拉。
 // 关掉时必须把 src 清空：MJPEG 是永不结束的长连接，挂着会占满浏览器并发额度。
 const detFeedStamp = ref(0)
+const detFeedImg = ref(null)
 const detFeedSrc = computed(() => (tools.detectionFeed
   ? videoUrl(HOST, VISION_VIDEO_PORT, '/snack_butler/image_result', detFeedStamp.value) : ''))
 const detFeedStat = computed(() => {
@@ -111,6 +119,9 @@ const detFeedStat = computed(() => {
   return `${n} 个目标 · ${sb.state || '—'}`
 })
 function reloadDetFeed() { detFeedStamp.value = Date.now() }
+// MJPEG 卡死时 <img> 不会报 error，只是不再更新 —— 靠采样比对发现。
+// 这是「识别流经常不显示」的主因：onerror 只覆盖连不上，覆盖不了半死连接。
+useStreamWatch(() => (tools.detectionFeed ? detFeedImg.value : null), reloadDetFeed)
 watch(() => tools.detectionFeed, v => { if (v) reloadDetFeed() })
 const matGroups = {}          // 档位名 -> 这一档下所有 material，改参数时批量刷
 let hemiL = null, keyL = null, rimL = null
@@ -153,8 +164,21 @@ function init() {
   scene = new THREE.Scene(); scene.fog = new THREE.Fog(0x070a0e, 4, 14)
   const pmrem = new THREE.PMREMGenerator(renderer)
   scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture
-  camera = new THREE.PerspectiveCamera(48, 1, 0.01, 100); camera.position.set(0.9, 0.8, 0.9)
-  controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping = true; controls.target.set(0, 0.2, 0)
+  camera = new THREE.PerspectiveCamera(48, 1, 0.01, 100)
+  // 初始视角从后端读，异步加载完成后再应用（用 await 会卡 init，先用默认）
+  camera.position.set(...savedView.pos)
+  loadSavedView().then(() => {
+    if (viewIdx.value === 0) {
+      camera.position.set(...savedView.pos)
+      controls.target.set(...savedView.target)
+    }
+  })
+  controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping = true
+  controls.target.set(...savedView.target)
+  // 用户拖动相机时标记为自由视角
+  controls.addEventListener('change', () => {
+    if (viewIdx.value < 2) viewIdx.value = 2
+  })
   // 金属的样子来自「反射环境」，不是「被灯照亮」。半球光给的是均匀漫反射，
   // 开大了等于往模型上糊一层平光，反射全被冲淡 —— 所以压到很低，只用来托暗部，
   // 主要交给上面那张 RoomEnvironment。再加一盏背侧轮廓光，金属边缘要有那道亮线。
@@ -205,6 +229,9 @@ function init() {
     if (!robot || robotReady) return
     robotReady = true
     skinRobot()
+    decorateDepthCam()   // 素模相机补镜头，必须在 skinRobot 之后（那边会重刷材质）
+    buildJetsonInside()  // 屏蔽罩里的 Jetson 风扇 + 开发板，同理
+    decorateChassis()    // 底盘：轮毂电机、电池包、OLED 屏、开关
     makeJointTags()
     makeScreen()
     loading.value = false
@@ -554,9 +581,21 @@ function fit() {
   camera.aspect = w / h
   camera.updateProjectionMatrix()
 }
+let oledTick = 0
 function loop() {
   if (!pageActive || !renderer) { raf = null; return }
-  raf = requestAnimationFrame(loop); controls.update(); renderer.render(scene, camera)
+  raf = requestAnimationFrame(loop)
+  // 风扇转速跟 Jetson 实际温度挂钩：越热转越快，没遥测就按基础转速空转
+  if (fanBlades) {
+    const t = state.jetson?.temps ? Math.max(...Object.values(state.jetson.temps)) : null
+    const k = t == null ? 0.55 : Math.max(0.25, Math.min(1.6, (t - 30) / 40))
+    fanBlades.rotation.z += 0.35 * k
+  }
+  // 雷达在线（/scan 有新数据）就一直转。10Hz 扫描 ≈ 每帧 0.1 rad 看着合适。
+  if (lidarMesh && state.now - state.scanAt < 2000) lidarMesh.rotation.z += 0.1
+  // OLED 三行内容 1Hz 刷够了，别每帧重画 canvas
+  if (++oledTick % 60 === 0) drawOLED()
+  controls.update(); renderer.render(scene, camera)
 }
 
 // 关节反馈 -> 模型
@@ -745,6 +784,393 @@ function buildAxes(group) {
   const o = new THREE.Mesh(new THREE.SphereGeometry(0.008, 12, 12),
     new THREE.MeshBasicMaterial({ color: 0xe6edf3 }))
   group.add(o)
+}
+
+// ---- 深度相机镜头细节 ----
+// URDF 里 depth_cam_link 只有一个素模 STL（材质名为空、rgba 0.753），没有镜头、
+// 没有玻璃面板，渲染出来就是一块灰疙瘩。这里按实物 Orbbec Dabai 的排布补上
+// 面板 + 三颗镜头 + 红外投影器，全部挂在 depth_cam_link 下，跟着机械臂一起动。
+//
+// 朝向：探针实测 depth_cam_frame 的 +Z 在 link 系里是 +X，所以镜头装在 +X 面。
+// 外壳 bbox（link 系）：x[-0.0125, 0.0126] y[-0.0439, 0.0459] z[-0.0126, 0.0125]
+const CAM_FX = 0.0126        // 外壳前表面
+function decorateDepthCam() {
+  const link = robot && robot.links && robot.links.depth_cam_link
+  if (!link) return
+  if (link.userData.decorated) return      // 可重入
+  link.userData.decorated = true
+
+  const mark = o => { o.userData.helperLayer = true; return o }   // skinRobot 跳过
+  // 让 Y 轴的圆柱躺倒朝 +X
+  const alignX = new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0), new THREE.Vector3(1, 0, 0))
+
+  // 玻璃面板：深色、光滑，压在外壳前脸上
+  const panel = mark(new THREE.Mesh(
+    new THREE.BoxGeometry(0.0016, 0.083, 0.0188),
+    new THREE.MeshStandardMaterial({ color: 0x0a0c10, metalness: 0.35,
+      roughness: 0.10, envMapIntensity: 1.6 })))
+  panel.position.set(CAM_FX, 0.001, 0)
+  link.add(panel)
+
+  // 镜头：镜筒 + 镜片。镜片高金属低粗糙，靠环境反射出「玻璃」的感觉。
+  function lens(y, rBarrel, rGlass, glassColor, emissive) {
+    const barrel = mark(new THREE.Mesh(
+      new THREE.CylinderGeometry(rBarrel, rBarrel * 1.06, 0.0042, 24),
+      new THREE.MeshStandardMaterial({ color: 0x15181d, metalness: 0.55,
+        roughness: 0.42, envMapIntensity: 1.1 })))
+    barrel.quaternion.copy(alignX)
+    barrel.position.set(CAM_FX + 0.0018, y, 0)
+    link.add(barrel)
+
+    const glass = mark(new THREE.Mesh(
+      new THREE.CylinderGeometry(rGlass, rGlass, 0.0008, 24),
+      new THREE.MeshStandardMaterial({ color: glassColor, metalness: 0.96,
+        roughness: 0.055, envMapIntensity: 2.2,
+        emissive: emissive || 0x000000, emissiveIntensity: emissive ? 0.35 : 0 })))
+    glass.quaternion.copy(alignX)
+    glass.position.set(CAM_FX + 0.0037, y, 0)
+    link.add(glass)
+  }
+
+  // 双目红外基线 ~66mm，中间是 RGB，RGB 与左红外之间是投影器
+  lens(-0.032, 0.0053, 0.0043, 0x0b1a2e)            // 左红外
+  lens(0.001, 0.0059, 0.0048, 0x101418)             // RGB 主摄
+  lens(0.034, 0.0053, 0.0043, 0x0b1a2e)             // 右红外
+  lens(-0.0155, 0.0044, 0.0034, 0x2a0f14, 0x5a1520) // 红外投影器：暗红并微微自发光
+
+  // 工作指示灯
+  const led = mark(new THREE.Mesh(
+    new THREE.SphereGeometry(0.0014, 10, 10),
+    new THREE.MeshStandardMaterial({ color: 0x34d399, emissive: 0x34d399,
+      emissiveIntensity: 0.9, toneMapped: false })))
+  led.position.set(CAM_FX + 0.0012, 0.0405, 0)
+  link.add(led)
+}
+
+// ---- 屏蔽罩内部：Jetson 风扇 + 开发板 ----
+// URDF 的 back_shell_black_link 是个整体外壳素模，里面是空的。按实物补：
+// 7 寸屏下方的黑罩里是 Jetson 的涡轮风扇，风扇下面压着 Nano 开发板。
+//
+// 探针实测 back_shell_black_link 局部系 bbox：x[-0.166, -0.0389] y[±0.0828] z[0.002, 0.158]
+// 板子必须塞在 x > -0.16 才不穿出去。Y 只有 ±0.0828（165mm），比实物 Nano 载板
+// （100mm）还窄，所以按 76×52mm 缩比例。屏幕在 base 系 x=-0.1469 z=0.1136，
+// 对应局部系约 x=-0.139（link 原点在 base 系 x=-0.008），所以「屏下方」= 局部 x 接近 -0.14 且 z 明显低于 0.11。
+const JET = {
+  x: -0.135, z: 0.026,        // 板中心（局部系）
+  w: 0.076, d: 0.052,         // 板 x 向长 / y 向宽
+  fanZ: 0.026 + 0.025,        // 风扇悬在板上方
+}
+let fanBlades = null      // loop() 里转它
+function buildJetsonInside() {
+  const link = robot && robot.links && robot.links.back_shell_black_link
+  if (!link) return
+  if (link.userData.inside) return
+  link.userData.inside = true
+
+  const mark = o => { o.userData.helperLayer = true; return o }
+  const g = new THREE.Group()
+  mark(g)
+  link.add(g)
+
+  const { x: PCB_X, z: PCB_Z, w: PCB_W, d: PCB_D, fanZ: FAN_Z } = JET
+  const frontX = PCB_X + PCB_W / 2      // 板的 +X 边 = 朝机身那一侧
+
+  // ---- 载板本体 ----
+  // 实物这块板是黑色阻焊，不是常见的绿板；只在边缘留一点点绿意都不该有。
+  const pcb = mark(new THREE.Mesh(
+    new THREE.BoxGeometry(PCB_W, PCB_D, 0.0016),
+    new THREE.MeshStandardMaterial({ color: 0x0d1013, metalness: 0.18,
+      roughness: 0.68, envMapIntensity: 0.7 })))
+  pcb.position.set(PCB_X, 0, PCB_Z)
+  g.add(pcb)
+
+  // 核心模块：贴在板中间的金属屏蔽罩
+  const som = mark(new THREE.Mesh(
+    new THREE.BoxGeometry(0.038, 0.034, 0.0032),
+    new THREE.MeshStandardMaterial({ color: 0x6f767e, metalness: 0.82,
+      roughness: 0.34, envMapIntensity: 1.35 })))
+  som.position.set(PCB_X - 0.006, 0, PCB_Z + 0.0024)
+  g.add(som)
+
+  // 散热片：核心上方一排鳍片
+  const finMat = new THREE.MeshStandardMaterial({ color: 0x7e858d, metalness: 0.88,
+    roughness: 0.28, envMapIntensity: 1.45 })
+  for (let i = 0; i < 8; i++) {
+    const fin = mark(new THREE.Mesh(new THREE.BoxGeometry(0.0015, 0.031, 0.009), finMat))
+    fin.position.set(PCB_X - 0.020 + i * 0.0048, 0, PCB_Z + 0.0085)
+    g.add(fin)
+  }
+
+  // ---- 接口区：网口 / USB / 串口，全部朝机身（+X）----
+  // 之前这排是摆在 -Y 侧（车身右侧），实物是朝机身内侧的。
+  const shieldMat = new THREE.MeshStandardMaterial({ color: 0xa8b0b8, metalness: 0.88,
+    roughness: 0.3, envMapIntensity: 1.4 })
+  const plasticMat = new THREE.MeshStandardMaterial({ color: 0x14181c, metalness: 0.4, roughness: 0.5 })
+  // [沿 y 的位置, y 向宽度, 高度, 是否金属壳]
+  const ports = [
+    [-0.017, 0.013, 0.011, true],   // RJ45 网口
+    [-0.002, 0.011, 0.009, true],   // USB 3.0 ×2
+    [0.011, 0.009, 0.007, true],    // USB 2.0
+    [0.021, 0.007, 0.006, false],   // 串口针座
+  ]
+  for (const [py, pw, ph, metal] of ports) {
+    const port = mark(new THREE.Mesh(
+      new THREE.BoxGeometry(0.010, pw, ph),
+      metal ? shieldMat : plasticMat))
+    // 沿 +X 伸出板边一点，做成「插头从这一面进」的样子
+    port.position.set(frontX - 0.003, py, PCB_Z + ph / 2 + 0.001)
+    g.add(port)
+  }
+  // GPIO 排针：放在板的 -X 边（背离机身那侧）
+  const hdr = mark(new THREE.Mesh(new THREE.BoxGeometry(0.005, 0.040, 0.005), plasticMat))
+  hdr.position.set(PCB_X - PCB_W / 2 + 0.005, 0, PCB_Z + 0.0035)
+  g.add(hdr)
+
+  // 电源指示灯
+  const led = mark(new THREE.Mesh(new THREE.SphereGeometry(0.0012, 8, 8),
+    new THREE.MeshStandardMaterial({ color: 0x34d399, emissive: 0x34d399,
+      emissiveIntensity: 1.0, toneMapped: false })))
+  led.position.set(frontX - 0.012, -0.023, PCB_Z + 0.002)
+  g.add(led)
+
+  // ---- 涡轮风扇：外框 + 转子 ----
+  // Z 轴向上吹，所以圆柱要立着（默认沿 Y，转到 Z）
+  const alignZ = new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1))
+  const FAN_R = 0.016                    // 罩内只有 32mm 余量，别再画 40mm 框
+
+  const frame = mark(new THREE.Mesh(
+    new THREE.BoxGeometry(FAN_R * 2.1, FAN_R * 2.1, 0.010),
+    new THREE.MeshStandardMaterial({ color: 0x101317, metalness: 0.35,
+      roughness: 0.6, envMapIntensity: 0.9 })))
+  frame.position.set(PCB_X - 0.006, 0, FAN_Z)
+  g.add(frame)
+
+  // 框内挖空的观感靠一圈深色内壁营造
+  const bore = mark(new THREE.Mesh(
+    new THREE.CylinderGeometry(FAN_R, FAN_R, 0.0105, 28, 1, true),
+    new THREE.MeshStandardMaterial({ color: 0x07090b, metalness: 0.2,
+      roughness: 0.85, side: THREE.DoubleSide })))
+  bore.quaternion.copy(alignZ)
+  bore.position.set(PCB_X - 0.006, 0, FAN_Z)
+  g.add(bore)
+
+  // 转子：轮毂 + 7 片扇叶，整体绕 Z 转
+  fanBlades = new THREE.Group()
+  mark(fanBlades)
+  fanBlades.position.set(PCB_X - 0.006, 0, FAN_Z)
+  g.add(fanBlades)
+
+  const hub = mark(new THREE.Mesh(
+    new THREE.CylinderGeometry(0.0055, 0.0055, 0.008, 20),
+    new THREE.MeshStandardMaterial({ color: 0x23272d, metalness: 0.6, roughness: 0.38 })))
+  hub.quaternion.copy(alignZ)
+  fanBlades.add(hub)
+
+  const bladeMat = new THREE.MeshStandardMaterial({ color: 0x343a42, metalness: 0.45,
+    roughness: 0.45, envMapIntensity: 1.1, side: THREE.DoubleSide })
+  for (let i = 0; i < 7; i++) {
+    const blade = mark(new THREE.Mesh(new THREE.BoxGeometry(0.0100, 0.0009, 0.0068), bladeMat))
+    const a = (i / 7) * Math.PI * 2
+    // 叶片沿半径摆出去，再绕自身径向轴倾 28° 做成螺旋角
+    blade.position.set(Math.cos(a) * 0.0100, Math.sin(a) * 0.0100, 0)
+    blade.rotation.z = a
+    blade.rotateX(0.49)
+    fanBlades.add(blade)
+  }
+
+  // 风扇电源线：从框侧拉到板上的针座
+  const wire = mark(new THREE.Mesh(
+    new THREE.TubeGeometry(new THREE.CatmullRomCurve3([
+      new THREE.Vector3(PCB_X + 0.010, 0.010, FAN_Z),
+      new THREE.Vector3(PCB_X + 0.018, 0.017, FAN_Z - 0.008),
+      new THREE.Vector3(PCB_X + 0.014, 0.022, PCB_Z + 0.005),
+    ]), 16, 0.0010, 8, false),
+    new THREE.MeshStandardMaterial({ color: 0x0c0f13, metalness: 0.2, roughness: 0.72 })))
+  g.add(wire)
+}
+
+// ---- 底盘细节：轮毂电机 + 电池包 + OLED 屏 + 开关 ----
+// URDF 的轮子本身已经是完整的轮胎（圆柱），轮毂电机藏在轮胎内侧（车身那面），
+// 翻到车底才看得见。所以不是「外加凸缘」，而是「在轮胎背面内凹处补电机壳」。
+// 电池包摆在底盘中央（base_link 下），4 节 12V 串联的长条盒子。
+// 雷达下方的护板凹槽里藏着 OLED 小屏（0.96" 128×64），显示 SSID / IP / BAT。
+// 雷达前面左右各一个拨挡开关。
+let lidarMesh = null      // loop() 里转它
+function decorateChassis() {
+  const bl = robot && robot.links && robot.links.base_link
+  if (!bl) return
+  if (bl.userData.chassisDone) return
+  bl.userData.chassisDone = true
+
+  const mark = o => { o.userData.helperLayer = true; return o }
+
+  // ---- 四个轮子补轮毂电机（车身内侧，藏在轮胎里）----
+  // 探针实测 wheel_left_front_link 局部 bbox：y[-0.031, 0.0178]，半径 ~0.0487。
+  // 轮胎宽度约 48mm，占 y ∈ [-0.031, 0.0178]。电机壳藏在轮胎内侧（负 y，朝车身）。
+  // 注意：左轮的 +y 是朝车外的，所以电机壳要放 **负 y**；右轮反过来。
+  const wheelData = [
+    ['wheel_left_front_link', -1],   ['wheel_right_front_link', 1],
+    ['wheel_left_back_link', -1],    ['wheel_right_back_link', 1],
+  ]
+  for (const [name, ySgn] of wheelData) {
+    const link = robot.links[name]
+    if (!link) continue
+    // 电机外壳：短圆柱，比轮胎半径略小（~0.035），藏在轮胎内侧
+    const motor = mark(new THREE.Mesh(
+      new THREE.CylinderGeometry(0.035, 0.035, 0.026, 24),
+      new THREE.MeshStandardMaterial({ color: 0x18191c, metalness: 0.55,
+        roughness: 0.45, envMapIntensity: 1.1 })))
+    motor.rotation.set(Math.PI / 2, 0, 0)
+    // 左轮往 -y（朝车身），右轮往 +y（朝车身），都是 ySgn * 0.022
+    motor.position.set(0, ySgn * 0.022, 0)
+    link.add(motor)
+    // 轴心小凸台
+    const axle = mark(new THREE.Mesh(
+      new THREE.CylinderGeometry(0.011, 0.011, 0.015, 16),
+      new THREE.MeshStandardMaterial({ color: 0x2a2f36, metalness: 0.75, roughness: 0.32 })))
+    axle.rotation.set(Math.PI / 2, 0, 0)
+    axle.position.set(0, ySgn * 0.032, 0)
+    link.add(axle)
+    // 电机壳上的螺栓：4 个，均匀分布
+    const boltMat = new THREE.MeshStandardMaterial({ color: 0x4a5158, metalness: 0.88, roughness: 0.28 })
+    for (let i = 0; i < 4; i++) {
+      const bolt = mark(new THREE.Mesh(new THREE.CylinderGeometry(0.0022, 0.0022, 0.004, 8), boltMat))
+      bolt.rotation.set(Math.PI / 2, 0, 0)
+      const a = (i / 4) * Math.PI * 2 + Math.PI / 4
+      bolt.position.set(Math.cos(a) * 0.023, ySgn * 0.022, Math.sin(a) * 0.023)
+      link.add(bolt)
+    }
+  }
+
+  // ---- 电池包：4 节 12V 的长条，摆在底盘中央 ----
+  // base_link bbox x[0.3055, -0.2335]，中心约 x=0.036。电池包放在中后段 x≈-0.03。
+  const battery = mark(new THREE.Mesh(
+    new THREE.BoxGeometry(0.150, 0.062, 0.035),
+    new THREE.MeshStandardMaterial({ color: 0x0e1418, metalness: 0.35,
+      roughness: 0.55, envMapIntensity: 1.0 })))
+  battery.position.set(-0.030, 0, -0.080)
+  bl.add(battery)
+  // 电池包上的 4 节电芯凸起
+  const cellMat = new THREE.MeshStandardMaterial({ color: 0x141a20, metalness: 0.3, roughness: 0.6 })
+  for (let i = 0; i < 4; i++) {
+    const cell = mark(new THREE.Mesh(new THREE.CylinderGeometry(0.013, 0.013, 0.050, 16), cellMat))
+    cell.rotation.set(0, 0, Math.PI / 2)
+    cell.position.set(-0.030 - 0.042 + i * 0.028, 0, -0.063)
+    bl.add(cell)
+  }
+  // XT60 接口：黄色插头
+  const xt60 = mark(new THREE.Mesh(
+    new THREE.BoxGeometry(0.016, 0.010, 0.008),
+    new THREE.MeshStandardMaterial({ color: 0xe8c020, metalness: 0.25, roughness: 0.5 })))
+  xt60.position.set(0.048, 0, -0.080)
+  bl.add(xt60)
+
+  // ---- OLED 小屏：0.96" 128×64，雷达下方护板凹槽里 ----
+  // lidar_link bbox（base 系）x[0.1574, 0.0226] y[±0.0325] z[0.002, 0.0531]
+  // 雷达前方（+X）护板那两个圆孔的上方有凹槽，OLED 屏贴在那。屏长度是两孔间距的 2 倍。
+  // 两孔估计间距 ~30mm，所以屏幅约 60mm。0.96" 实际可视区约 21.7×11mm，外壳约 27×27mm。
+  // 这里按两块屏并排的感觉（实物可能就是两块0.96"拼的），总宽 60mm。
+  const oledGrp = new THREE.Group()
+  mark(oledGrp)
+  // 位置：雷达前脸 +X ≈ 0.16，屏往前凸一点点 0.162，垂直居中 y=0，高度 z≈0.015
+  oledGrp.position.set(0.162, 0, 0.015)
+  bl.add(oledGrp)
+  // 黑色外壳
+  const oledCase = mark(new THREE.Mesh(
+    new THREE.BoxGeometry(0.003, 0.060, 0.027),
+    new THREE.MeshStandardMaterial({ color: 0x0a0d10, metalness: 0.25, roughness: 0.65 })))
+  oledGrp.add(oledCase)
+  // 蓝色 OLED 屏面：带微弱自发光
+  const oledScreen = mark(new THREE.Mesh(
+    new THREE.BoxGeometry(0.0005, 0.054, 0.021),
+    new THREE.MeshStandardMaterial({ color: 0x1e3a5f, emissive: 0x2a5a8f,
+      emissiveIntensity: 0.6, toneMapped: false })))
+  oledScreen.position.set(0.0018, 0, 0)
+  oledGrp.add(oledScreen)
+  // 三行文字用 canvas 纹理画，动态刷（loop 里根据 state 更新）
+  const oledCv = document.createElement('canvas')
+  oledCv.width = 128; oledCv.height = 64
+  const oledTex = new THREE.CanvasTexture(oledCv)
+  oledTex.anisotropy = 4
+  const oledText = mark(new THREE.Mesh(
+    new THREE.PlaneGeometry(0.053, 0.020),
+    new THREE.MeshBasicMaterial({ map: oledTex, transparent: true, toneMapped: false })))
+  oledText.position.set(0.0022, 0, 0)
+  oledText.rotation.y = -Math.PI / 2
+  oledGrp.add(oledText)
+  // 存到 userData 供 loop() 刷新
+  bl.userData.oledCanvas = oledCv
+  bl.userData.oledTexture = oledTex
+
+  // ---- 雷达前方左右各一个拨挡开关 ----
+  // 开关位置：雷达 +X 前方，左右对称 y ≈ ±0.022，高度 z ≈ 0.032
+  for (const ySide of [-1, 1]) {
+    const sw = new THREE.Group()
+    mark(sw)
+    sw.position.set(0.158, ySide * 0.022, 0.032)
+    bl.add(sw)
+    // 开关座：黑色方块
+    const base = mark(new THREE.Mesh(
+      new THREE.BoxGeometry(0.006, 0.008, 0.012),
+      new THREE.MeshStandardMaterial({ color: 0x12151a, metalness: 0.4, roughness: 0.55 })))
+    sw.add(base)
+    // 拨挡：红色小柱
+    const lever = mark(new THREE.Mesh(
+      new THREE.BoxGeometry(0.003, 0.003, 0.007),
+      new THREE.MeshStandardMaterial({ color: 0xd63031, metalness: 0.2, roughness: 0.6 })))
+    lever.position.set(0.0018, 0, 0.0055)
+    sw.add(lever)
+    // 指示灯：绿色 LED，在线时亮
+    const led = mark(new THREE.Mesh(
+      new THREE.SphereGeometry(0.0010, 8, 8),
+      new THREE.MeshStandardMaterial({ color: 0x34d399, emissive: 0x34d399,
+        emissiveIntensity: 1.0, toneMapped: false })))
+    led.position.set(0.0018, 0, -0.004)
+    sw.add(led)
+    sw.userData.led = led
+  }
+
+  // ---- 雷达本体：给它标记出来，loop() 里转 ----
+  const lidarLink = robot.links.lidar_link
+  if (lidarLink) {
+    lidarLink.traverse(o => {
+      if (o.isMesh && !o.userData.helperLayer) {
+        lidarMesh = o
+      }
+    })
+  }
+}
+
+// OLED 三行内容。数据源都在 state 里现成的：
+//   wifi_ssid / ip 来自 jetson_agent 的 /jetson/stats
+//   电压来自 /ros_robot_controller/battery（mV）
+function drawOLED() {
+  const bl = robot && robot.links && robot.links.base_link
+  if (!bl || !bl.userData.oledCanvas) return
+  const cv = bl.userData.oledCanvas, x = cv.getContext('2d')
+  x.fillStyle = '#04070b'; x.fillRect(0, 0, 128, 64)
+  const j = state.jetson || {}
+  const v = state.batt == null ? null : state.batt / 1000
+  const rows = [
+    ['SSID', j.wifi_ssid || '--'],
+    ['IP', j.ip || '--'],
+    ['BAT', v == null ? '--' : v.toFixed(2) + 'V'],
+  ]
+  x.textBaseline = 'middle'
+  x.font = '600 13px ui-monospace, Menlo, monospace'
+  rows.forEach(([k, val], i) => {
+    const y = 13 + i * 19
+    x.fillStyle = '#3f7fa8'
+    x.textAlign = 'left'
+    x.fillText(k, 5, y)
+    x.fillStyle = '#8fd0f5'
+    x.textAlign = 'right'
+    // IP/SSID 可能很长，超了就截断
+    x.fillText(String(val).slice(0, 13), 123, y)
+  })
+  bl.userData.oledTexture.needsUpdate = true
 }
 
 // ---- YOLO 检测结果的 3D 投影 ----
@@ -984,7 +1410,63 @@ function toggleTool(k) {
 }
 // 屏幕在车尾，默认机位在车前 —— 不给个入口就永远看不到它。
 // 机位按屏幕的实际世界位姿现算：车会随 /odom 转，写死的坐标转两下就偏了。
+// ---- 视角切换 + 保存默认视角 ----
+// viewIdx: 0=默认（自定义或初始）、1=车尾屏幕、2=自由（用户拖动后）
+// 默认视角保存到后端 /api/twin/view，全局生效（所有客户端）。
 const viewIdx = ref(0)
+const DEFAULT_VIEW = { pos: [0.9, 0.8, 0.9], target: [0, 0.2, 0] }
+const savedView = reactive(clone(DEFAULT_VIEW))
+
+async function loadSavedView() {
+  try {
+    const r = await fetch(`http://${HOST}:8000/api/twin/view`, { cache: 'no-store' })
+    if (r.ok) {
+      const v = await r.json()
+      if (v.pos && v.target) Object.assign(savedView, v)
+    }
+  } catch (e) {}
+}
+
+async function saveCurrentView() {
+  const view = {
+    pos: camera.position.toArray().map(v => +v.toFixed(4)),
+    target: controls.target.toArray().map(v => +v.toFixed(4)),
+  }
+  try {
+    const r = await fetch(`http://${HOST}:8000/api/twin/view`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(view),
+    })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    Object.assign(savedView, view)
+    message.success('已保存当前视角为默认（全局生效）')
+  } catch (e) {
+    message.error('保存失败：' + e.message)
+  }
+}
+
+function resetToDefault() {
+  viewIdx.value = 0
+  camera.position.set(...savedView.pos)
+  controls.target.set(...savedView.target)
+}
+
+function resetView() {
+  if (viewIdx.value === 1) {
+    // 从屏幕视角切回默认
+    resetToDefault()
+  } else {
+    // 从默认或自由切到屏幕视角
+    viewIdx.value = 1
+    if (screenMesh) {
+      const p = screenMesh.getWorldPosition(new THREE.Vector3())
+      const n = screenMesh.getWorldDirection(new THREE.Vector3())
+      camera.position.copy(p).addScaledVector(n, 0.38)
+      controls.target.copy(p)
+    }
+  }
+}
 
 // ---- 全屏 ----
 // 全屏目标是最外层 .twin，工具栏和面板一起进全屏；退出用 Esc 或再点一次。
@@ -1009,18 +1491,7 @@ function onFsChange() {
   // 全屏切换会改容器尺寸，renderer 得跟着重算，否则画面被拉伸
   requestAnimationFrame(fit)
 }
-function resetView() {
-  viewIdx.value ^= 1
-  if (viewIdx.value === 1 && screenMesh) {
-    const p = screenMesh.getWorldPosition(new THREE.Vector3())
-    const n = screenMesh.getWorldDirection(new THREE.Vector3())
-    camera.position.copy(p).addScaledVector(n, 0.38)
-    controls.target.copy(p)
-  } else {
-    viewIdx.value = 0
-    camera.position.set(0.9, 0.8, 0.9); controls.target.set(0, 0.2, 0)
-  }
-}
+
 
 let hostRO = null
 onMounted(() => {
@@ -1067,8 +1538,12 @@ onBeforeUnmount(() => {
                         ['workspace', '工作区'], ['selfbody', '遮挡区'], ['dimensions', '尺寸'], ['axes', '坐标轴'],
                         ['detections', '识别']]" :key="t[0]"
         :class="['glass tbtn', { on: tools[t[0]] }]" @click="toggleTool(t[0])">{{ t[1] }}</div>
-      <div class="glass tbtn" :title="viewIdx ? '切回默认视角' : '看车尾屏幕'"
-        @click="resetView">{{ viewIdx ? '车头' : '视角' }}</div>
+      <div class="glass tbtn" :title="viewIdx === 1 ? '切回默认视角' : '看车尾屏幕'"
+        @click="resetView">{{ viewIdx === 1 ? '车头' : '视角' }}</div>
+      <div v-if="viewIdx === 2" class="glass tbtn" title="回到已保存的默认视角"
+        @click="resetToDefault">复位</div>
+      <div class="glass tbtn" title="把当前机位和缩放存为默认视角，下次打开就是这个角度"
+        @click="saveCurrentView">存视角</div>
       <div class="glass tbtn" :title="isFs ? '退出全屏' : '全屏显示'"
         @click="toggleFullscreen">{{ isFs ? '退出' : '全屏' }}</div>
       <div :class="['glass tbtn', { on: matOpen }]" title="材质与光照，实时生效"
@@ -1083,7 +1558,7 @@ onBeforeUnmount(() => {
         <b>实时识别</b>
         <span class="df-close" title="关闭" @click="tools.detectionFeed = false">✕</span>
       </div>
-      <img class="df-img" :src="detFeedSrc" alt="" @error="reloadDetFeed" />
+      <img ref="detFeedImg" class="df-img" :src="detFeedSrc" alt="" @error="reloadDetFeed" />
       <div class="df-stat">{{ detFeedStat }}</div>
     </div>
 

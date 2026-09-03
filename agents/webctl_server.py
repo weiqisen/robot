@@ -37,6 +37,10 @@ PORT = int(os.environ.get('WEBCTL_PORT') or 8000)
 # 数字孪生的材质/光照参数。放在 web_control 外面 —— 部署时那个目录会被
 # rm -rf assets + 解包覆盖，配置放里面迟早被抹掉。
 LOOK = os.environ.get('WEBCTL_LOOK') or os.path.expanduser('~/twin_look.json')
+# 数字孪生的默认机位（相机位置 + 注视点）。跟 LOOK 一样放在 web_control 外面，
+# 部署时不会被 rm -rf 抹掉。存这里而不是 localStorage：换设备、清缓存都还在，
+# 所有人打开看到的都是同一个角度。
+VIEW = os.environ.get('WEBCTL_VIEW') or os.path.expanduser('~/twin_view.json')
 MAX_BODY = 64 * 1024        # 这份配置只有几百字节，给足余量后直接拒绝
 
 # 桌面抓屏：给数字孪生模型的屏幕当画面用。实测一帧 300~440ms、约 33KB，
@@ -69,31 +73,145 @@ SERVICE_UNITS = {
 SERVICE_RESTART_PATH = re.compile(r'^/api/services/([a-z0-9-]+)/restart$')
 
 
-def vision_health():
-    """抓取图像链路的人工可读自检；只读，不触发任何重启。"""
-    def active(unit):
+# 抓取图像链路的每一环。fix 是这一环坏了该重启谁（None = 只能人工处理），
+# 必须落在 SERVICE_UNITS 白名单里，否则重启接口会拒。
+VISION_CHAIN = [
+    ('start_app_node', '相机 / ROS 主节点', None,
+     '相机驱动和 ROS 主节点。挂了整条链路都没有图。'),
+    ('rosbridge', 'rosbridge (:9090)', 'webctl',
+     '网页拿状态和下发命令都走它；断了页面所有读数变「离线」。'),
+    ('web_video_server', 'MJPEG 视频服务 (:8080)', None,
+     '把 ROS 图像话题转成浏览器能吃的 MJPEG。'),
+    ('snack-butler', '视觉抓取节点', 'snack-butler',
+     '跑 YOLO、算坐标、发标注图 /snack_butler/image_result。'),
+    ('rgb_topic', 'RGB 相机帧', None,
+     '相机是否真的在出帧。没帧多半是 USB 带宽/供电/线材问题，别靠重启软件解决。'),
+    ('annotated_topic', '标注图话题', 'snack-butler',
+     'snack_butler 有没有在发带框的图。'),
+    ('mjpeg_stream', '标注图 → 浏览器', 'snack-butler',
+     '识别流小窗直接吃这条。取不到 JPEG 帧，网页上就是不显示。'),
+]
+
+
+def _unit_active(unit):
+    try:
+        return subprocess.run(['systemctl', 'is-active', unit], capture_output=True,
+                              text=True, timeout=2).stdout.strip() == 'active'
+    except Exception:
+        return False
+
+
+def _port_open(port, host='127.0.0.1', timeout=1.5):
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+def _topic_hz(topic, seconds=3.0):
+    """数一段时间内某个 ROS 话题出了多少帧。走 rosbridge，不依赖 ros2 CLI 的环境变量。"""
+    try:
+        ws = socket.create_connection(('127.0.0.1', 9090), timeout=2)
+        key = base64.b64encode(os.urandom(16)).decode()
+        ws.sendall(('GET / HTTP/1.1\r\nHost: 127.0.0.1:9090\r\nUpgrade: websocket\r\n'
+                    'Connection: Upgrade\r\nSec-WebSocket-Key: %s\r\n'
+                    'Sec-WebSocket-Version: 13\r\n\r\n' % key).encode())
+        # 读完握手响应头
+        buf = b''
+        while b'\r\n\r\n' not in buf:
+            chunk = ws.recv(1024)
+            if not chunk:
+                return None
+            buf += chunk
+        if b'101' not in buf.split(b'\r\n')[0]:
+            return None
+
+        def send_text(s):
+            payload = s.encode()
+            n = len(payload)
+            mask = os.urandom(4)
+            if n < 126:
+                hdr = struct.pack('!BB', 0x81, 0x80 | n)
+            elif n < 65536:
+                hdr = struct.pack('!BBH', 0x81, 0x80 | 126, n)
+            else:
+                hdr = struct.pack('!BBQ', 0x81, 0x80 | 127, n)
+            ws.sendall(hdr + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload)))
+
+        # 只订阅计数，压到最小带宽：throttle 到 100ms，且不要 payload
+        send_text(json.dumps({"op": "subscribe", "topic": topic,
+                               'throttle_rate': 100, 'queue_length': 1}))
+        deadline = time.time() + seconds
+        frames = 0
+        ws.settimeout(0.5)
+        while time.time() < deadline:
+            try:
+                data = ws.recv(65536)
+            except socket.timeout:
+                continue
+            except Exception:
+                break
+            if not data:
+                break
+            # 不解 WebSocket 帧，只按「收到过数据」计数 —— 够判断有没有在推
+            frames += data.count(b'"op"')
         try:
-            return subprocess.run(['systemctl', 'is-active', unit], capture_output=True,
-                                  text=True, timeout=2).stdout.strip() == 'active'
+            send_text(json.dumps({'op': 'unsubscribe', 'topic': topic}))
+            ws.close()
         except Exception:
-            return False
+            pass
+        return frames / seconds
+    except Exception:
+        return None
+
+
+def vision_health():
+    """抓取图像链路逐环自检；只读，不触发任何重启。"""
     out = {'checked_at': time.time(), 'checks': []}
-    for unit, label in (('start_app_node.service', '相机 / ROS 主节点'),
-                        ('snack-butler.service', '视觉抓取 / 标注发布')):
-        ok = active(unit)
-        out['checks'].append({'id': unit, 'label': label, 'ok': ok,
-                              'detail': '运行中' if ok else '服务未运行'})
+    meta = {c[0]: c for c in VISION_CHAIN}
+
+    def add(cid, ok, detail):
+        _, label, fix, why = meta[cid]
+        out['checks'].append({'id': cid, 'label': label, 'ok': bool(ok),
+                              'detail': detail, 'fix': fix, 'why': why})
+
+    ok = _unit_active('start_app_node.service')
+    add('start_app_node', ok, '运行中' if ok else '服务未运行（需在机器人上人工启动）')
+
+    ok = _port_open(9090)
+    add('rosbridge', ok, ':9090 可连接' if ok else ':9090 拒绝连接')
+
+    ok = _port_open(8080)
+    add('web_video_server', ok, ':8080 可连接' if ok else ':8080 拒绝连接')
+
+    ok = _unit_active('snack-butler.service')
+    add('snack-butler', ok, '运行中' if ok else '服务未运行')
+
+    # 有 rosbridge 才谈得上数话题频率
+    if _port_open(9090):
+        hz = _topic_hz('/depth_cam/rgb/image_raw', 2.5)
+        add('rgb_topic', hz and hz > 0.5,
+            ('约 %.1f 帧/秒' % hz) if hz else '2.5 秒内没有收到任何帧')
+        hz = _topic_hz('/snack_butler/state', 2.5)
+        add('annotated_topic', hz and hz > 0.5,
+            ('节点状态 %.1f 次/秒' % hz) if hz else '节点没有播报状态')
+    else:
+        add('rgb_topic', False, 'rosbridge 不可用，无法检查')
+        add('annotated_topic', False, 'rosbridge 不可用，无法检查')
+
     try:
         r = urllib.request.urlopen(
-            'http://127.0.0.1:8080/stream?topic=/snack_butler/image_result&type=mjpeg', timeout=5)
-        data = r.read(4096)
+            'http://127.0.0.1:8080/stream?topic=/snack_butler/image_result&type=mjpeg', timeout=6)
+        data = r.read(8192)
         ok = b'\xff\xd8' in data
-        out['checks'].append({'id': 'mjpeg', 'label': '标注图 → 视频服务', 'ok': ok,
-                              'detail': '已收到 JPEG 帧' if ok else 'HTTP 已连接但未收到 JPEG 帧'})
+        add('mjpeg_stream', ok,
+            '已收到 JPEG 帧（%d 字节）' % len(data) if ok else 'HTTP 已连接但 6 秒内没有 JPEG 帧')
     except Exception as e:
-        out['checks'].append({'id': 'mjpeg', 'label': '标注图 → 视频服务', 'ok': False,
-                              'detail': '视频流请求失败：' + type(e).__name__})
+        add('mjpeg_stream', False, '取流失败：' + type(e).__name__)
+
     out['ok'] = all(c['ok'] for c in out['checks'])
+    out['first_bad'] = next((c['id'] for c in out['checks'] if not c['ok']), None)
     return out
 
 # 动作组。幻尔桌面端 arm_pc 的 .d6a 其实就是 SQLite：
@@ -385,6 +503,15 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(404, {'error': 'not saved yet'})
             except Exception as e:
                 return self._json(500, {'error': str(e)})
+        if self.path.split('?', 1)[0] == '/api/twin/view':
+            try:
+                with open(VIEW, encoding='utf-8') as f:
+                    return self._json(200, json.load(f))
+            except FileNotFoundError:
+                # 没存过，返回空 —— 前端会用内置默认值
+                return self._json(200, {})
+            except Exception as e:
+                return self._json(500, {'error': str(e)})
         if path == '/api/recordings':
             # 列出录像文件
             try:
@@ -472,8 +599,12 @@ class Handler(SimpleHTTPRequestHandler):
             except OSError as e:
                 return self._json(500, {'error': str(e)})
             return self._json(200, {'ok': True})
-        if path != '/api/look':
+        # /api/look 和 /api/twin/view 都是「一小段 JSON 存到车上」，走同一条落盘逻辑
+        DEST = {'/api/look': (LOOK, '.twin_look.'),
+                '/api/twin/view': (VIEW, '.twin_view.')}
+        if path not in DEST:
             return self._json(405, {'error': 'method not allowed'})
+        dest_path, tmp_prefix = DEST[path]
         try:
             n = int(self.headers.get('Content-Length') or 0)
         except ValueError:
@@ -486,13 +617,22 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(400, {'error': f'bad json: {e}'})
         if not isinstance(data, dict):
             return self._json(400, {'error': 'expected a json object'})
+        # 机位只接受两个长度 3 的数字数组，别把任意结构写进去
+        if path == '/api/twin/view':
+            for k in ('pos', 'target'):
+                v = data.get(k)
+                if (not isinstance(v, list) or len(v) != 3
+                        or not all(isinstance(x, (int, float)) for x in v)):
+                    return self._json(400, {'error': f'{k} must be [x, y, z] numbers'})
+            data = {'pos': [float(x) for x in data['pos']],
+                    'target': [float(x) for x in data['target']]}
         try:
             # 先写临时文件再 rename：写到一半掉电也不会留下半截坏文件
-            d = os.path.dirname(LOOK) or '.'
-            fd, tmp = tempfile.mkstemp(dir=d, prefix='.twin_look.')
+            d = os.path.dirname(dest_path) or '.'
+            fd, tmp = tempfile.mkstemp(dir=d, prefix=tmp_prefix)
             with os.fdopen(fd, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
-            os.replace(tmp, LOOK)
+            os.replace(tmp, dest_path)
         except Exception as e:
             return self._json(500, {'error': str(e)})
         return self._json(200, {'ok': True})

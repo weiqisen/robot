@@ -26,6 +26,7 @@ const VIEWPORTS = {
   desktop: { width: 1600, height: 1000, dsf: 1, mobile: false },
   ipad:    { width: 1024, height: 768,  dsf: 2, mobile: true },  // 横屏 iPad
   ipadp:   { width: 768,  height: 1024, dsf: 2, mobile: true },  // 竖屏 iPad
+  ipadair: { width: 1180, height: 820,  dsf: 2, mobile: true },  // iPad Air 横屏
   iphone:  { width: 390,  height: 844,  dsf: 3, mobile: true },  // iPhone 14
 }
 const vpName = process.env.SHOT_VIEWPORT || 'desktop'

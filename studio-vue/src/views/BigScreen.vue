@@ -571,24 +571,6 @@ onUnmounted(() => {
 .cbtn.danger { background: rgba(244,63,94,.1); border-color: rgba(244,63,94,.4); color: #FB7185; font-weight: 600; }
 .cbtn.danger:hover { background: rgba(244,63,94,.18); color: #FB7185; border-color: rgba(244,63,94,.6); }
 /* --- 平板：三栏并两栏，3D 放中间不动 --- */
-@media (max-width: 1280px) {
-  .body {
-    grid-template-columns: minmax(0, 300px) minmax(0, 1fr);
-    /* 窄屏放不下就整块滚。关键是这两行：默认 grid 会把列拉伸到行高(stretch)、
-       行高又被容器钉死，内容一超出就溢出来盖住上一块面板。改成行按内容取高、
-       列顶端对齐，超出部分交给 .body 自己滚。 */
-    grid-auto-rows: min-content;
-    align-items: start;
-    overflow-y: auto; -webkit-overflow-scrolling: touch;
-  }
-  .body > .col:last-child { grid-column: 1 / -1; flex-direction: row; flex-wrap: wrap; }
-  .body > .col:last-child > .panel { flex: 1 1 300px; }
-  .panel.grow { flex: none; }
-  .pb, .pb.metrics { overflow: visible; }
-  .viewport { min-height: 420px; }
-  .kpis { display: none; }
-}
-
 /* --- 手机：不再用 grid，直接一列 flex 从上到下排，整块可滚。
        原来是 position:absolute 的定屏三栏，手机上 grid 行高和 flex 方向互相打架，
        面板会重叠、右栏还横着溢出屏幕。这里把布局模型换掉，比一条条覆盖干净。 --- */
@@ -748,11 +730,12 @@ onUnmounted(() => {
   .scene-safety { display:none; }
 }
 
-/* ---- iPad / 平板（1024px 及以下）----
+/* ---- iPad / 平板（1280px 及以下）----
+   覆盖所有平板横屏（iPad Air 1180px、iPad Pro 11" 1194px 等）。
    两侧栏是 .col:first-child / :last-child，没有 .left/.right 这种类名。
    平板上直接把它们收掉，中间孪生独占，并且不让 .body 滚 —— 孪生要撑满可视高度，
    一滚就变成「只显示一半」。 */
-@media (max-width: 1024px) {
+@media (max-width: 1280px) {
   .body {
     display: grid; grid-template-columns: 1fr; grid-auto-rows: 1fr;
     align-items: stretch; gap: 8px; padding: 8px; overflow: hidden;
@@ -760,7 +743,7 @@ onUnmounted(() => {
   .body > .col:first-child,
   .body > .col:last-child { display: none; }
   .body > .col.center { grid-column: 1 / -1; min-height: 0; }
-  /* 覆盖 1280px 那条的 min-height:420px：平板上按可视高度撑满 */
+  /* 覆盖原来 1280px 那条的 min-height:420px：平板上按可视高度撑满 */
   .viewport { flex: 1; height: auto; min-height: 0; }
 
   .topbar { height: 48px; padding: 0 12px; gap: 12px; }

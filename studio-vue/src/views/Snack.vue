@@ -22,6 +22,44 @@ const STATE_COLOR = {
 const CHIP = { red: '#e14b4b', orange: '#ef8c2d', yellow: '#e8c020',
                green: '#43a047', blue: '#2e7ddb', purple: '#8e5bc4' }
 const CN = { red: '红', orange: '橙', yellow: '黄', green: '绿', blue: '蓝', purple: '紫' }
+
+// ---- 视觉链路自检 ----
+// 「识别流不显示」牵扯七个环节（相机节点 → rosbridge → web_video_server →
+// snack_butler → RGB 帧 → 标注图 → MJPEG 取流），一个个 ssh 去查太慢。
+// webctl 的 /api/vision/health 逐环探测并给出该重启谁，这里把结果摊开来点。
+const healthCheck = reactive({ show: false, loading: false, data: null, err: '' })
+const restarting = reactive({})
+const healthColumns = [
+  { title: '', key: 'ok', width: 46 },
+  { title: '环节', dataIndex: 'label', key: 'label', width: 170 },
+  { title: '状态', dataIndex: 'detail', key: 'detail' },
+  { title: '操作', key: 'fix', width: 132 },
+]
+async function runHealthCheck() {
+  healthCheck.loading = true; healthCheck.err = ''
+  try {
+    const r = await fetch(`http://${HOST}:8000/api/vision/health`, { cache: 'no-store' })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    healthCheck.data = await r.json()
+  } catch (e) {
+    healthCheck.err = e.message
+    message.error(`自检失败：${e.message}`)
+  } finally { healthCheck.loading = false }
+}
+async function restartService(unit) {
+  restarting[unit] = true
+  try {
+    const r = await fetch(`http://${HOST}:8000/api/services/${unit}/restart`, { method: 'POST' })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    message.success(`${unit} 正在重启`)
+    // 服务起来要几秒，等一下再自动复检
+    setTimeout(runHealthCheck, 5000)
+  } catch (e) {
+    message.error(`重启 ${unit} 失败：${e.message}`)
+  } finally { restarting[unit] = false }
+}
+// 展开面板时如果还没查过，自动跑一次
+watch(() => healthCheck.show, v => { if (v && !healthCheck.data) runHealthCheck() })
 const inferenceLog = ref([])
 const inferSig = computed(() => JSON.stringify({
   state: sb.value?.state, step: sb.value?.step, error: sb.value?.error,
@@ -470,12 +508,56 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
     </InfoNote></template>
   </a-alert>
 
+  <!-- 视觉链路自检面板 -->
+  <a-card v-if="healthCheck.show" size="small" title="视觉链路自检" class="health-card"
+    :class="{ checking: healthCheck.loading }" style="margin-bottom:16px">
+    <template #extra>
+      <a-space>
+        <a-button size="small" @click="runHealthCheck" :loading="healthCheck.loading">重新检查</a-button>
+        <a @click="healthCheck.show = false" style="color:var(--text-3)">收起</a>
+      </a-space>
+    </template>
+    <div v-if="healthCheck.loading" style="text-align:center;padding:24px;color:var(--text-3)">
+      检测中，逐环探测…
+    </div>
+    <div v-else-if="healthCheck.data">
+      <div v-if="healthCheck.data.ok" style="color:#52c41a;margin-bottom:12px;font-weight:600">
+        ✓ 所有环节正常
+      </div>
+      <div v-else style="color:#ff4d4f;margin-bottom:12px;font-weight:600">
+        ✗ 发现问题：{{ healthCheck.data.first_bad }}
+      </div>
+      <a-table :dataSource="healthCheck.data.checks" :columns="healthColumns" size="small"
+        :pagination="false" :rowKey="r => r.id">
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'ok'">
+            <a-tag :color="record.ok ? 'success' : 'error'">{{ record.ok ? '✓' : '✗' }}</a-tag>
+          </template>
+          <template v-if="column.key === 'fix'">
+            <a-button v-if="record.fix && !record.ok" size="small" type="primary"
+              @click="restartService(record.fix)" :loading="restarting[record.fix]">
+              重启 {{ record.fix }}
+            </a-button>
+            <span v-else-if="!record.ok" style="color:var(--text-3);font-size:12px">需人工处理</span>
+          </template>
+        </template>
+      </a-table>
+      <div style="margin-top:12px;font-size:12px;color:var(--text-3)">
+        检测时间：{{ new Date(healthCheck.data.checked_at * 1000).toLocaleTimeString() }}
+      </div>
+    </div>
+  </a-card>
+
   <a-row class="snack-workspace" :gutter="[16, 16]">
     <!-- 左：画面 + 动作 -->
     <a-col :xs="24" :xl="15">
       <a-card size="small" title="1 · 选择目标" class="vision-card">
         <template #extra>
           <a-space>
+            <a-button size="small" type="link" @click="healthCheck.show = !healthCheck.show"
+              style="padding:0 8px">
+              {{ healthCheck.show ? '收起自检' : '自检' }}
+            </a-button>
             <a-tag :color="sb?.detector?.yolo_loaded ? 'purple' : 'default'">
               {{ sb?.detector?.yolo_loaded ? `YOLOv5s · ${sb.detector.yolo_device}`
                 : sb?.detector?.yolo_loading ? 'YOLO 后台加载中…' : 'YOLO 未启用' }}
