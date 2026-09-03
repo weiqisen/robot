@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref, reactive, watch, onMounted, onUnmounted } from 'vue'
+import { message, Modal } from 'ant-design-vue'
 import { useRos, imuEuler, deg, battPct, BATT_WARN } from '../composables/useRos'
 import Twin from './Twin.vue'
 import RingGauge from '../components/RingGauge.vue'
@@ -72,9 +73,133 @@ onMounted(() => { timer = setInterval(() => {
 }, 1000) })
 onUnmounted(() => clearInterval(timer))
 
-function estop() { actions.emergencyStop() }
+function estop() { resetJoy(); for (const k in keys) keys[k] = false; actions.emergencyStop(); lastZero = true }
 function beep() { actions.buzzer(1900, 0.15, 0.05, 1) }
 const armControlUnlocked = ref(false)
+
+// ---- 底盘手动驾驶：摇杆 + WASD，和实时控制页同一套安全前提 ----
+// 解锁条件、限速、发布频率都跟 Control.vue 对齐，避免两个入口行为不一致。
+const DRIVE_HZ = 15
+const maxLinear = computed(() => state.navSafety?.limits?.vx || 0.12)
+const maxAngular = computed(() => state.navSafety?.limits?.wz || 0.45)
+const manualArmed = computed(() => safetyFresh.value && !!state.navSafety?.armed
+  && state.navSafety?.source === 'manual')
+const driveMode2 = ref('turn')          // turn=原地转向，pan=横向平移（麦轮）
+const driveSpeed = ref(70)
+const tele = reactive({ vx: '0.00', vy: '0.00', wz: '0.00' })
+
+const joy = ref(null)
+let jx = 0, jy = 0, jActive = false, R = 60, KNOB = 20
+function drawJoy() {
+  const c = joy.value
+  if (!c) return
+  const ctx = c.getContext('2d'), W = c.width, H = c.height
+  R = W / 2
+  ctx.clearRect(0, 0, W, H)
+  ctx.beginPath(); ctx.arc(R, R, R - 2, 0, 7)
+  ctx.fillStyle = 'rgba(10,13,18,.55)'; ctx.fill()
+  ctx.strokeStyle = 'rgba(255,255,255,.16)'; ctx.lineWidth = 1.4; ctx.stroke()
+  ctx.strokeStyle = 'rgba(255,255,255,.07)'
+  ctx.beginPath(); ctx.arc(R, R, (R - KNOB) * .6, 0, 7); ctx.stroke()
+  ctx.beginPath(); ctx.moveTo(R, 8); ctx.lineTo(R, H - 8)
+  ctx.moveTo(8, R); ctx.lineTo(W - 8, R); ctx.stroke()
+  const kx = R + jx * (R - KNOB), ky = R + jy * (R - KNOB)
+  if (jActive) {
+    ctx.beginPath(); ctx.moveTo(R, R); ctx.lineTo(kx, ky)
+    ctx.strokeStyle = 'rgba(46,155,255,.5)'; ctx.lineWidth = 2; ctx.stroke()
+  }
+  const g = ctx.createRadialGradient(kx - 5, ky - 5, 2, kx, ky, KNOB)
+  g.addColorStop(0, jActive ? '#5cb0ff' : 'rgba(255,255,255,.95)')
+  g.addColorStop(1, jActive ? '#2e9bff' : 'rgba(210,222,236,.65)')
+  ctx.beginPath(); ctx.arc(kx, ky, KNOB, 0, 7); ctx.fillStyle = g; ctx.fill()
+  ctx.strokeStyle = 'rgba(255,255,255,.5)'; ctx.lineWidth = 1; ctx.stroke()
+}
+function setJoy(cx, cy) {
+  const r = joy.value.getBoundingClientRect()
+  let dx = (cx - r.left - R) / (R - KNOB), dy = (cy - r.top - R) / (R - KNOB)
+  const m = Math.hypot(dx, dy)
+  if (m > 1) { dx /= m; dy /= m }
+  jx = dx; jy = dy; drawJoy()
+}
+function resetJoy() { jx = 0; jy = 0; jActive = false; drawJoy() }
+function jDown(e) {
+  if (!manualArmed.value) return
+  jActive = true
+  joy.value.setPointerCapture(e.pointerId)
+  setJoy(e.clientX, e.clientY)
+}
+function jMove(e) { if (jActive) setJoy(e.clientX, e.clientY) }
+
+const keys = {}
+function kd(e) {
+  if (e.code === 'Space') { e.preventDefault(); estop(); return }
+  if (manualArmed.value) keys[e.key.toLowerCase()] = true
+}
+function ku(e) { keys[e.key.toLowerCase()] = false }
+const dz = v => (Math.abs(v) < 0.06 ? 0 : v)
+function computeTwist() {
+  let fwd, lat, rot
+  if (jActive) {
+    fwd = -jy
+    if (driveMode2.value === 'turn') { rot = -jx; lat = 0 } else { lat = jx; rot = 0 }
+  } else {
+    let ky = 0, kx = 0, turn = 0
+    if (keys['w'] || keys['arrowup']) ky -= 1
+    if (keys['s'] || keys['arrowdown']) ky += 1
+    if (keys['a'] || keys['arrowleft']) kx -= 1
+    if (keys['d'] || keys['arrowright']) kx += 1
+    if (keys['q']) turn -= 1
+    if (keys['e']) turn += 1
+    fwd = -ky; rot = -turn
+    if (driveMode2.value === 'turn') { rot += -kx; lat = 0 } else { lat = kx }
+    rot = Math.max(-1, Math.min(1, rot))
+  }
+  fwd = dz(fwd); lat = dz(lat); rot = dz(rot)
+  const s = driveSpeed.value / 100
+  const lateral = state.navSafety?.limits?.vy || maxLinear.value
+  return { vx: fwd * maxLinear.value * s, vy: lat * lateral * s, wz: rot * maxAngular.value * s }
+}
+let lastZero = false, driveTimer = null
+function pubLoop() {
+  if (!manualArmed.value) {
+    if (jActive || jx || jy) resetJoy()
+    return
+  }
+  const { vx: dvx, vy: dvy, wz: dwz } = computeTwist()
+  tele.vx = dvx.toFixed(2); tele.vy = dvy.toFixed(2); tele.wz = dwz.toFixed(2)
+  const z = dvx === 0 && dvy === 0 && dwz === 0
+  if (z && lastZero) return
+  lastZero = z
+  actions.cmdVel(dvx, dvy, dwz)
+}
+function unlockManual() {
+  if (!safetyFresh.value) return message.error('安全闸门未连接，禁止解锁')
+  if (state.navSafety?.legacy_active) return message.error('检测到旧 /cmd_vel 控制旁路，禁止解锁')
+  if (!state.navSafety?.scan_ready) return message.error('雷达无数据，禁止解锁手动驱动')
+  const bv = state.batt == null ? null : state.batt / 1000
+  if (bv == null) return message.error('没有底盘电池遥测，禁止解锁手动驱动')
+  if (bv < 10.5) return message.error(`底盘电池仅 ${bv.toFixed(2)}V，请充电到 10.5V 以上再驾驶`)
+  Modal.confirm({
+    title: '解锁手动驾驶？',
+    content: `当前硬限速 ${maxLinear.value.toFixed(2)}m/s、${maxAngular.value.toFixed(2)}rad/s，并启用雷达近障急停。仍不能识别悬崖、玻璃和低矮障碍，请保持有人看护。`,
+    okText: '确认解锁', cancelText: '保持锁定',
+    onOk: () => {
+      actions.explorerCmd({ action: 'stop' })
+      if (!actions.navSafetyCmd({ action: 'arm', source: 'manual' })) {
+        return message.error('rosbridge 未连接，解锁命令未发送')
+      }
+      message.success('手动驾驶解锁命令已发送')
+      setTimeout(() => {
+        if (!manualArmed.value) message.error(`解锁失败：${state.navSafety?.reason || '安全闸门没有确认'}`)
+      }, 1200)
+    },
+  })
+}
+function lockManual() {
+  estop()
+  actions.navSafetyCmd({ action: 'disarm' })
+  message.success('已锁定底盘')
+}
 // 关节控制：滑块值跟随 servo_states，拖动时本地先走、60ms 合并一次下发
 const JOINTS = [{ id: 1, l: 'J1', cn: '底座' }, { id: 2, l: 'J2', cn: '大臂' },
                 { id: 3, l: 'J3', cn: '小臂' }, { id: 4, l: 'J4', cn: '腕俯仰' },
@@ -110,8 +235,20 @@ function updateClock() {
   clock.value = d.toLocaleTimeString('zh-CN', { hour12: false })
   date.value = d.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short' })
 }
-onMounted(() => { updateClock(); clockTimer = setInterval(updateClock, 1000) })
-onUnmounted(() => clearInterval(clockTimer))
+onMounted(() => {
+  updateClock(); clockTimer = setInterval(updateClock, 1000)
+  drawJoy()
+  window.addEventListener('keydown', kd)
+  window.addEventListener('keyup', ku)
+  driveTimer = setInterval(pubLoop, 1000 / DRIVE_HZ)
+})
+onUnmounted(() => {
+  clearInterval(clockTimer)
+  clearInterval(driveTimer)
+  window.removeEventListener('keydown', kd)
+  window.removeEventListener('keyup', ku)
+  actions.emergencyStop()
+})
 </script>
 
 <template>
@@ -185,6 +322,33 @@ onUnmounted(() => clearInterval(clockTimer))
             <div><small>雷达回波</small><b :class="{ dangerText: !scanN }">{{ scanN }}</b></div>
           </div>
           <div :class="['scene-safety', { warn: driveArmed }]"><span>{{ driveArmed ? '驱动已解锁' : '安全锁定' }}</span><small>{{ driveArmed ? '车辆可能运动' : '底盘不会响应速度指令' }}</small></div>
+
+          <!-- 手动驾驶：摇杆浮在画面右下角，锁定时整块压暗且不接收指针事件 -->
+          <div :class="['drive-pad', { locked: !manualArmed }]">
+            <div class="dp-head">
+              <b>手动驾驶</b>
+              <button v-if="!manualArmed" class="dp-unlock" @click="unlockManual">解锁</button>
+              <button v-else class="dp-unlock on" @click="lockManual">锁定</button>
+            </div>
+            <canvas ref="joy" width="130" height="130" class="dp-joy"
+              @pointerdown="jDown" @pointermove="jMove" @pointerup="resetJoy" @pointercancel="resetJoy" />
+            <div class="dp-seg">
+              <button :class="{ on: driveMode2 === 'turn' }" @click="driveMode2 = 'turn'">转向</button>
+              <button :class="{ on: driveMode2 === 'pan' }" @click="driveMode2 = 'pan'">平移</button>
+            </div>
+            <div class="dp-row">
+              <small>限速</small>
+              <input type="range" min="10" max="100" step="5" v-model.number="driveSpeed" />
+              <b>{{ driveSpeed }}%</b>
+            </div>
+            <div class="dp-tele">
+              <span>vx <b>{{ tele.vx }}</b></span>
+              <span>vy <b>{{ tele.vy }}</b></span>
+              <span>wz <b>{{ tele.wz }}</b></span>
+            </div>
+            <div class="dp-hint">WASD 行进 · QE 转向 · 空格急停</div>
+          </div>
+
           <span class="vp c tl" /><span class="vp c tr" /><span class="vp c bl" /><span class="vp c br" />
         </div>
       </div>
@@ -435,11 +599,41 @@ onUnmounted(() => clearInterval(clockTimer))
 .scene-status>div { min-width:98px; padding:10px 12px; border:1px solid rgba(255,255,255,.08); border-radius:8px; background:rgba(8,11,18,.78); backdrop-filter:blur(8px); }
 .scene-status small { display:block; color:#64748B; font-size:9px; margin-bottom:5px; }
 .scene-status b { font:600 16px/1 Inter,monospace; }
-.scene-safety { position:absolute; z-index:3; right:28px; bottom:28px; padding:9px 12px; border:1px solid rgba(52,211,153,.28); border-radius:8px; background:rgba(6,78,59,.14); display:flex; flex-direction:column; gap:3px; pointer-events:none; }
+/* 右下角让给驾驶盘，安全状态挪到左下 */
+.scene-safety { position:absolute; z-index:3; left:28px; bottom:28px; padding:9px 12px; border:1px solid rgba(52,211,153,.28); border-radius:8px; background:rgba(6,78,59,.14); display:flex; flex-direction:column; gap:3px; pointer-events:none; }
 .scene-safety span { color:#34D399; font-size:12px; font-weight:700; }
 .scene-safety small { color:#64748B; font-size:9px; }
 .scene-safety.warn { border-color:rgba(245,158,11,.45); background:rgba(120,53,15,.16); }
 .scene-safety.warn span { color:#F59E0B; }
+
+/* ---- 手动驾驶盘：浮在孪生画面右下角 ---- */
+.drive-pad { position:absolute; z-index:4; right:24px; bottom:24px; width:168px;
+  padding:11px 12px 10px; border:1px solid rgba(148,163,184,.22); border-radius:10px;
+  background:rgba(8,12,18,.78); backdrop-filter:blur(6px);
+  display:flex; flex-direction:column; gap:8px; }
+/* 锁定时整块压暗并屏蔽指针，只留「解锁」按钮可点 */
+.drive-pad.locked { opacity:.62; }
+.drive-pad.locked .dp-joy,
+.drive-pad.locked .dp-seg,
+.drive-pad.locked .dp-row { pointer-events:none; filter:grayscale(.7); }
+.dp-head { display:flex; align-items:center; justify-content:space-between; }
+.dp-head b { color:#E2E8F0; font-size:11px; letter-spacing:.4px; }
+.dp-unlock { padding:2px 9px; border:1px solid rgba(52,211,153,.45); border-radius:5px;
+  background:rgba(6,78,59,.3); color:#34D399; font-size:10px; cursor:pointer; }
+.dp-unlock.on { border-color:rgba(245,158,11,.5); background:rgba(120,53,15,.3); color:#F59E0B; }
+.dp-joy { display:block; margin:0 auto; touch-action:none; cursor:grab; }
+.dp-seg { display:flex; gap:5px; }
+.dp-seg button { flex:1; padding:3px 0; border:1px solid rgba(148,163,184,.24); border-radius:5px;
+  background:transparent; color:#94A3B8; font-size:10px; cursor:pointer; }
+.dp-seg button.on { border-color:rgba(56,189,248,.55); background:rgba(12,74,110,.34); color:#38BDF8; }
+.dp-row { display:flex; align-items:center; gap:6px; }
+.dp-row small { color:#64748B; font-size:9px; flex-shrink:0; }
+.dp-row input { flex:1; min-width:0; accent-color:#38BDF8; }
+.dp-row b { color:#CBD5E1; font-size:10px; width:30px; text-align:right; flex-shrink:0; }
+.dp-tele { display:flex; justify-content:space-between;
+  font:9px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; color:#64748B; }
+.dp-tele b { color:#94A3B8; font-weight:600; }
+.dp-hint { color:#475569; font-size:8px; line-height:1.3; text-align:center; }
 .chart-now { margin-left:auto; color:#F8FAFC; font:700 17px/1 Inter,monospace; }
 .chart-now+.ph-r { margin-left:10px; }
 .alarm-count { margin-left:auto; color:#FB7185; border:1px solid rgba(244,63,94,.3); background:rgba(244,63,94,.08); border-radius:10px; padding:3px 8px; font-size:10px; }
