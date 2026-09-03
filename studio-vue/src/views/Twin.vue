@@ -12,7 +12,8 @@ const { state, actions, HOST } = useRos()
 
 const host = ref(null)
 const loading = ref(true), loadErr = ref('')
-const tools = reactive({ lidar: true, grid: true, points: false, ik: false, tags: true })
+const tools = reactive({ lidar: true, grid: true, points: false, ik: false, tags: true,
+  workspace: true, selfbody: true, dimensions: true, angles: false, cameraFov: false, axes: true })
 
 // ---- 外观参数：集中一份，材质面板直接改它，改完实时生效并存 localStorage ----
 // 默认值来自官网实物图 jetrover.webp 取色（见 git log fix(twin) 那几条）。
@@ -114,6 +115,8 @@ const battV = computed(() => (state.batt != null ? (state.batt / 1000).toFixed(2
 
 let renderer, scene, camera, controls, world, grid, robot, raf
 let lidarPoints = null
+let workspaceGroup = null, selfbodyGroup = null, dimensionsGroup = null
+let anglesGroup = null, cameraFovGroup = null, axesGroup = null
 const SERVO_MAP = [{ id: 1, joint: 'joint1' }, { id: 2, joint: 'joint2' }, { id: 3, joint: 'joint3' }, { id: 4, joint: 'joint4' }, { id: 5, joint: 'joint5' }, { id: 10, joint: 'r_joint' }]
 
 function init() {
@@ -139,6 +142,27 @@ function init() {
   rimL = new THREE.DirectionalLight(0x9fc4ff, lit.rim); rimL.position.set(-2.5, 1.5, -2); scene.add(rimL)
   world = new THREE.Group(); world.rotation.x = -Math.PI / 2; scene.add(world)
   grid = new THREE.GridHelper(10, 40, 0x2a3340, 0x161b22); grid.rotation.x = Math.PI / 2; world.add(grid)
+
+  // 辅助图层
+  workspaceGroup = new THREE.Group()
+  selfbodyGroup = new THREE.Group()
+  dimensionsGroup = new THREE.Group()
+  anglesGroup = new THREE.Group()
+  cameraFovGroup = new THREE.Group()
+  axesGroup = new THREE.Group()
+  world.add(workspaceGroup)
+  world.add(selfbodyGroup)
+  world.add(dimensionsGroup)
+  world.add(anglesGroup)
+  world.add(cameraFovGroup)
+  world.add(axesGroup)
+
+  // 构建辅助图层（单位：米，与 URDF 一致）
+  buildWorkspace(workspaceGroup)
+  buildSelfBody(selfbodyGroup)
+  buildDimensions(dimensionsGroup)
+  buildAxes(axesGroup)
+
   fit(); loop()
   // urdf-loader 的 load() 回调在 URDF **解析完**就触发，而 STL 网格是异步加载的。
   // 在那个回调里 traverse 根本遍历不到网格 —— 网格随后带着 loader 默认的
@@ -549,6 +573,146 @@ function syncArm() { actions.once('/controller_manager/servo_states', 'servo_con
 // ---- CCD IK ----
 const IK_CHAIN = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5']
 const EE_OFFSET = new THREE.Vector3(0, 0, 0.08)
+// ---- 辅助图层构建函数（单位：米） ----
+function buildWorkspace(group) {
+  // 工作区：12-34cm X, 1-16cm Z (相对地面), -8~8cm Y
+  const BODY_CX = 0.12
+  const x = [BODY_CX + 0.10, BODY_CX + 0.34]
+  const z = [-0.116 + 0.01, -0.116 + 0.16]  // 地面 -0.116m
+  const y = [-0.08, 0.08]
+
+  const verts = [
+    [x[0], y[0], z[0]], [x[1], y[0], z[0]], [x[1], y[1], z[0]], [x[0], y[1], z[0]],
+    [x[0], y[0], z[1]], [x[1], y[0], z[1]], [x[1], y[1], z[1]], [x[0], y[1], z[1]]
+  ]
+  const faces = [[0,1,2,3], [4,5,6,7], [0,1,5,4], [2,3,7,6], [0,3,7,4], [1,2,6,5]]
+  const pos = []
+  for (const f of faces) {
+    const v = f.map(i => verts[i])
+    for (const tri of [[0,1,2], [0,2,3]]) {
+      for (const idx of tri) pos.push(v[idx][0], v[idx][1], v[idx][2])
+    }
+  }
+  const fgeo = new THREE.BufferGeometry()
+  fgeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+  fgeo.computeVertexNormals()
+  const mesh = new THREE.Mesh(fgeo, new THREE.MeshPhysicalMaterial({
+    color: 0x3fb950,
+    transparent: true,
+    opacity: 0.08,
+    side: THREE.DoubleSide,
+    roughness: 0.3,
+    metalness: 0.0,
+    depthWrite: false,
+  }))
+  group.add(mesh)
+
+  const edge = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.BoxGeometry(x[1] - x[0], y[1] - y[0], z[1] - z[0])),
+    new THREE.LineBasicMaterial({ color: 0x3fb950, transparent: true, opacity: 0.35 })
+  )
+  edge.position.set((x[0] + x[1]) / 2, (y[0] + y[1]) / 2, (z[0] + z[1]) / 2)
+  group.add(edge)
+}
+
+function buildSelfBody(group) {
+  // 车身遮挡区
+  const BODY_CX = 0.12
+  const box = [BODY_CX - 0.07, BODY_CX + 0.09, -0.16, 0.16, -0.116, -0.116 + 0.137]
+  const x = [box[0], box[1]], y = [box[2], box[3]], z = [box[4], box[5]]
+
+  const verts = [
+    [x[0], y[0], z[0]], [x[1], y[0], z[0]], [x[1], y[1], z[0]], [x[0], y[1], z[0]],
+    [x[0], y[0], z[1]], [x[1], y[0], z[1]], [x[1], y[1], z[1]], [x[0], y[1], z[1]]
+  ]
+  const faces = [[0,1,2,3], [4,5,6,7], [0,1,5,4], [2,3,7,6], [0,3,7,4], [1,2,6,5]]
+  const pos = []
+  for (const f of faces) {
+    const v = f.map(i => verts[i])
+    for (const tri of [[0,1,2], [0,2,3]]) {
+      for (const idx of tri) pos.push(v[idx][0], v[idx][1], v[idx][2])
+    }
+  }
+  const fgeo = new THREE.BufferGeometry()
+  fgeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+  fgeo.computeVertexNormals()
+  const mesh = new THREE.Mesh(fgeo, new THREE.MeshPhysicalMaterial({
+    color: 0xf85149,
+    transparent: true,
+    opacity: 0.10,
+    side: THREE.DoubleSide,
+    roughness: 0.4,
+    metalness: 0.0,
+    depthWrite: false,
+  }))
+  group.add(mesh)
+
+  const edge = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.BoxGeometry(x[1] - x[0], y[1] - y[0], z[1] - z[0])),
+    new THREE.LineBasicMaterial({ color: 0xf85149, transparent: true, opacity: 0.35 })
+  )
+  edge.position.set((x[0] + x[1]) / 2, (y[0] + y[1]) / 2, (z[0] + z[1]) / 2)
+  group.add(edge)
+}
+
+function buildDimensions(group) {
+  // 尺寸标注：安全高度
+  const BODY_CX = 0.12
+  const x = BODY_CX + 0.10
+  const y = 0.22
+  const zb = -0.116 + 0.01
+  const zt = -0.116 + 0.09
+
+  const p1 = new THREE.Vector3(x, y, zb)
+  const p2 = new THREE.Vector3(x, y, zt)
+  const line = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([p1, p2]),
+    new THREE.LineBasicMaterial({ color: 0xd29922, transparent: true, opacity: 0.5 })
+  )
+  group.add(line)
+
+  for (const p of [p1, p2]) {
+    const dot = new THREE.Mesh(new THREE.SphereGeometry(0.004, 8, 8),
+      new THREE.MeshBasicMaterial({ color: 0xd29922 }))
+    dot.position.copy(p)
+    group.add(dot)
+  }
+}
+
+function buildAxes(group) {
+  // 坐标轴
+  const BODY_CX = 0.12
+  const len = 0.10
+  const origin = new THREE.Vector3(BODY_CX - 0.08, 0, -0.116 + 0.01)
+  const data = [
+    { d: [len, 0, 0], c: 0xf85149 },  // X 红
+    { d: [0, len, 0], c: 0x3fb950 },  // Y 绿
+    { d: [0, 0, len], c: 0x58a6ff },  // Z 蓝
+  ]
+  for (const ax of data) {
+    const end = new THREE.Vector3(ax.d[0], ax.d[1], ax.d[2]).add(origin)
+    const line = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([origin, end]),
+      new THREE.LineBasicMaterial({ color: ax.c })
+    )
+    group.add(line)
+
+    const dir = end.clone().sub(origin).normalize()
+    const cone = new THREE.Mesh(
+      new THREE.ConeGeometry(0.010, 0.020, 8),
+      new THREE.MeshBasicMaterial({ color: ax.c })
+    )
+    cone.position.copy(end)
+    cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir)
+    group.add(cone)
+  }
+
+  const dot = new THREE.Mesh(new THREE.SphereGeometry(0.006, 12, 12),
+    new THREE.MeshBasicMaterial({ color: 0xe6edf3 }))
+  dot.position.copy(origin)
+  group.add(dot)
+}
+
 let ikTarget = null, dragging = false
 const raycaster = new THREE.Raycaster(), ndc = new THREE.Vector2()
 // ---- 关节标注：J1..J5 + 夹爪，直接挂在对应关节上，跟着一起动 ----
@@ -640,6 +804,12 @@ function toggleTool(k) {
   if (k === 'lidar' && lidarPoints) lidarPoints.visible = tools.lidar
   if (k === 'tags') setTagsVisible(tools.tags)
   if (k === 'ik') { if (tools.ik) { if (!ikTarget) makeTarget(); ikTarget.visible = true; ikTarget.position.copy(eeWorld()) } else if (ikTarget) ikTarget.visible = false }
+  if (k === 'workspace' && workspaceGroup) workspaceGroup.visible = tools.workspace
+  if (k === 'selfbody' && selfbodyGroup) selfbodyGroup.visible = tools.selfbody
+  if (k === 'dimensions' && dimensionsGroup) dimensionsGroup.visible = tools.dimensions
+  if (k === 'angles' && anglesGroup) anglesGroup.visible = tools.angles
+  if (k === 'cameraFov' && cameraFovGroup) cameraFovGroup.visible = tools.cameraFov
+  if (k === 'axes' && axesGroup) axesGroup.visible = tools.axes
 }
 // 屏幕在车尾，默认机位在车前 —— 不给个入口就永远看不到它。
 // 机位按屏幕的实际世界位姿现算：车会随 /odom 转，写死的坐标转两下就偏了。
@@ -696,7 +866,8 @@ onBeforeUnmount(() => {
     <div v-if="loadErr" class="loading">模型加载失败：{{ loadErr }}</div>
 
     <div class="tools">
-      <div v-for="t in [['lidar', '雷达'], ['grid', '网格'], ['points', '点云'], ['tags', '标注'], ['ik', 'IK']]" :key="t[0]"
+      <div v-for="t in [['lidar', '雷达'], ['grid', '网格'], ['points', '点云'], ['tags', '标注'], ['ik', 'IK'],
+                        ['workspace', '工作区'], ['selfbody', '遮挡区'], ['dimensions', '尺寸'], ['axes', '坐标轴']]" :key="t[0]"
         :class="['glass tbtn', { on: tools[t[0]] }]" @click="toggleTool(t[0])">{{ t[1] }}</div>
       <div class="glass tbtn" :title="viewIdx ? '切回默认视角' : '看车尾屏幕'"
         @click="resetView">{{ viewIdx ? '车头' : '视角' }}</div>

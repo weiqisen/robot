@@ -207,8 +207,8 @@ function sim(action, fault) {
           <a-button size="small" @click="sim('reset')">重置场景</a-button>
         </a-space>
       </a-card>
-      <a-card title="LLM 推理" size="small">
-        <template #extra><a-tag color="cyan">实时决策</a-tag></template>
+      <a-card title="实时决策" size="small">
+        <template #extra><a-tag color="cyan">执行日志</a-tag></template>
         <div ref="brainEl" class="brain-terminal">
           <div v-if="!brainEvents.length" class="brain-empty">等待探索节点输出事件…</div>
           <div v-for="e in brainEvents" :key="e.seq" :class="['brain-line', e.level]">
