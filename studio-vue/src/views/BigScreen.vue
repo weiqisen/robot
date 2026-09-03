@@ -748,31 +748,53 @@ onUnmounted(() => {
   .scene-safety { display:none; }
 }
 
-/* ---- 移动端 & iPad 适配 ---- */
+/* ---- iPad / 平板（1024px 及以下）----
+   两侧栏是 .col:first-child / :last-child，没有 .left/.right 这种类名。
+   平板上直接把它们收掉，中间孪生独占，并且不让 .body 滚 —— 孪生要撑满可视高度，
+   一滚就变成「只显示一半」。 */
 @media (max-width: 1024px) {
-  .body { grid-template-columns: 1fr; gap:8px; padding:8px; }
-  .left, .right { display:none; }  /* 左右栏藏掉，专注模式常驻 */
-  .topbar { height:44px; padding:0 12px; gap:12px; }
-  .logo { font-size:14px; }
-  .conn { font-size:11px; }
-  .clock { font-size:14px; }
-  .date { font-size:9px; }
-  /* 驾驶盘和机械臂浮窗在移动端默认收起，点标题栏展开 */
-  .drive-pad, .scene-arm { max-width:280px; }
-  .drive-pad:not(.collapsed), .scene-arm:not(.collapsed) { max-width:none; }
+  .body {
+    display: grid; grid-template-columns: 1fr; grid-auto-rows: 1fr;
+    align-items: stretch; gap: 8px; padding: 8px; overflow: hidden;
+  }
+  .body > .col:first-child,
+  .body > .col:last-child { display: none; }
+  .body > .col.center { grid-column: 1 / -1; min-height: 0; }
+  /* 覆盖 1280px 那条的 min-height:420px：平板上按可视高度撑满 */
+  .viewport { flex: 1; height: auto; min-height: 0; }
+
+  .topbar { height: 48px; padding: 0 12px; gap: 12px; }
+  .brand { min-width: 0; }
+  .brand small { display: none; }
+  .top-state { min-width: 0; gap: 6px; }
+  .top-state small { display: none; }
+  .top-state.battery b { font-size: 18px; }
+  .tb-sep { margin: 0 8px; }
+  .clock { font-size: 14px; }
+  .date { display: none; }
 }
 
+/* ---- 手机（640px 及以下）----
+   顶栏换行，浮窗压到最小可用尺寸；仍然不让 body 滚。 */
 @media (max-width: 640px) {
-  .topbar { flex-wrap:wrap; height:auto; padding:8px 10px; }
-  .logo { order:-2; }
-  .conn { order:-1; font-size:10px; }
-  .clock { order:1; font-size:12px; margin-left:auto; }
-  .date { font-size:8px; }
-  .focus-btn, .nav-btn { height:28px; font-size:10px; padding:0 10px; }
-  /* 手机屏幕窄，浮窗更靠边 */
-  .drive-pad { left:8px; bottom:8px; max-width:240px; }
-  .scene-arm { right:8px; top:54px; max-width:240px; }
-  .scene-status { left:8px; bottom:8px; font-size:10px; }
-  .scene-status>div { min-width:60px; padding:6px; }
+  .topbar { flex-wrap: wrap; height: auto; min-height: 44px; padding: 6px 8px; gap: 8px; }
+  .brand b { font-size: 11px; letter-spacing: 1px; }
+  .brand-mark { width: 26px; height: 26px; }
+  .top-state b { font-size: 11px; }
+  .top-state.battery b { font-size: 15px; }
+  .focus-btn { padding: 5px 10px; font-size: 10px; }
+  .clock { font-size: 12px; margin-left: auto; }
+
+  .drive-pad { right: 56px; bottom: 8px; width: 138px; padding: 8px 9px; }
+  .dp-joy { width: 108px; height: 108px; }
+  .dp-hint { display: none; }
+  .scene-arm { left: 8px; bottom: 84px; width: 176px; padding: 8px 9px; }
+  .scene-status { left: 8px; right: 200px; bottom: 8px; gap: 6px; }
+  .scene-status > div { min-width: 58px; padding: 6px 7px; }
+  .scene-status b { font-size: 12px; }
+  .scene-safety { left: 8px; bottom: 62px; padding: 6px 9px; }
+  .scene-safety small { display: none; }
+  .scene-head { top: 12px; left: 12px; }
+  .scene-head b { font-size: 13px; }
 }
 </style>

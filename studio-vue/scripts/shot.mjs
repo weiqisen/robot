@@ -20,14 +20,28 @@ const pi = process.argv.indexOf('--probe')
 const probe = pi > -1 ? process.argv[pi + 1] : null
 const WAIT = Number(process.env.SHOT_WAIT || 22000)
 
+// 视口预设。移动端适配得按真机尺寸验，桌面尺寸下媒体查询根本不触发。
+//   SHOT_VIEWPORT=ipad node scripts/shot.mjs '#bigscreen' out.png
+const VIEWPORTS = {
+  desktop: { width: 1600, height: 1000, dsf: 1, mobile: false },
+  ipad:    { width: 1024, height: 768,  dsf: 2, mobile: true },  // 横屏 iPad
+  ipadp:   { width: 768,  height: 1024, dsf: 2, mobile: true },  // 竖屏 iPad
+  iphone:  { width: 390,  height: 844,  dsf: 3, mobile: true },  // iPhone 14
+}
+const vpName = process.env.SHOT_VIEWPORT || 'desktop'
+const VP = VIEWPORTS[vpName] || VIEWPORTS.desktop
+
 const browser = await puppeteer.launch({
   executablePath: CHROME,
   headless: true,
   args: ['--headless=new', '--no-sandbox', '--enable-unsafe-swiftshader',
-         '--use-gl=angle', '--use-angle=swiftshader', '--window-size=1600,1000'],
+         '--use-gl=angle', '--use-angle=swiftshader',
+         `--window-size=${VP.width},${VP.height}`],
 })
 const page = await browser.newPage()
-await page.setViewport({ width: 1600, height: 1000, deviceScaleFactor: 1 })
+await page.setViewport({ width: VP.width, height: VP.height,
+  deviceScaleFactor: VP.dsf, isMobile: VP.mobile, hasTouch: VP.mobile })
+console.log('视口', vpName, `${VP.width}x${VP.height}`)
 
 const logs = []
 page.on('console', m => logs.push(`[${m.type()}] ${m.text()}`))
