@@ -121,7 +121,7 @@ const SERVO_MAP = [{ id: 1, joint: 'joint1' }, { id: 2, joint: 'joint2' }, { id:
 
 function init() {
   const el = host.value
-  renderer = new THREE.WebGLRenderer({ antialias: true })
+  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
   renderer.setClearColor(0x070a0e, 1)
   // 不做色调映射的话，金属高光会直接削顶成一块平的饱和色 —— 看着就是塑料。
@@ -602,7 +602,7 @@ function boxTriangles(x, y, z) {
   return geo
 }
 
-// 半透盒 + 描边。用 MeshBasicMaterial 避免光照影响，depthWrite:false 让后面的模型能透出来。
+// 半透盒 + 描边。用 MeshBasicMaterial 避免光照影响，toneMapped:false 避免色调映射压暗半透材质。
 function shellBox(group, x, y, z, color, fillOpacity) {
   const mesh = new THREE.Mesh(boxTriangles(x, y, z), new THREE.MeshBasicMaterial({
     color,
@@ -611,6 +611,7 @@ function shellBox(group, x, y, z, color, fillOpacity) {
     side: THREE.DoubleSide,
     depthWrite: false,
     depthTest: true,
+    toneMapped: false,  // 半透材质不走色调映射，否则会被 ACES 压暗
   }))
   mesh.renderOrder = -1  // 先画盒子，再画模型，这样模型能穿透盒子显示
   group.add(mesh)
@@ -622,6 +623,7 @@ function shellBox(group, x, y, z, color, fillOpacity) {
       transparent: true,
       opacity: 0.65,
       depthTest: true,
+      toneMapped: false,
     }))
   edge.position.set((x[0] + x[1]) / 2, (y[0] + y[1]) / 2, (z[0] + z[1]) / 2)
   group.add(edge)
