@@ -632,7 +632,7 @@ function buildWorkspace(group) {
   const x = WS_REL.x, y = WS_REL.y
   const z = [TABLE_Z + WS_REL.z[0], TABLE_Z + WS_REL.z[1]]
   shellBox(group, x, y, z, 0x3fb950, 0.07)
-  const tag = layerLabel('可抓取区', `${CM(x[1] - x[0])} × ${CM(y[1] - y[0])} × ${CM(z[1] - z[0])}`)
+  const tag = layerLabel('可抓取区', `${CM(x[1] - x[0])} × ${CM(y[1] - y[0])} × ${CM(z[1] - z[0])}`, '#3fb950')
   tag.position.set((x[0] + x[1]) / 2, (y[0] + y[1]) / 2, z[1] + 0.03)
   group.add(tag)
 }
@@ -640,7 +640,7 @@ function buildWorkspace(group) {
 function buildSelfBody(group) {
   const b = SELF_BOX
   shellBox(group, [b[0], b[1]], [b[2], b[3]], [b[4], b[5]], 0xf85149, 0.09)
-  const tag = layerLabel('车身遮挡区', '此范围内的检测结果丢弃')
+  const tag = layerLabel('车身遮挡区', '此范围内的检测结果丢弃', '#f85149')
   tag.position.set((b[0] + b[1]) / 2, b[3] + 0.02, b[5] + 0.02)
   group.add(tag)
 }
@@ -648,9 +648,9 @@ function buildSelfBody(group) {
 // 三条高度标尺：安全高度 / 预抓悬停 / 抬起，都从台面量起
 function buildDimensions(group) {
   const items = [
-    { h: 0.08, c: 0xd29922, t: '安全高度', sub: 'safe_z' },
-    { h: 0.07, c: 0xbc8cff, t: '预抓悬停', sub: 'approach_h' },
-    { h: 0.10, c: 0x56d4dd, t: '抬起高度', sub: 'lift_h' },
+    { h: 0.08, c: 0xd29922, t: '安全高度', sub: 'safe_z', cc: '#d29922' },
+    { h: 0.07, c: 0xbc8cff, t: '预抓悬停', sub: 'approach_h', cc: '#bc8cff' },
+    { h: 0.10, c: 0x56d4dd, t: '抬起高度', sub: 'lift_h', cc: '#56d4dd' },
   ]
   let xo = WS_REL.x[1] + 0.03
   for (const it of items) {
@@ -664,7 +664,7 @@ function buildDimensions(group) {
         new THREE.MeshBasicMaterial({ color: it.c }))
       d.position.copy(p); group.add(d)
     }
-    const tag = layerLabel(`${it.t} ${CM(it.h)}`, it.sub)
+    const tag = layerLabel(`${it.t} ${CM(it.h)}`, it.sub, it.cc)
     tag.position.set(xo, y, TABLE_Z + it.h + 0.022)
     group.add(tag)
     xo += 0.035
@@ -674,16 +674,16 @@ function buildDimensions(group) {
   g.rotation.x = Math.PI / 2
   g.position.set(0.19, 0, TABLE_Z)
   group.add(g)
-  const tag = layerLabel(`台面 z = ${CM(TABLE_Z)}`, 'table_z · 高度基准')
+  const tag = layerLabel(`台面 z = ${CM(TABLE_Z)}`, 'table_z · 高度基准', '#8b949e')
   tag.position.set(0.19, -0.26, TABLE_Z)
   group.add(tag)
 }
 
 function buildAxes(group) {
   const len = 0.12
-  for (const ax of [{ d: [len, 0, 0], c: 0xf85149, t: 'X 前' },
-                    { d: [0, len, 0], c: 0x3fb950, t: 'Y 左' },
-                    { d: [0, 0, len], c: 0x58a6ff, t: 'Z 上' }]) {
+  for (const ax of [{ d: [len, 0, 0], c: 0xf85149, t: 'X 前', cc: '#f85149' },
+                    { d: [0, len, 0], c: 0x3fb950, t: 'Y 左', cc: '#3fb950' },
+                    { d: [0, 0, len], c: 0x58a6ff, t: 'Z 上', cc: '#58a6ff' }]) {
     const end = new THREE.Vector3(...ax.d)
     group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), end]),
       new THREE.LineBasicMaterial({ color: ax.c })))
@@ -692,7 +692,7 @@ function buildAxes(group) {
     cone.position.copy(end)
     cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), end.clone().normalize())
     group.add(cone)
-    const tag = layerLabel(ax.t, 'base_link')
+    const tag = layerLabel(ax.t, 'base_link', ax.cc)
     tag.position.copy(end).multiplyScalar(1.18)
     group.add(tag)
   }
@@ -701,27 +701,37 @@ function buildAxes(group) {
   group.add(o)
 }
 
-// 辅助图层的简单标签（半透背景 + 白字）
-function layerLabel(text, sub = '') {
+// 辅助图层的标签。画法照 tagSprite：只画一个圆角框，框外留透明 ——
+// 整块画布铺底色的话，场景里就是一堆跟着透视缩放的灰板子。
+// sizeAttenuation 关掉，标签不随距离缩放，远近都一样大小可读。
+function layerLabel(text, sub = '', color = '#8b949e') {
+  const S = 4, w = 176, h = sub ? 50 : 30
   const c = document.createElement('canvas')
-  const ctx = c.getContext('2d')
-  c.width = 512; c.height = 128
-  ctx.fillStyle = 'rgba(13,17,23,0.85)'
-  ctx.fillRect(0, 0, c.width, c.height)
-  ctx.textBaseline = 'top'
-  ctx.fillStyle = '#e6edf3'
-  ctx.font = 'bold 42px Inter, sans-serif'
-  ctx.fillText(text, 16, 16)
+  c.width = w * S; c.height = h * S
+  const x = c.getContext('2d')
+  x.scale(S, S)
+  x.fillStyle = 'rgba(8,12,18,.72)'
+  x.strokeStyle = color
+  x.globalAlpha = 0.55
+  x.lineWidth = 1.2
+  x.beginPath(); x.roundRect(1, 1, w - 2, h - 2, 8); x.fill(); x.stroke()
+  x.globalAlpha = 1
+  x.fillStyle = color
+  x.font = '700 17px "PingFang SC", "Microsoft YaHei", sans-serif'
+  x.textBaseline = 'middle'
+  x.fillText(text, 11, sub ? 17 : 15)
   if (sub) {
-    ctx.fillStyle = 'rgba(230,237,243,0.5)'
-    ctx.font = '28px ui-monospace, monospace'
-    ctx.fillText(sub, 16, 68)
+    x.fillStyle = 'rgba(226,232,240,.6)'
+    x.font = '400 12px ui-monospace, Menlo, monospace'
+    x.fillText(sub, 11, 36)
   }
   const tex = new THREE.CanvasTexture(c)
-  tex.needsUpdate = true
-  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false })
-  const sp = new THREE.Sprite(mat)
-  sp.scale.set(0.16, 0.04, 1)
+  tex.minFilter = THREE.LinearFilter
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: tex, transparent: true, depthTest: false, depthWrite: false }))
+  sp.material.sizeAttenuation = false
+  sp.scale.set(0.108, 0.108 * h / w, 1)
+  sp.renderOrder = 999
   return sp
 }
 
