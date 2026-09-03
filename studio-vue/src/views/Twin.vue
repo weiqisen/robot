@@ -602,15 +602,27 @@ function boxTriangles(x, y, z) {
   return geo
 }
 
-// 半透盒 + 描边。depthWrite:false，否则会把盒子里的机械臂挡掉。
+// 半透盒 + 描边。用 MeshBasicMaterial 避免光照影响，depthWrite:false 让后面的模型能透出来。
 function shellBox(group, x, y, z, color, fillOpacity) {
   const mesh = new THREE.Mesh(boxTriangles(x, y, z), new THREE.MeshBasicMaterial({
-    color, transparent: true, opacity: fillOpacity, side: THREE.DoubleSide, depthWrite: false,
+    color,
+    transparent: true,
+    opacity: fillOpacity,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    depthTest: true,
   }))
+  mesh.renderOrder = -1  // 先画盒子，再画模型，这样模型能穿透盒子显示
   group.add(mesh)
+
   const edge = new THREE.LineSegments(
     new THREE.EdgesGeometry(new THREE.BoxGeometry(x[1] - x[0], y[1] - y[0], z[1] - z[0])),
-    new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.55 }))
+    new THREE.LineBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.65,
+      depthTest: true,
+    }))
   edge.position.set((x[0] + x[1]) / 2, (y[0] + y[1]) / 2, (z[0] + z[1]) / 2)
   group.add(edge)
   return { mesh, edge }
