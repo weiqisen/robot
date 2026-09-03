@@ -13,7 +13,7 @@ const { state, actions, HOST } = useRos()
 const host = ref(null)
 const loading = ref(true), loadErr = ref('')
 const tools = reactive({ lidar: true, grid: true, points: false, ik: false, tags: true,
-  workspace: true, selfbody: true, dimensions: true, angles: false, cameraFov: false, axes: true })
+  workspace: true, selfbody: true, dimensions: true, angles: false, cameraFov: false, axes: true, detections: true })
 
 // ---- 外观参数：集中一份，材质面板直接改它，改完实时生效并存 localStorage ----
 // 默认值来自官网实物图 jetrover.webp 取色（见 git log fix(twin) 那几条）。
@@ -96,7 +96,7 @@ const matGroups = {}          // 档位名 -> 这一档下所有 material，改�
 let hemiL = null, keyL = null, rimL = null
 let robotReady = false
 const info = reactive({ ox: '0.000', oy: '0.000', yaw: '0.0', scanN: '—', pcN: '—', jointN: '—',
-                        eex: '—', eey: '—', eez: '—' })
+                        eex: '—', eey: '—', eez: '—', detN: '无' })
 
 // 3D 模型旁边的实时数字：关节角来自 /joint_states，脉冲来自 /servo_states
 const CN = { joint1: '底座', joint2: '大臂', joint3: '小臂', joint4: '腕俯仰', joint5: '腕自转', r_joint: '夹爪' }
@@ -117,6 +117,7 @@ let renderer, scene, camera, controls, world, grid, robot, raf
 let lidarPoints = null
 let workspaceGroup = null, selfbodyGroup = null, dimensionsGroup = null
 let anglesGroup = null, cameraFovGroup = null, axesGroup = null
+let detectGroup = null      // YOLO 检测结果的 3D 投影
 const SERVO_MAP = [{ id: 1, joint: 'joint1' }, { id: 2, joint: 'joint2' }, { id: 3, joint: 'joint3' }, { id: 4, joint: 'joint4' }, { id: 5, joint: 'joint5' }, { id: 10, joint: 'r_joint' }]
 
 function init() {
@@ -209,8 +210,9 @@ function init() {
     anglesGroup = new THREE.Group()
     cameraFovGroup = new THREE.Group()
     axesGroup = new THREE.Group()
+    detectGroup = new THREE.Group()
     for (const g of [workspaceGroup, selfbodyGroup, dimensionsGroup,
-                     anglesGroup, cameraFovGroup, axesGroup]) anchor.add(g)
+                     anglesGroup, cameraFovGroup, axesGroup, detectGroup]) anchor.add(g)
 
     // 构建辅助图层（单位：米，base_link 坐标系）
     buildWorkspace(workspaceGroup)
@@ -218,12 +220,14 @@ function init() {
     buildDimensions(dimensionsGroup)
     buildAxes(axesGroup)
     // 给所有辅助图层的 mesh 打标记，skinRobot 会跳过它们
-    for (const g of [workspaceGroup, selfbodyGroup, dimensionsGroup, axesGroup]) {
+    for (const g of [workspaceGroup, selfbodyGroup, dimensionsGroup, axesGroup, detectGroup]) {
       g.traverse(o => { if (o.isMesh) o.userData.helperLayer = true })
     }
     for (const [k, g] of [['workspace', workspaceGroup], ['selfbody', selfbodyGroup],
                           ['dimensions', dimensionsGroup], ['angles', anglesGroup],
-                          ['cameraFov', cameraFovGroup], ['axes', axesGroup]]) g.visible = tools[k]
+                          ['cameraFov', cameraFovGroup], ['axes', axesGroup],
+                          ['detections', detectGroup]]) g.visible = tools[k]
+    syncDetections()      // 首帧就把已有的检测结果画出来
 
     // 兜底：万一这台车的 URDF 没有任何外部网格，onLoad 可能已经先触发过了
     if (mgr.itemsLoaded >= mgr.itemsTotal) onRobotReady()
@@ -548,6 +552,7 @@ watch(() => state.joints, m => {
   info.jointN = n + ' 关节实时'
   const w = eeWorld()
   info.eex = w.x.toFixed(3); info.eey = w.y.toFixed(3); info.eez = w.z.toFixed(3)
+  updateJointAngles()      // 标签第三行的角度跟着刷
 })
 watch(() => state.odom, m => {
   if (!robot || !m) return
@@ -575,6 +580,7 @@ function driveModelJoint(name, pulse) {
   const j = robot.joints[name]; let lo = -1.57, hi = 1.57
   if (j.limit && +j.limit.lower !== +j.limit.upper) { lo = +j.limit.lower; hi = +j.limit.upper }
   robot.setJointValue(name, lo + (pulse / 1000) * (hi - lo))
+  updateJointAngles()     // 本地拖动也要刷标签，别等回传
 }
 function syncArm() { actions.once('/controller_manager/servo_states', 'servo_controller_msgs/msg/ServoStateList', m => { (m.servo_state || []).forEach(s => { if (jval[s.id] != null) { jval[s.id] = s.position; const mp = SERVO_MAP.find(x => x.id === s.id); if (mp) driveModelJoint(mp.joint, s.position) } }) }) }
 
@@ -718,6 +724,80 @@ function buildAxes(group) {
   group.add(o)
 }
 
+// ---- YOLO 检测结果的 3D 投影 ----
+// snack_butler 已经把每个检测目标从像素反投影成 base_link 坐标（det.xyz），
+// 直接拿来在场景里摆标记就行，不用在前端重算相机外参。
+const DET_COLOR = { red: 0xe14b4b, orange: 0xef8c2d, yellow: 0xe8c020,
+                    green: 0x43a047, blue: 0x2e7ddb, purple: 0x8e5bc4 }
+const DET_CN = { red: '红', orange: '橙', yellow: '黄', green: '绿', blue: '蓝', purple: '紫' }
+
+function clearGroup(g) {
+  if (!g) return
+  for (let i = g.children.length - 1; i >= 0; i--) {
+    const o = g.children[i]
+    if (o.geometry) o.geometry.dispose()
+    if (o.material) { o.material.map && o.material.map.dispose(); o.material.dispose() }
+    g.remove(o)
+  }
+}
+
+// 检测结果整体重建。目标数量本来就只有几个，逐个 diff 不值当。
+function syncDetections() {
+  if (!detectGroup) return
+  clearGroup(detectGroup)
+  const dets = state.snack?.detections || []
+  for (const d of dets) {
+    if (!Array.isArray(d.xyz) || d.xyz.length !== 3) continue
+    const [x, y, z] = d.xyz
+    const reachable = !!d.reachable
+    const col = DET_COLOR[d.label] ?? (reachable ? 0x43a047 : 0x8b949e)
+
+    // 目标本体：一个小方块，可抓的实心一点、够不着的更透
+    const box = new THREE.Mesh(
+      new THREE.BoxGeometry(0.028, 0.028, 0.028),
+      new THREE.MeshBasicMaterial({ color: col, transparent: true,
+        opacity: reachable ? 0.55 : 0.28, toneMapped: false }))
+    box.position.set(x, y, z)
+    box.userData.helperLayer = true
+    detectGroup.add(box)
+
+    // 描边，让位置在深色背景下看得清
+    const edge = new THREE.LineSegments(
+      new THREE.EdgesGeometry(new THREE.BoxGeometry(0.028, 0.028, 0.028)),
+      new THREE.LineBasicMaterial({ color: col, transparent: true,
+        opacity: reachable ? 0.95 : 0.5, toneMapped: false }))
+    edge.position.set(x, y, z)
+    detectGroup.add(edge)
+
+    // 竖直投影线 + 台面上的落点，判断高度用
+    const foot = new THREE.Vector3(x, y, TABLE_Z)
+    const drop = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(x, y, z), foot]),
+      new THREE.LineDashedMaterial({ color: col, transparent: true, opacity: 0.45,
+        dashSize: 0.008, gapSize: 0.006, toneMapped: false }))
+    drop.computeLineDistances()      // 虚线必须算一次线长才显示成虚线
+    detectGroup.add(drop)
+    const ring = new THREE.Mesh(new THREE.RingGeometry(0.012, 0.016, 20),
+      new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.5,
+        side: THREE.DoubleSide, toneMapped: false }))
+    ring.position.copy(foot)
+    ring.userData.helperLayer = true
+    detectGroup.add(ring)
+
+    // 标签：类别 + 坐标 + 可达性
+    const name = DET_CN[d.label] || d.label || '目标'
+    const conf = d.confidence != null ? ` ${(d.confidence * 100).toFixed(0)}%` : ''
+    const tag = layerLabel(name + conf,
+      `${CM(x)} ${CM(y)} · ${reachable ? '可夹' : '够不着'}`,
+      '#' + col.toString(16).padStart(6, '0'))
+    tag.position.set(x, y, z + 0.042)
+    detectGroup.add(tag)
+  }
+  info.detN = dets.length ? dets.length + ' 个目标' : '无'
+}
+
+watch(() => state.snack?.detections, syncDetections, { deep: true })
+
 // 辅助图层的标签。画法照 tagSprite：只画一个圆角框，框外留透明 ——
 // 整块画布铺底色的话，场景里就是一堆跟着透视缩放的灰板子。
 // sizeAttenuation 关掉，标签不随距离缩放，远近都一样大小可读。
@@ -764,14 +844,16 @@ const TAGS = [
   { joint: 'r_joint', t: '夹爪', sub: 'ID 10' },
 ]
 let tagGroup = null
+// 标签精灵列表，保留 canvas/ctx 用于实时更新角度值
+const tagSprites = []
 
-function tagSprite(title, sub) {
+function tagSprite(title, sub, joint) {
   // 画到 canvas 再当贴图。用 devicePixelRatio 放大再缩回去，免得在高分屏上糊。
-  const S = 4, W = 168 * S, H = 52 * S
+  const S = 4, W = 168 * S, H = 64 * S
   const c = document.createElement('canvas'); c.width = W; c.height = H
   const x = c.getContext('2d')
   x.scale(S, S)
-  const r = 9, w = 168, h = 52
+  const r = 9, w = 168, h = 64
   x.fillStyle = 'rgba(8,12,18,.82)'
   x.strokeStyle = 'rgba(56,189,248,.55)'
   x.lineWidth = 1.2
@@ -779,32 +861,58 @@ function tagSprite(title, sub) {
   x.fillStyle = '#38BDF8'
   x.font = '700 21px ui-monospace, Menlo, monospace'
   x.textBaseline = 'middle'
-  x.fillText(title, 13, 19)
+  x.fillText(title, 13, 16)
   x.fillStyle = 'rgba(226,232,240,.82)'
   x.font = '400 14px "PingFang SC", "Microsoft YaHei", sans-serif'
-  x.fillText(sub, 13, 38)
+  x.fillText(sub, 13, 36)
+  // 第三行留给角度，初始为 '--'
+  x.fillStyle = 'rgba(148,163,184,.88)'
+  x.font = '600 13px ui-monospace, Menlo, monospace'
+  x.fillText('--°', 13, 54)
   const tex = new THREE.CanvasTexture(c)
   tex.minFilter = THREE.LinearFilter
   const sp = new THREE.Sprite(new THREE.SpriteMaterial({
     map: tex, depthTest: false, depthWrite: false, transparent: true }))
-  sp.scale.set(0.115, 0.036, 1)     // sizeAttenuation 关掉后这是屏幕比例
+  sp.scale.set(0.115, 0.044, 1)     // 高度加到 0.044 腾出第三行
   sp.material.sizeAttenuation = false
   sp.renderOrder = 999
-  return sp
+  return { sprite: sp, canvas: c, ctx: x, title, sub, joint }
 }
 
 function makeJointTags() {
+  tagSprites.length = 0
   if (tagGroup) { tagGroup.parent && tagGroup.parent.remove(tagGroup) }
   tagGroup = new THREE.Group()
   for (const g of TAGS) {
     const j = robot.joints[g.joint]
     if (!j) continue
-    const sp = tagSprite(g.t, g.sub)
-    sp.position.set(0, 0, 0.055)     // 从关节原点往外挑一点，别压在结构里
-    j.add(sp)
-    tagGroup.add(sp)                  // 只用来统一控制显隐
+    const ts = tagSprite(g.t, g.sub, g.joint)
+    ts.sprite.position.set(0, 0, 0.055)     // 从关节原点往外挑一点，别压在结构里
+    j.add(ts.sprite)
+    tagGroup.add(ts.sprite)                 // 只用来统一控制显隐
+    tagSprites.push(ts)
   }
   setTagsVisible(tools.tags)
+}
+
+// 更新关节标签的角度值。从 watch(state.joints) 里每帧调一次。
+function updateJointAngles() {
+  if (!robot || tagSprites.length === 0) return
+  const S = 4
+  for (const ts of tagSprites) {
+    const j = robot.joints[ts.joint]
+    if (!j) continue
+    const ang = j.angle || 0
+    const deg = (ang * 180 / Math.PI).toFixed(1)
+    const x = ts.ctx, w = 168, h = 64
+    // 只擦第三行，重画角度
+    x.clearRect(0, 45, w, 20)
+    x.fillStyle = 'rgba(148,163,184,.88)'
+    x.font = '600 13px ui-monospace, Menlo, monospace'
+    x.textBaseline = 'middle'
+    x.fillText(deg + '°', 13, 54)
+    ts.sprite.material.map.needsUpdate = true
+  }
 }
 function setTagsVisible(v) { tagGroup && tagGroup.children.forEach(o => (o.visible = v)) }
 
@@ -849,10 +957,26 @@ function toggleTool(k) {
   if (k === 'angles' && anglesGroup) anglesGroup.visible = tools.angles
   if (k === 'cameraFov' && cameraFovGroup) cameraFovGroup.visible = tools.cameraFov
   if (k === 'axes' && axesGroup) axesGroup.visible = tools.axes
+  if (k === 'detections' && detectGroup) detectGroup.visible = tools.detections
 }
 // 屏幕在车尾，默认机位在车前 —— 不给个入口就永远看不到它。
 // 机位按屏幕的实际世界位姿现算：车会随 /odom 转，写死的坐标转两下就偏了。
 const viewIdx = ref(0)
+
+// ---- 全屏 ----
+// 全屏目标是最外层 .twin，工具栏和面板一起进全屏；退出用 Esc 或再点一次。
+const isFs = ref(false)
+function toggleFullscreen() {
+  const el = host.value?.parentElement
+  if (!el) return
+  if (document.fullscreenElement) document.exitFullscreen?.()
+  else el.requestFullscreen?.().catch(() => {})
+}
+function onFsChange() {
+  isFs.value = !!document.fullscreenElement
+  // 全屏切换会改容器尺寸，renderer 得跟着重算，否则画面被拉伸
+  requestAnimationFrame(fit)
+}
 function resetView() {
   viewIdx.value ^= 1
   if (viewIdx.value === 1 && screenMesh) {
@@ -872,6 +996,7 @@ onMounted(() => {
   hostRO = new ResizeObserver(fit)
   hostRO.observe(host.value)
   window.addEventListener('resize', fit)
+  document.addEventListener('fullscreenchange', onFsChange)
   renderer.domElement.addEventListener('pointerdown', ptrDown)
   renderer.domElement.addEventListener('pointermove', ptrMove)
   window.addEventListener('pointerup', ptrUp)
@@ -891,6 +1016,7 @@ onBeforeUnmount(() => {
   cancelAnimationFrame(raf)
   if (hostRO) hostRO.disconnect()
   window.removeEventListener('resize', fit); window.removeEventListener('pointerup', ptrUp)
+  document.removeEventListener('fullscreenchange', onFsChange)
   if (screenTimer) clearInterval(screenTimer)
   if (screenMesh) { screenMesh.geometry.dispose(); screenMesh.material.dispose() }
   if (screenTex) screenTex.dispose()
@@ -906,10 +1032,13 @@ onBeforeUnmount(() => {
 
     <div class="tools">
       <div v-for="t in [['lidar', '雷达'], ['grid', '网格'], ['points', '点云'], ['tags', '标注'], ['ik', 'IK'],
-                        ['workspace', '工作区'], ['selfbody', '遮挡区'], ['dimensions', '尺寸'], ['axes', '坐标轴']]" :key="t[0]"
+                        ['workspace', '工作区'], ['selfbody', '遮挡区'], ['dimensions', '尺寸'], ['axes', '坐标轴'],
+                        ['detections', '识别']]" :key="t[0]"
         :class="['glass tbtn', { on: tools[t[0]] }]" @click="toggleTool(t[0])">{{ t[1] }}</div>
       <div class="glass tbtn" :title="viewIdx ? '切回默认视角' : '看车尾屏幕'"
         @click="resetView">{{ viewIdx ? '车头' : '视角' }}</div>
+      <div class="glass tbtn" :title="isFs ? '退出全屏' : '全屏显示'"
+        @click="toggleFullscreen">{{ isFs ? '退出' : '全屏' }}</div>
       <div :class="['glass tbtn', { on: matOpen }]" title="材质与光照，实时生效"
         @click="matOpen = !matOpen">材质</div>
     </div>
@@ -1014,6 +1143,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .twin { position: absolute; inset: 0; overflow: hidden; background: #070a0e; }
+.twin:fullscreen { position: fixed; z-index: 9999; }
 .scene { position: absolute; inset: 0; }
 .scene :deep(canvas) { display: block; }
 .loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; color: rgba(255,255,255,.6); font-family: ui-monospace, monospace; }
