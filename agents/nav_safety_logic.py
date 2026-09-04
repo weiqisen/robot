@@ -2,6 +2,13 @@
 import math
 
 
+def exploration_clearance(front_m, body_m, *, stop_distance=.38, turn_stop_distance=.30):
+    """分别报告前向起步和原地转向净空，避免侧后障碍误判为前路堵塞。"""
+    forward_ready = front_m is None or float(front_m) >= float(stop_distance)
+    turn_ready = body_m is None or float(body_m) >= float(turn_stop_distance)
+    return forward_ready, turn_ready
+
+
 def twist_nonzero(msg, epsilon=1e-4):
     """判断 Twist 是否包含运动量；用于发现绕过安全闸门的旧控制入口。"""
     values = (msg.linear.x, msg.linear.y, msg.linear.z,

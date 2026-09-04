@@ -30,6 +30,7 @@ from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 from std_msgs.msg import String, UInt16
 from sensor_msgs.msg import LaserScan
+from nav_safety_logic import exploration_clearance
 from service_watchdog import ServiceWatchdog
 
 try:
@@ -89,9 +90,9 @@ class Explorer(Node):
                     # 又常在 1.5m 之外。限定为 0.45~2.0m，保持短步且确保有实际位移。
                     'clearance_cells': 5, 'min_goal_distance': 0.45,
                     'max_goal_distance': 2.0,
-                    # 安全闸门短暂拦截旋转很常见，不能 3 秒就永久淘汰一个 frontier。
-                    # 给 Nav2 足够的局部重规划时间；失败目标只临时降权，稍后可重试。
-                    'near_block_timeout': 10.0, 'blacklist_ttl': 75.0,
+                    # 连续近障 3 秒即交给 Nav2 脱困重规划；失败目标只临时降权。
+                    # 底层安全闸门始终生效，不会因为缩短等待而绕过急停。
+                    'near_block_timeout': 3.0, 'blacklist_ttl': 75.0,
                     'blacklist_retry_interval': 45.0, 'arm_stow_timeout': 8.0,
                     # 近障持续时仅请求 Nav2 做短距离脱困，绝不绕过安全闸门直发 /cmd_vel。
                     'escape_distance': .32, 'max_escape_attempts': 2,
@@ -327,8 +328,19 @@ class Explorer(Node):
         if not self.safety_ready(): return False
         limits = self.safety_state.get('limits') or {}
         front, body = self.safety_state.get('front_m'), self.safety_state.get('body_m')
-        return ((front is None or front >= float(limits.get('stop_m', .38))) and
-                (body is None or body >= float(limits.get('turn_stop_m', .30))))
+        forward_ready, _ = exploration_clearance(
+            front, body, stop_distance=limits.get('stop_m', .38),
+            turn_stop_distance=limits.get('turn_stop_m', .30))
+        return forward_ready
+
+    def turn_clearance_ready(self):
+        if not self.safety_ready(): return False
+        limits = self.safety_state.get('limits') or {}
+        front, body = self.safety_state.get('front_m'), self.safety_state.get('body_m')
+        _, turn_ready = exploration_clearance(
+            front, body, stop_distance=limits.get('stop_m', .38),
+            turn_stop_distance=limits.get('turn_stop_m', .30))
+        return turn_ready
 
     def safety(self, action):
         self.safety_pub.publish(String(data=json.dumps({'action': action, 'source': 'nav'})))
@@ -592,9 +604,10 @@ class Explorer(Node):
         s = self.safety_state or {}
         front, body, vision = s.get('front_m'), s.get('body_m'), s.get('vision_guard_m')
         text = str(reason or s.get('vision_guard_reason') or '')
-        if isinstance(body, (int, float)) and body < .38:
+        limits = s.get('limits') or {}
+        if isinstance(body, (int, float)) and body < float(limits.get('turn_stop_m', .30)):
             return '硬禁行', '雷达车身净空 %.2fm' % body
-        if isinstance(front, (int, float)) and front < .38:
+        if isinstance(front, (int, float)) and front < float(limits.get('stop_m', .38)):
             return '硬禁行', '雷达前方净空 %.2fm' % front
         if '深度' in text:
             return '硬禁行', '深度确认的前上方障碍%s' % ((' %.2fm' % vision) if isinstance(vision, (int, float)) else '')
@@ -769,6 +782,8 @@ class Explorer(Node):
             if self.mode == 'exploring' and self.target and blocked:
                 if not self.safety_blocked_since:
                     self.safety_blocked_since = time.time()
+                    self.step = '安全急停正在复核；持续障碍将在 %.0f 秒后触发脱困重规划' % self.cfg['near_block_timeout']
+                    self.add_event('safety', '%s；开始短时复核，安全闸门保持生效' % reason, 'warn')
                 elif time.time() - self.safety_blocked_since >= self.cfg['near_block_timeout']:
                     p = self.target
                     self.cancel_goal()
@@ -776,6 +791,10 @@ class Explorer(Node):
                     self.get_logger().warn('[safety_skip] reason=%s target=%s' % (reason, p))
                     self.add_event('safety', '%s；持续 %.0f 秒，目标扩大黑名单并触发安全脱困' %
                                    (reason, self.cfg['near_block_timeout']), 'warn')
+                else:
+                    remaining = max(0.0, self.cfg['near_block_timeout'] -
+                                    (time.time() - self.safety_blocked_since))
+                    self.step = '持续近障复核中，约 %.0f 秒后脱困重规划' % remaining
                 return
             self.safety_blocked_since = 0.0
             if self.target:
@@ -837,6 +856,7 @@ class Explorer(Node):
                 'safety_vision_m': None if not self.safety_state else self.safety_state.get('vision_guard_m'),
                 'cfg': {'min_start_voltage': self.cfg['min_start_voltage'], 'low_voltage': self.cfg['low_voltage']},
                 'clearance_ready': self.clearance_ready(),
+                'turn_clearance_ready': self.turn_clearance_ready(),
                 'arm_ready': self.snack_ready(), 'arm_stowed': self.arm_stowed(),
                 'battery_v': None if self.batt_mv is None else round(self.batt_mv/1000, 2),
                 'config': self.cfg}

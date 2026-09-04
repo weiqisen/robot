@@ -31,9 +31,11 @@ const checks = computed(() => [
   ['Nav2', !!st.value?.nav_ready, st.value?.nav_ready ? '已就绪' : '未就绪'],
   ['安全闸门', !!st.value?.safety_ready, st.value?.safety_ready ? (st.value?.safety_armed ? '已解锁' : '已锁定') : '未连接'],
   ['机械臂节点', !!st.value?.arm_ready, st.value?.arm_ready ? (st.value?.arm_stowed ? '已收臂' : '启动时自动收臂') : '未连接'],
-  ['车身净空', !!st.value?.clearance_ready, st.value?.clearance_ready
-    ? `正常${st.value?.safety_front_m != null ? `（前方 ${st.value.safety_front_m.toFixed(2)}m）` : ''}`
-    : `不足（前方 ${st.value?.safety_front_m ?? '--'}m / 最近 ${st.value?.safety_body_m ?? '--'}m）`],
+  ['行驶净空', !!st.value?.clearance_ready, st.value?.clearance_ready
+    ? (st.value?.turn_clearance_ready === false
+      ? `前向可通行（前方 ${st.value?.safety_front_m?.toFixed(2) ?? '--'}m；侧后最近 ${st.value?.safety_body_m?.toFixed(2) ?? '--'}m，转向受限）`
+      : `正常${st.value?.safety_front_m != null ? `（前方 ${st.value.safety_front_m.toFixed(2)}m）` : ''}`)
+    : `前向不足（前方 ${st.value?.safety_front_m ?? '--'}m / 最近 ${st.value?.safety_body_m ?? '--'}m）`],
   ['视觉防撞', st.value?.safety_vision_m == null || st.value.safety_vision_m >= .36,
     st.value?.safety_vision_m == null ? '未见上方障碍' : `${st.value.safety_vision_m.toFixed(2)} m`],
   ['旧控制旁路', !st.value?.safety_legacy_active, st.value?.safety_legacy_active ? '检测到 /cmd_vel 非零指令' : '未发现'],
@@ -101,7 +103,7 @@ function start() {
   if (!st.value?.nav_ready) return message.error('Nav2 未就绪，无法规划避障路线')
   if (!st.value?.safety_ready) return message.error('导航安全闸门未就绪，禁止开始探索')
   if (!st.value?.arm_ready) return message.error('机械臂节点未连接，无法确认安全收臂')
-  if (!st.value?.clearance_ready) return message.error('车头或车身周围净空不足，请先人工挪开小车')
+  if (!st.value?.clearance_ready) return message.error('车头前向净空不足，请先人工挪开小车')
   if (st.value?.safety_legacy_active) return message.error('检测到旧 /cmd_vel 控制旁路，禁止开始探索')
   if (st.value?.battery_v == null) return message.error('没有底盘电池电压，禁止开始探索')
   if (st.value.battery_v < minStartVoltage.value) return message.error(`电池仅 ${st.value.battery_v}V，最低启动电压设为 ${minStartVoltage.value.toFixed(1)}V`)

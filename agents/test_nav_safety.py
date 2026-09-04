@@ -3,7 +3,8 @@
 import math
 from types import SimpleNamespace
 
-from nav_safety_logic import degraded_manual_velocity, safe_velocity, twist_nonzero
+from nav_safety_logic import (degraded_manual_velocity, exploration_clearance,
+                              safe_velocity, twist_nonzero)
 
 
 def scan(obstacles=()):
@@ -60,5 +61,10 @@ check('非零旧入口会触发告警', twist_nonzero(moving))
 vx, vy, wz, reason = degraded_manual_velocity(1, -1, 2)
 check('无雷达降级驾驶使用独立硬限速', (vx, vy, wz) == (.05, -.05, .20))
 check('降级驾驶状态文案明确', '无雷达降级' in reason)
+
+forward, turn = exploration_clearance(.656, .251)
+check('侧后近点不再误判前向道路堵塞', forward and not turn)
+forward, turn = exploration_clearance(.251, .251)
+check('真实前向近障仍禁止起步和转向', not forward and not turn)
 
 print('\n✓ 导航安全逻辑全部通过')
