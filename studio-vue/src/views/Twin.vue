@@ -149,6 +149,7 @@ let lidarPoints = null
 let workspaceGroup = null, selfbodyGroup = null, dimensionsGroup = null
 let anglesGroup = null, cameraFovGroup = null, axesGroup = null
 let detectGroup = null      // YOLO 检测结果的 3D 投影
+const detectionLabels = []  // 当前识别标签；loop() 按镜头距离做可读性限幅
 const SERVO_MAP = [{ id: 1, joint: 'joint1' }, { id: 2, joint: 'joint2' }, { id: 3, joint: 'joint3' }, { id: 4, joint: 'joint4' }, { id: 5, joint: 'joint5' }, { id: 10, joint: 'r_joint' }]
 
 function init() {
@@ -640,6 +641,7 @@ function loop() {
   }
   // OLED 三行内容 1Hz 刷够了，别每帧重画 canvas
   if (++oledTick % 60 === 0) drawOLED()
+  updateDetectionLabelScale()
   controls.update(); renderer.render(scene, camera)
 }
 
@@ -1353,11 +1355,12 @@ function contourDetection(footprint, center, height, col, opacity) {
 function syncDetections() {
   if (!detectGroup) return
   clearGroup(detectGroup)
+  detectionLabels.length = 0
   const dets = state.snack?.detections || []
   const tracked = state.snack?.scene_objects || []
   const objects = tracked.length ? tracked : dets.map((d, i) => ({ track_id:i, label:d.label,
     scene_xyz:d.xyz, geometry:d.geometry, confidence:d.confidence, reachable:d.reachable }))
-  for (const d of objects) {
+  for (const [objectIndex, d] of objects.entries()) {
     const xyz = d.scene_xyz
     if (!Array.isArray(xyz) || xyz.length !== 3) continue
     const [x, y, z] = xyz, geom = d.geometry || {}
@@ -1415,8 +1418,20 @@ function syncDetections() {
     const tag = layerLabel(name + conf,
       `${CM(x)} ${CM(y)} · ${occluded ? '暂时遮挡' : reachable ? '可夹' : '够不着'}`,
       '#' + col.toString(16).padStart(6, '0'))
-    tag.position.set(x, y, bottom + size[2] + 0.025)
+    // 相邻目标错开少量高度和横向位置，避免标签完全重叠；细线仍指回目标本体。
+    const lane = objectIndex % 3
+    const tagPos = new THREE.Vector3(x, y + (lane - 1) * .012,
+      bottom + size[2] + .025 + lane * .010)
+    tag.position.copy(tagPos)
     detectGroup.add(tag)
+    detectionLabels.push(tag)
+    const leader = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(x, y, bottom + size[2] + .004), tagPos,
+      ]),
+      new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: .32 }))
+    leader.userData.helperLayer = true
+    detectGroup.add(leader)
   }
   info.detN = objects.length ? objects.length + ' 个目标' : '无'
 }
@@ -1454,8 +1469,27 @@ function layerLabel(text, sub = '', color = '#8b949e') {
     map: tex, transparent: true, depthTest: false, depthWrite: false }))
   sp.material.sizeAttenuation = true
   sp.scale.set(0.108, 0.108 * h / w, 1)
+  sp.userData.labelBase = { width: 0.108, height: 0.108 * h / w }
   sp.renderOrder = 999
   return sp
+}
+
+// 标签正常情况下保持世界尺寸，因此推近时会跟目标一起变大；只有太远或太近时才限幅。
+// apparent 是标签宽度占视口高度的比例，约束在 7.5%～30%，兼顾可读性与遮挡。
+const labelWorldPos = new THREE.Vector3()
+function updateDetectionLabelScale() {
+  if (!camera || !detectionLabels.length) return
+  const tanHalfFov = Math.tan(THREE.MathUtils.degToRad(camera.fov * .5))
+  for (const sp of detectionLabels) {
+    const base = sp.userData.labelBase
+    if (!base || !sp.parent) continue
+    sp.getWorldPosition(labelWorldPos)
+    const distance = Math.max(.05, camera.position.distanceTo(labelWorldPos))
+    const apparent = base.width / (2 * distance * tanHalfFov)
+    const clamped = THREE.MathUtils.clamp(apparent, .075, .30)
+    const factor = clamped / apparent
+    sp.scale.set(base.width * factor, base.height * factor, 1)
+  }
 }
 
 let ikTarget = null, dragging = false
