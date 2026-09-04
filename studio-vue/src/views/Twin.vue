@@ -1115,38 +1115,42 @@ function decorateChassis() {
   xt60.position.set(0.048, 0, -0.080)
   bl.add(xt60)
 
-  // ---- OLED 小屏：雷达前方，水平紧贴机身钢板 ----
+  // ---- OLED 小屏：雷达前下方，竖直紧贴车头钢板 ----
   // lidar_link bbox（base 系）x[0.1574, 0.0226] y[±0.0325] z[0.002, 0.0531]
-  // 雷达前方（+X）护板有凹槽，OLED 背壳贴着钢板、屏面朝 +Z。
+  // 官方实物图里屏幕嵌在车头上层绿色前围板：板面是 YZ 平面，屏面朝车头 +X，
+  // 屏幕背面贴住钢板，而不是平放在雷达下方的水平顶板上。
   // 两孔估计间距 ~30mm，所以屏幅约 60mm。0.96" 实际可视区约 21.7×11mm，外壳约 27×27mm。
   // 这里按两块屏并排的感觉（实物可能就是两块0.96"拼的），总宽 60mm。
   const oledGrp = new THREE.Group()
   mark(oledGrp)
-  // lidar 最前端约 x=0.157；屏位于前方钢板，背壳底面贴 z≈0.001。
-  oledGrp.position.set(0.190, 0, 0.0025)
+  // 前围板外表面约 x=0.190；3mm 背壳的后表面贴板，所以中心前移一半厚度。
+  oledGrp.position.set(0.1915, 0, 0.017)
   bl.add(oledGrp)
   // 黑色外壳
   const oledCase = mark(new THREE.Mesh(
-    new THREE.BoxGeometry(0.027, 0.060, 0.003),
+    new THREE.BoxGeometry(0.003, 0.060, 0.027),
     new THREE.MeshStandardMaterial({ color: 0x0a0d10, metalness: 0.25, roughness: 0.65 })))
   oledGrp.add(oledCase)
   // 蓝色 OLED 屏面：带微弱自发光
   const oledScreen = mark(new THREE.Mesh(
-    new THREE.BoxGeometry(0.021, 0.054, 0.0005),
+    new THREE.BoxGeometry(0.0005, 0.054, 0.021),
     new THREE.MeshStandardMaterial({ color: 0x1e3a5f, emissive: 0x2a5a8f,
       emissiveIntensity: 0.6, toneMapped: false })))
-  oledScreen.position.set(0, 0, 0.0018)
+  oledScreen.position.set(0.0018, 0, 0)
   oledGrp.add(oledScreen)
   // 三行文字用 canvas 纹理画，动态刷（loop 里根据 state 更新）
   const oledCv = document.createElement('canvas')
   oledCv.width = 128; oledCv.height = 64
   const oledTex = new THREE.CanvasTexture(oledCv)
   oledTex.anisotropy = 4
+  // Plane 的局部 X 映射到竖直 Z，局部 Y 映射到车宽 Y；纹理旋转 90° 后文字横排。
+  oledTex.center.set(0.5, 0.5)
+  oledTex.rotation = -Math.PI / 2
   const oledText = mark(new THREE.Mesh(
-    new THREE.PlaneGeometry(0.053, 0.020),
+    new THREE.PlaneGeometry(0.020, 0.053),
     new THREE.MeshBasicMaterial({ map: oledTex, transparent: true, toneMapped: false })))
-  oledText.position.set(0, 0, 0.0022)
-  oledText.rotation.z = Math.PI / 2
+  oledText.position.set(0.0022, 0, 0)
+  oledText.rotation.y = Math.PI / 2
   oledGrp.add(oledText)
   // 存到 userData 供 loop() 刷新
   bl.userData.oledCanvas = oledCv
