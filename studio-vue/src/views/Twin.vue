@@ -124,7 +124,7 @@ function reloadDetFeed() { detFeedStamp.value = Date.now() }
 useStreamWatch(() => (tools.detectionFeed ? detFeedImg.value : null), reloadDetFeed)
 watch(() => tools.detectionFeed, v => { if (v) reloadDetFeed() })
 const matGroups = {}          // 档位名 -> 这一档下所有 material，改参数时批量刷
-let hemiL = null, keyL = null, rimL = null
+let hemiL = null, keyL = null, fillL = null, rimL = null
 let robotReady = false
 const info = reactive({ ox: '0.000', oy: '0.000', yaw: '0.0', scanN: '—', pcN: '—', jointN: '—',
                         eex: '—', eey: '—', eez: '—', detN: '无' })
@@ -144,7 +144,7 @@ const jointRows = computed(() => {
 const jetson = computed(() => state.jetson)
 const battV = computed(() => (state.batt != null ? (state.batt / 1000).toFixed(2) : '—'))
 
-let renderer, scene, camera, controls, world, grid, robot, raf
+let renderer, scene, camera, controls, world, grid, groundGlow, robot, raf
 let lidarPoints = null
 let workspaceGroup = null, selfbodyGroup = null, dimensionsGroup = null
 let anglesGroup = null, cameraFovGroup = null, axesGroup = null
@@ -155,13 +155,14 @@ function init() {
   const el = host.value
   renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
-  renderer.setClearColor(0x070a0e, 1)
+  // 透明清屏，让容器的多层渐变成为场景背景；比纯黑更容易分辨黑色结构件。
+  renderer.setClearColor(0x070a0e, 0)
   // 不做色调映射的话，金属高光会直接削顶成一块平的饱和色 —— 看着就是塑料。
   // ACES 把高光滚降下来，反射的明暗过渡才留得住。曝光补一点，抵消 ACES 整体压暗。
   renderer.toneMapping = THREE.ACESFilmicToneMapping
   renderer.toneMappingExposure = lit.exposure
   el.appendChild(renderer.domElement)
-  scene = new THREE.Scene(); scene.fog = new THREE.Fog(0x070a0e, 4, 14)
+  scene = new THREE.Scene(); scene.fog = new THREE.Fog(0x0b1119, 2.2, 8)
   const pmrem = new THREE.PMREMGenerator(renderer)
   scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture
   camera = new THREE.PerspectiveCamera(48, 1, 0.01, 100)
@@ -174,6 +175,9 @@ function init() {
     }
   })
   controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping = true
+  controls.dampingFactor = 0.075
+  controls.minDistance = 0.18
+  controls.maxDistance = 6
   controls.target.set(...savedView.target)
   // 用户拖动相机时标记为自由视角
   controls.addEventListener('change', () => {
@@ -184,9 +188,31 @@ function init() {
   // 主要交给上面那张 RoomEnvironment。再加一盏背侧轮廓光，金属边缘要有那道亮线。
   hemiL = new THREE.HemisphereLight(0xbfd4ff, 0x1a1f26, lit.hemi); scene.add(hemiL)
   keyL = new THREE.DirectionalLight(0xffffff, lit.key); keyL.position.set(2, 4, 3); scene.add(keyL)
+  // 从车头低位托起黑色件细节；强度固定且较低，不覆盖材质面板里的主灯控制。
+  fillL = new THREE.DirectionalLight(0x8fc7ff, 0.48); fillL.position.set(2.5, 1.0, -2.2); scene.add(fillL)
   rimL = new THREE.DirectionalLight(0x9fc4ff, lit.rim); rimL.position.set(-2.5, 1.5, -2); scene.add(rimL)
   world = new THREE.Group(); world.rotation.x = -Math.PI / 2; scene.add(world)
-  grid = new THREE.GridHelper(10, 40, 0x2a3340, 0x161b22); grid.rotation.x = Math.PI / 2; world.add(grid)
+  // 小范围低对比网格只负责尺度感，避免原来 10m 网格抢过机器人主体。
+  grid = new THREE.GridHelper(4, 32, 0x31506a, 0x172532)
+  grid.rotation.x = Math.PI / 2
+  for (const m of (Array.isArray(grid.material) ? grid.material : [grid.material])) {
+    m.transparent = true; m.opacity = 0.32; m.depthWrite = false
+  }
+  world.add(grid)
+  // 机器人脚下的柔和径向光斑，把主体从背景中托出来，同时提供接地参照。
+  const groundCv = document.createElement('canvas'); groundCv.width = groundCv.height = 256
+  const groundCtx = groundCv.getContext('2d')
+  const groundGrad = groundCtx.createRadialGradient(128, 128, 8, 128, 128, 128)
+  groundGrad.addColorStop(0, 'rgba(49,105,132,.32)')
+  groundGrad.addColorStop(.42, 'rgba(25,57,75,.16)')
+  groundGrad.addColorStop(1, 'rgba(7,12,18,0)')
+  groundCtx.fillStyle = groundGrad; groundCtx.fillRect(0, 0, 256, 256)
+  groundGlow = new THREE.Mesh(new THREE.CircleGeometry(1.5, 64),
+    new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(groundCv), transparent: true,
+      depthWrite: false, toneMapped: false }))
+  groundGlow.position.z = -0.001
+  groundGlow.renderOrder = -10
+  world.add(groundGlow)
   fit(); loop()
   // urdf-loader 的 load() 回调在 URDF **解析完**就触发，而 STL 网格是异步加载的。
   // 在那个回调里 traverse 根本遍历不到网格 —— 网格随后带着 loader 默认的
@@ -1784,7 +1810,12 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.twin { position: absolute; inset: 0; overflow: hidden; background: #070a0e; }
+.twin { position: absolute; inset: 0; overflow: hidden;
+  background:
+    radial-gradient(ellipse at 52% 46%, rgba(31,58,75,.52) 0%, rgba(13,24,34,.38) 32%, transparent 63%),
+    linear-gradient(180deg, #111b27 0%, #080d14 48%, #05080c 100%); }
+.twin::after { content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 2;
+  background: radial-gradient(ellipse at center, transparent 52%, rgba(0,0,0,.34) 100%); }
 .twin:fullscreen { position: fixed; z-index: 9999; }
 .scene { position: absolute; inset: 0; }
 .scene :deep(canvas) { display: block; }
