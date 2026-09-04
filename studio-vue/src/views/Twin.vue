@@ -17,9 +17,11 @@ const host = ref(null)
 const loading = ref(true), loadErr = ref('')
 // 默认开的只留「看车」必需的几层：示意盒子和坐标轴平时是干扰，识别流才是常看的。
 // 尺寸标注（dimensions）对调试抓取高度有用，默认开着。
-const tools = reactive({ lidar: true, grid: true, points: false, ik: false, tags: true,
-  workspace: false, selfbody: false, dimensions: true, angles: false, cameraFov: false,
-  axes: false, detections: true, detectionFeed: true })
+const tools = reactive({ lidar: true, grid: true, points: false, ik: false, tags: false,
+  workspace: false, selfbody: false, dimensions: false, angles: false, cameraFov: false,
+  axes: false, detections: true, detectionFeed: false })
+const sceneMenu = ref('')
+function toggleSceneMenu(name) { sceneMenu.value = sceneMenu.value === name ? '' : name }
 
 // ---- 外观参数：集中一份，材质面板直接改它，改完实时生效并存 localStorage ----
 // 默认值来自官网实物图 jetrover.webp 取色（见 git log fix(twin) 那几条）。
@@ -1767,23 +1769,34 @@ onBeforeUnmount(() => {
     <div v-if="loading" class="loading"><a-spin size="large" /><div style="margin-top:12px">加载模型…</div></div>
     <div v-if="loadErr" class="loading">模型加载失败：{{ loadErr }}</div>
 
-    <div class="tools">
-      <div v-for="t in [['lidar', '雷达'], ['grid', '网格'], ['points', '点云'], ['tags', '标注'], ['ik', 'IK'],
-                        ['workspace', '工作区'], ['selfbody', '遮挡区'], ['dimensions', '尺寸'], ['axes', '坐标轴'],
-                        ['detections', '识别']]" :key="t[0]"
-        :class="['glass tbtn', { on: tools[t[0]] }]" @click="toggleTool(t[0])">{{ t[1] }}</div>
-      <div class="glass tbtn" :title="viewIdx === 1 ? '切回默认视角' : '看车尾屏幕'"
-        @click="resetView">{{ viewIdx === 1 ? '车头' : '视角' }}</div>
-      <div v-if="viewIdx === 2" class="glass tbtn" title="回到已保存的默认视角"
-        @click="resetToDefault">复位</div>
-      <div class="glass tbtn" title="把当前机位和缩放存为默认视角，下次打开就是这个角度"
-        @click="saveCurrentView">存视角</div>
-      <div class="glass tbtn" :title="isFs ? '退出全屏' : '全屏显示'"
-        @click="toggleFullscreen">{{ isFs ? '退出' : '全屏' }}</div>
-      <div :class="['glass tbtn', { on: matOpen }]" title="材质与光照，实时生效"
-        @click="matOpen = !matOpen">材质</div>
-      <div :class="['glass tbtn', { on: tools.detectionFeed }]" title="YOLO 识别画面"
-        @click="tools.detectionFeed = !tools.detectionFeed">识别流</div>
+    <div class="scene-menu glass">
+      <button :class="{ on: sceneMenu === 'layers' }" @click="toggleSceneMenu('layers')">图层</button>
+      <button :class="{ on: sceneMenu === 'view' }" @click="toggleSceneMenu('view')">视角</button>
+      <button :class="{ on: matOpen }" @click="matOpen = !matOpen; sceneMenu = ''">外观</button>
+      <button :class="{ on: sceneMenu === 'vision' || tools.detectionFeed }" @click="toggleSceneMenu('vision')">视觉</button>
+      <button @click="toggleFullscreen">{{ isFs ? '退出全屏' : '全屏' }}</button>
+    </div>
+    <div v-if="sceneMenu === 'layers'" class="scene-pop glass">
+      <div class="sp-title">场景图层 <button @click="sceneMenu = ''">×</button></div>
+      <div class="sp-grid">
+        <button v-for="t in [['lidar','雷达'],['grid','网格'],['points','点云'],['tags','关节标注'],['ik','IK'],
+          ['workspace','工作区'],['selfbody','遮挡区'],['dimensions','尺寸'],['axes','坐标轴'],['detections','识别目标']]"
+          :key="t[0]" :class="{ on: tools[t[0]] }" @click="toggleTool(t[0])">{{ t[1] }}</button>
+      </div>
+    </div>
+    <div v-if="sceneMenu === 'view'" class="scene-pop glass">
+      <div class="sp-title">镜头视角 <button @click="sceneMenu = ''">×</button></div>
+      <div class="sp-actions">
+        <button @click="resetToDefault">默认视角</button><button @click="resetView">车尾屏幕</button>
+        <button @click="saveCurrentView">保存当前视角</button>
+      </div>
+    </div>
+    <div v-if="sceneMenu === 'vision'" class="scene-pop glass">
+      <div class="sp-title">视觉感知 <button @click="sceneMenu = ''">×</button></div>
+      <div class="sp-actions">
+        <button :class="{ on: tools.detections }" @click="toggleTool('detections')">3D 识别目标</button>
+        <button :class="{ on: tools.detectionFeed }" @click="tools.detectionFeed = !tools.detectionFeed">实时识别画面</button>
+      </div>
     </div>
 
     <!-- YOLO 识别画面小窗：浮在右上角，工具列左边 -->
@@ -1906,14 +1919,26 @@ onBeforeUnmount(() => {
 .scene :deep(canvas) { display: block; }
 .loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; color: rgba(255,255,255,.6); font-family: ui-monospace, monospace; }
 .glass { background: rgba(14,17,22,.55); backdrop-filter: blur(16px); border: 1px solid rgba(255,255,255,.12); color: #eef2f6; }
-.tools { position: absolute; right: 14px; top: 14px; z-index: 10; display: flex; flex-direction: column; gap: 8px; }
-.tbtn { width: 44px; height: 40px; display: flex; align-items: center; justify-content: center; font-size: 11px; border-radius: 11px; cursor: pointer; color: rgba(255,255,255,.6); }
-.tbtn.on { color: #fff; box-shadow: inset 0 0 0 1px #2e9bff; background: rgba(46,155,255,.16); }
+.scene-menu { position:absolute; z-index:12; top:12px; left:50%; transform:translateX(-50%);
+  display:flex; gap:3px; padding:4px; border-radius:9px; white-space:nowrap; }
+.scene-menu button,.scene-pop button { border:1px solid transparent; background:transparent; color:#94A3B8;
+  font:500 11px/1 var(--font-sans); border-radius:6px; cursor:pointer; }
+.scene-menu button { padding:7px 12px; }
+.scene-menu button:hover,.scene-menu button.on,.scene-pop button.on { color:#E2E8F0;
+  border-color:rgba(56,189,248,.3); background:rgba(56,189,248,.11); }
+.scene-pop { position:absolute; z-index:13; top:54px; left:50%; transform:translateX(-50%);
+  width:330px; padding:10px; border-radius:10px; box-shadow:0 16px 44px rgba(0,0,0,.35); }
+.sp-title { display:flex; align-items:center; padding:1px 3px 8px; color:#CBD5E1; font-size:11px;
+  border-bottom:1px solid rgba(148,163,184,.12); margin-bottom:8px; }
+.sp-title button { margin-left:auto; font-size:17px; color:#64748B; padding:0 3px; }
+.sp-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:5px; }
+.sp-grid button,.sp-actions button { padding:8px 6px; border-color:rgba(148,163,184,.12); }
+.sp-actions { display:flex; gap:6px; }.sp-actions button { flex:1; }
 
 /* ---- YOLO 识别画面小窗 ----
    高度按「四个按钮」算：4×40 + 3×8 = 184px。画面 4:3，所以宽 = 画面 184-42(头尾)
    ≈ 142 高 → 190 宽，取整 208px。right 让开工具列（44 + 14 + 14 间距）。 */
-.det-feed { position: absolute; right: 72px; top: 14px; z-index: 9; width: 208px;
+.det-feed { position: absolute; right: 14px; top: 58px; z-index: 9; width: 208px;
   background: rgba(8,12,18,.88); backdrop-filter: blur(8px); border-radius: 11px;
   border: 1px solid rgba(148,163,184,.22); overflow: hidden; }
 .df-head { display: flex; align-items: center; justify-content: space-between;
@@ -1947,7 +1972,7 @@ onBeforeUnmount(() => {
 /* 材质面板 */
 /* 高度必须收住：左下角还有「实时遥测」面板，伸到底就会压在它上面。
    60% + 内部滚动，两块面板各占各的。 */
-.panel.look { position: absolute; left: 14px; top: 14px; width: 264px; padding: 12px 14px;
+.panel.look { position: absolute; left: 14px; top: 58px; width: 264px; padding: 12px 14px;
   border-radius: 14px; max-height: 60%; overflow-y: auto; z-index: 7; }
 .panel.look::-webkit-scrollbar { width: 6px; }
 .panel.look::-webkit-scrollbar-thumb { background: rgba(255,255,255,.18); border-radius: 3px; }
@@ -1986,9 +2011,9 @@ onBeforeUnmount(() => {
 
 /* ---- Twin 移动端适配 ---- */
 @media (max-width: 1024px) {
-  .tools { right:10px; top:10px; gap:6px; flex-direction:column !important; }
-  .tbtn { width:38px; height:36px; font-size:10px; }
-  .det-feed { right:56px; top:10px; width:180px; }
+  .scene-menu { top:8px; }.scene-menu button { padding:6px 9px; font-size:10px; }
+  .scene-pop { top:46px; width:300px; }
+  .det-feed { right:10px; top:50px; width:180px; }
   .df-head { padding:4px 7px; }
   .df-head b { font-size:10px; }
   .df-close { font-size:12px; }
@@ -1996,9 +2021,10 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 640px) {
-  .tools { right:6px; top:6px; gap:5px; flex-direction:column !important; }
-  .tbtn { width:34px; height:32px; font-size:9px; border-radius:9px; }
-  .det-feed { right:46px; top:6px; width:150px; border-radius:9px; }
+  .scene-menu { top:6px; width:calc(100% - 12px); justify-content:center; }
+  .scene-menu button { padding:6px 7px; font-size:9px; }
+  .scene-pop { top:44px; width:calc(100% - 20px); }
+  .det-feed { right:6px; top:48px; width:150px; border-radius:9px; }
   .df-head { padding:3px 6px; }
   .df-head b { font-size:9px; }
   .df-close { font-size:11px; }
