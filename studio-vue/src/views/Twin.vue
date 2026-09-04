@@ -1361,15 +1361,25 @@ function syncDetections() {
   const tracked = state.snack?.scene_objects || []
   const objects = tracked.length ? tracked : dets.map((d, i) => ({ track_id:i, label:d.label,
     scene_xyz:d.xyz, geometry:d.geometry, confidence:d.confidence, reachable:d.reachable }))
+  const activeTarget = state.snack?.target || state.snack?.held_target || null
+  const activeXYZ = activeTarget?.scene_xyz || activeTarget?.xyz
+  const isActiveTarget = d => {
+    if (!activeTarget) return false
+    if (activeTarget.track_id != null && d.track_id != null) return activeTarget.track_id === d.track_id
+    const xyz = d.scene_xyz
+    return activeTarget.label === d.label && Array.isArray(activeXYZ) && Array.isArray(xyz) &&
+      Math.hypot(xyz[0] - activeXYZ[0], xyz[1] - activeXYZ[1], xyz[2] - activeXYZ[2]) < .025
+  }
   // 过滤小于 1mm / 1% 置信度的视觉抖动；相同快照不销毁并重建 GPU 资源。
   const q3 = v => Number.isFinite(+v) ? Math.round(+v * 1000) : null
-  const signature = JSON.stringify(objects.map((d, i) => {
+  const signature = JSON.stringify([activeTarget?.track_id ?? null, activeTarget?.label ?? null,
+    (activeXYZ || []).map(q3), objects.map((d, i) => {
     const g = d.geometry || {}
     return [d.track_id ?? i, d.label, (d.scene_xyz || []).map(q3),
       Number.isFinite(+d.confidence) ? Math.round(+d.confidence * 100) : null,
       !!d.reachable, !!d.occluded, g.kind, (g.size || []).map(q3), q3(g.yaw_deg),
       (g.footprint || []).map(p => p.map(q3))]
-  }))
+  })])
   if (signature === lastDetectionSignature) return
   lastDetectionSignature = signature
   clearGroup(detectGroup)
@@ -1379,6 +1389,7 @@ function syncDetections() {
     if (!Array.isArray(xyz) || xyz.length !== 3) continue
     const [x, y, z] = xyz, geom = d.geometry || {}
     const reachable = !!d.reachable, occluded = !!d.occluded
+    const active = isActiveTarget(d)
     const col = DET_COLOR[d.label] ?? (reachable ? 0x43a047 : 0x8b949e)
     const opacity = occluded ? .18 : reachable ? .62 : .32
     const size = Array.isArray(geom.size) ? geom.size : [.028,.028,.028]
@@ -1410,27 +1421,29 @@ function syncDetections() {
     if (geom.kind && geom.kind !== 'contour') edge.rotation.z = THREE.MathUtils.degToRad(geom.yaw_deg || 0)
     edge.userData.helperLayer = true; detectGroup.add(edge)
 
-    // 竖直投影线 + 台面上的落点，判断高度用
-    const foot = new THREE.Vector3(x, y, TABLE_Z)
-    const drop = new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(x, y, z), foot]),
-      new THREE.LineDashedMaterial({ color: col, transparent: true, opacity: 0.45,
-        dashSize: 0.008, gapSize: 0.006, toneMapped: false }))
-    drop.computeLineDistances()      // 虚线必须算一次线长才显示成虚线
-    detectGroup.add(drop)
-    const targetR = Math.max(.012, Math.min(.05, Math.max(size[0], size[1]) * .62))
-    const ring = new THREE.Mesh(new THREE.RingGeometry(targetR, targetR + .004, 24),
-      new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.5,
-        side: THREE.DoubleSide, toneMapped: false }))
-    ring.position.copy(foot)
-    ring.userData.helperLayer = true
-    detectGroup.add(ring)
+    // 只有机器人真实锁定的抓取目标才显示竖直投影线和桌面落点圈。
+    if (active) {
+      const foot = new THREE.Vector3(x, y, TABLE_Z)
+      const drop = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(x, y, z), foot]),
+        new THREE.LineDashedMaterial({ color: col, transparent: true, opacity: 0.55,
+          dashSize: 0.008, gapSize: 0.006, toneMapped: false }))
+      drop.computeLineDistances()
+      detectGroup.add(drop)
+      const targetR = Math.max(.012, Math.min(.05, Math.max(size[0], size[1]) * .62))
+      const ring = new THREE.Mesh(new THREE.RingGeometry(targetR, targetR + .004, 24),
+        new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.72,
+          side: THREE.DoubleSide, toneMapped: false }))
+      ring.position.copy(foot)
+      ring.userData.helperLayer = true
+      detectGroup.add(ring)
+    }
 
     // 标签：类别 + 坐标 + 可达性
     const name = `${DET_CN[d.label] || d.label || '目标'} #${d.track_id ?? '—'}`
     const conf = d.confidence != null ? ` ${(d.confidence * 100).toFixed(0)}%` : ''
-    const tag = layerLabel(name + conf,
-      `${CM(x)} ${CM(y)} · ${occluded ? '暂时遮挡' : reachable ? '可夹' : '够不着'}`,
+    const tag = layerLabel(name + conf, active
+      ? `${CM(x)} ${CM(y)} · ${occluded ? '暂时遮挡' : reachable ? '已锁定 · 可夹' : '已锁定 · 够不着'}` : '',
       '#' + col.toString(16).padStart(6, '0'))
     // 相邻目标错开少量高度和横向位置，避免标签完全重叠；细线仍指回目标本体。
     const lane = objectIndex % 3
@@ -1439,13 +1452,15 @@ function syncDetections() {
     tag.position.copy(tagPos)
     detectGroup.add(tag)
     detectionLabels.push(tag)
-    const leader = new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(x, y, bottom + size[2] + .004), tagPos,
-      ]),
-      new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: .32 }))
-    leader.userData.helperLayer = true
-    detectGroup.add(leader)
+    if (active) {
+      const leader = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(x, y, bottom + size[2] + .004), tagPos,
+        ]),
+        new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: .42 }))
+      leader.userData.helperLayer = true
+      detectGroup.add(leader)
+    }
   }
   info.detN = objects.length ? objects.length + ' 个目标' : '无'
 }
