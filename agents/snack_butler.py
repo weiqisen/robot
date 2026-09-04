@@ -356,6 +356,11 @@ class SnackButler(Node):
         self.step = ''
         self.last_error = ''
         self.detections = []
+        # 给网页的结构化决策轨迹。它记录“为什么这样做”，而不只是当前 state/step；
+        # 环形上限避免 5Hz 状态消息无限膨胀。
+        self.decision_log = []
+        self.decision_seq = 0
+        self.decision_task_id = None
         self.grasp_analysis = None  # 只算不动的抓取姿态诊断结果
         self.held_target = None
         self.target = None
@@ -438,6 +443,27 @@ class SnackButler(Node):
         else:
             self.get_logger().warning('[recovery] 检测到中断动作日志，已锁定机械臂，等待人工确认恢复')
         self.watchdog.ready('已启动，等待相机与关节状态')
+
+    def decision(self, phase, summary, detail='', level='info', data=None):
+        """追加一条可供界面忠实展示的决策事件。data 必须可 JSON 序列化。"""
+        self.decision_seq += 1
+        item = {
+            'seq': self.decision_seq,
+            'at': round(time.time(), 3),
+            'task_id': self.decision_task_id,
+            'phase': phase,
+            'level': level,
+            'summary': summary,
+            'detail': detail,
+        }
+        if data is not None:
+            item['data'] = data
+        self.decision_log.append(item)
+        del self.decision_log[:-80]
+
+    def begin_decision_task(self, action, detail=''):
+        self.decision_task_id = uuid.uuid4().hex[:8]
+        self.decision('command', '收到命令：%s' % action, detail)
 
     def watchdog_tick(self):
         self.watchdog.ping('state=%s rgb=%s depth=%s task=%s' %
@@ -1022,6 +1048,7 @@ class SnackButler(Node):
         - 'uncertain': 跳过了复核（post_grasp_verify 关了）
         """
         if not self.cfg.get('post_grasp_verify', True):
+            self.decision('verify', '跳过抓取复核', 'post_grasp_verify 已关闭', 'warn')
             return 'uncertain'
         seen = []
         for _ in range(max(1, int(self.cfg.get('post_grasp_verify_frames', 3)))):
@@ -1035,8 +1062,14 @@ class SnackButler(Node):
             self.stats['failed'] += 1
             self.get_logger().warning('[grasp_verify] target remains near (%.3f, %.3f): %s' %
                                       (tx, ty, [d.get('label') for d in remains]))
+            self.decision('verify', '复核失败：原位置仍有目标',
+                          '半径 %.0f mm 内发现 %s，停止投放并松爪' %
+                          (radius * 1000, ', '.join(str(d.get('label')) for d in remains)), 'error')
             return 'remains'
         self.get_logger().info('[grasp_verify] target absent from original position')
+        self.decision('verify', '复核通过：原位置目标消失',
+                      '连续检查 %d 帧；这只能证明画面变化，仍需目视确认是否夹住' %
+                      max(1, int(self.cfg.get('post_grasp_verify_frames', 3))), 'success')
         return 'absent'
 
     # ---------------- 状态机：每个 yield 返回「等待秒数」 ----------------
@@ -1099,11 +1132,20 @@ class SnackButler(Node):
         yield from self.seq_goto_observe(open_gripper=True)
         self.state = 'DETECT'
         self.step = '识别中'
+        frames = max(1, self.cfg['detect_frames'])
+        self.decision('detect', '开始视觉识别', '连续采集 %d 帧，当前实现以最后一帧作为决策结果' % frames)
         best = []
-        for _ in range(max(1, self.cfg['detect_frames'])):
+        frame_counts = []
+        for _ in range(frames):
             best = self.scan_once()
+            frame_counts.append(len(best))
             yield 0.12
         self.step = f'识别到 {len(best)} 个目标'
+        reachable = sum(1 for d in best if d.get('reachable'))
+        self.decision('detect', '识别完成：%d 个目标，%d 个可抓' % (len(best), reachable),
+                      '各帧目标数 %s；数据源 %s' %
+                      (frame_counts, 'RGB + 深度' if self.depth is not None else 'RGB + 桌面平面兜底'),
+                      'success' if reachable else 'warn')
 
     def pick_target(self, label=None, uv=None):
         """从最近一次识别结果里挑一个可抓的目标"""
@@ -1196,7 +1238,16 @@ class SnackButler(Node):
                                              '姿态/工作区余量不足：仅建议空跑，不要直接实抓')}, ''
 
     def seq_pick(self, label=None, uv=None, outcome='route'):
+        wanted = ('标签=%s' % label) if label else ('点击=(%.0f, %.0f)' % uv if uv else '任意可抓目标')
+        self.begin_decision_task('pick', '%s；结果=%s' % (wanted, outcome))
         yield from self.seq_detect()
+        all_count = len(self.detections)
+        reach_count = sum(1 for d in self.detections if d.get('reachable'))
+        label_count = sum(1 for d in self.detections if d.get('reachable') and
+                          (label is None or d.get('label') == label))
+        self.decision('select', '筛选候选：%d → %d → %d' % (all_count, reach_count, label_count),
+                      '依次应用工作区/垂直夹爪 IK 可达性%s' %
+                      (('、标签=' + str(label)) if label else ''))
         tgt = self.pick_target(label, uv)
         why = ''
         if not tgt and uv:
@@ -1208,8 +1259,14 @@ class SnackButler(Node):
             self.step = '没有可抓的目标'
             self.last_error = why or f'未找到可抓目标 (label={label}, uv={uv})'
             self.auto = False
+            self.decision('select', '没有选出可抓目标', self.last_error, 'error')
             return
         self.target = tgt
+        xyz = tgt.get('xyz') or []
+        select_rule = ('按点击像素最近且命中吸附半径选择' if uv else '按水平距离 x²+y² 最小选择')
+        self.decision('select', '选中 %s' % tgt.get('label', '目标'),
+                      '坐标 (%s)，%s' % (', '.join('%.3f' % v for v in xyz), select_rule), 'success',
+                      {'label': tgt.get('label'), 'xyz': xyz, 'depth_src': tgt.get('depth_src')})
         success = yield from self.seq_grasp(tgt, outcome=outcome)
         # 单次“抓某色 / 点击即抓 / 抓这个”完成后恢复 eye-in-hand 固定观察位，
         # 页面马上重新获得正确视角并恢复后台识别。自动清台由下一轮 seq_detect 回观察位。
@@ -1364,6 +1421,7 @@ class SnackButler(Node):
 
     def seq_grasp(self, tgt, outcome='route'):
         if self._blocked_lowvolt() or self._blocked_uncalibrated():
+            self.decision('safety', '安全检查拒绝抓取', self.last_error or self.step, 'error')
             return False
         cfg = self.cfg
         x, y, zs = tgt['xyz']
@@ -1372,6 +1430,9 @@ class SnackButler(Node):
         y += cfg.get('y_offset_hack', 0.0)
         zs += cfg.get('z_offset_hack', 0.0)
         gz = self.grasp_z(zs)
+        self.decision('geometry', '计算抓取坐标',
+                      '视觉顶面 z=%.3f，补偿后=(%.3f, %.3f, %.3f)，合爪 z=%.3f（桌面保护下限 %.3f）' %
+                      (tgt['xyz'][2], x, y, zs, gz, cfg['table_z'] + cfg['grasp_clearance']))
         # 腕部自转对齐：angle_px 已经是「垂直于物体长边」的夹爪角度
         # 画面右 = base -Y，所以像素角度取负
         roll = clamp(math.radians(-tgt.get('angle_px', 0.0)), -1.5, 1.5)
@@ -1385,6 +1446,7 @@ class SnackButler(Node):
             self.last_error = f'垂直夹爪 IK 无解 ({x:.3f},{y:.3f},{gz:.3f})；请移近目标或车身'
             self.stats['failed'] += 1
             self.auto = False
+            self.decision('ik', '抓取 IK 无解', self.last_error, 'error')
             return False
         q_pre = (ik_best(x, y, gz + cfg['approach_h'], pitch, seed=q_grasp,
                          wrist_roll=roll, tool=tool)
@@ -1396,6 +1458,12 @@ class SnackButler(Node):
         # 只保留 joint1 转向目标，joint2~4 保持在一个安全的抬起姿态
         safe_z = cfg.get('safe_z', 0.08)
         q_safe = ik_best(x, y, safe_z, pitch, seed=q_pre, wrist_roll=0, tool=tool)
+        self.decision('ik', '动作姿态求解完成',
+                      '抓取=可解；预抓=%s；抬起=%s；安全中间点=%s' %
+                      ('可解' if q_pre is not q_grasp else '回退抓取姿态',
+                       '可解' if q_lift is not q_pre else '回退预抓姿态',
+                       '可解' if q_safe else '无解，将跳过'),
+                      'success' if q_safe else 'warn')
 
         self.journal_begin(tgt, q_safe, q_lift)
         self.state = 'GRASP'
@@ -1404,13 +1472,17 @@ class SnackButler(Node):
             self.journal_phase('safe_move')
             self.gripper(True)
             self.send_arm(q_safe, cfg['move_time'])
+            self.decision('motion', '移动到安全中间点', '目标 XY，base_link 绝对 z=%.3f' % safe_z)
             yield cfg['move_time'] + cfg['settle']
+        else:
+            self.decision('motion', '跳过安全中间点', '该姿态 IK 无解，直接进入预抓姿态', 'warn')
 
         self.step = f"预抓取 ({x:.3f}, {y:.3f}, {gz:.3f}) pitch={math.degrees(pitch):.0f}°"
         self.journal_phase('pre_grasp')
         if not q_safe:
             self.gripper(True)
         self.send_arm(q_pre, cfg['move_time'])
+        self.decision('motion', '移动到预抓悬停位', '目标上方 %.0f mm，夹爪 pitch=180°' % (cfg['approach_h'] * 1000))
         yield cfg['move_time'] + cfg['settle']
 
         # eye-in-hand 相机已到悬停位；此时重识别主方向，只校正 joint5，不改变垂直 pitch。
@@ -1434,25 +1506,31 @@ class SnackButler(Node):
                 self.step = '预抓方向可见但腕部 IK 无解，保持初始角度'
         else:
             self.step = note
+        self.decision('orientation', '预抓方向复核', self.step,
+                      'success' if '旋转对齐' in self.step else 'info')
 
         self.step = '下探'
         self.journal_phase('descending')
         self.send_arm(q_grasp, 0.9)
+        self.decision('motion', '垂直下探', '移动到合爪高度 z=%.3f' % gz)
         yield 0.9 + cfg['settle']
 
         self.step = '合爪'
         self.journal_phase('closing_gripper')
+        self.decision('gripper', '合爪', '下发闭合脉冲 %s' % cfg['gripper_close'])
         yield self.gripper(False)
 
         self.step = '抬起'
         self.journal_phase('lifting')
         self.send_arm(q_lift, 0.9)
+        self.decision('motion', '抓取后抬起', '目标上方 %.0f mm' % (cfg['lift_h'] * 1000))
         yield 0.9 + 0.2
 
         self.step = '抓取复核：回观察位检查目标是否仍在桌面'
         self.journal_phase('verify_grasp')
         # 保持闭爪回观察位复核，不能在搬运途中释放物品。
         yield from self.seq_goto_observe()
+        self.decision('verify', '返回观察位复核', '保持闭爪，检查原抓取坐标附近')
         verify = self.verify_grasp(tgt)
         if verify == 'remains':
             self.gripper(True)  # 疑似空抓：目标还在原位，松爪避免带着物品穿越桌面上方
@@ -1473,6 +1551,7 @@ class SnackButler(Node):
                 self.step = '复核通过：桌面目标已消失，请目视确认后投放'
             else:
                 self.step = '桌面目标暂未见：无法证明已夹起，请目视确认后投放或松爪'
+            self.decision('holding', '进入 HOLDING，等待人工决定', self.step, 'warn')
             return True
 
         # 人工确认关了：复核通过就自动投 outcome 指定的筐，否则视为失败、不投。
@@ -1499,6 +1578,7 @@ class SnackButler(Node):
     def seq_place_held(self, binname):
         if not self.held_target:
             self.state = 'IDLE'; self.step = '没有已夹起的物体'; return
+        self.decision('command', '收到人工投放确认', '投放区=%s' % binname)
         yield from self.seq_place(binname)
         self.held_target = None
         yield from self.seq_goto_observe(open_gripper=True)
@@ -1509,6 +1589,8 @@ class SnackButler(Node):
         bx, by, bz = b['xyz']
         self.state = 'PLACE'
         self.step = f'搬运到 {b.get("label", binname)}'
+        self.decision('place', '计算投放姿态', '%s 坐标=(%.3f, %.3f, %.3f)，上方悬停 50 mm' %
+                      (b.get('label', binname), bx, by, bz))
         self.journal_phase('place_over')
         pitch = GRASP_PITCH
         q_over = ik_best(bx, by, bz + 0.05, pitch, seed=self.q_cmd, tool=cfg['tool_len'])
@@ -1517,6 +1599,9 @@ class SnackButler(Node):
         if q_over is None:
             self.last_error = f'投放区 {binname} 够不着，就地放下'
             q_over = q_drop = self.q_cmd
+            self.decision('place', '投放区 IK 无解', self.last_error, 'error')
+        else:
+            self.decision('place', '投放姿态可达', '先到投放区上方，再垂直下降', 'success')
         self.send_arm(q_over, cfg['move_time'])
         yield cfg['move_time'] + cfg['settle']
         if q_drop:
@@ -1525,6 +1610,7 @@ class SnackButler(Node):
             yield 0.7 + 0.2
         self.step = '松爪'
         self.journal_phase('release')
+        self.decision('place', '到达投放位，松爪', '投放到 %s' % b.get('label', binname), 'success')
         yield self.gripper(True)
         self.send_arm(q_over, 0.7)
         yield 0.8
@@ -1532,15 +1618,21 @@ class SnackButler(Node):
 
     def seq_auto(self):
         """自动循环：一直抓到桌面上没有可抓目标为止"""
+        self.begin_decision_task('auto', '自动清台新一轮：识别并选择最近的可抓目标')
         yield from self.seq_detect()
         tgt = self.pick_target()
         if not tgt:
             self.auto = False
             self.state = 'IDLE'
             self.step = '桌面已清空 ✓'
+            self.decision('select', '自动清台结束', '没有找到可抓目标', 'success')
             yield from self.seq_goto_observe()
             return
         self.target = tgt
+        xyz = tgt.get('xyz') or []
+        self.decision('select', '自动选择 %s' % tgt.get('label', '目标'),
+                      '坐标 (%s)，按水平距离 x²+y² 最小选择' % ', '.join('%.3f' % v for v in xyz),
+                      'success')
         success = yield from self.seq_grasp(tgt)
         if success:
             yield from self.seq_goto_observe()
@@ -1816,6 +1908,7 @@ class SnackButler(Node):
                          'last_at': round(self.last_detection_at, 3) if self.last_detection_at else None,
                          'detections': len(self.detections)},
             'error': self.last_error,
+            'decision_log': self.decision_log,
             'target': None if not self.target else
                       {k: v for k, v in self.target.items() if not k.startswith('_')},
             'held_target': None if not self.held_target else

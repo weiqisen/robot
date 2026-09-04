@@ -17,7 +17,7 @@ const stats = computed(() => sb.value?.stats || {})
 
 const STATE_COLOR = {
   INIT: 'default', IDLE: 'default', OBSERVE: 'processing', DETECT: 'processing',
-  GRASP: 'warning', PLACE: 'warning', CALIB: 'purple', HOME: 'default', RECOVERY: 'error', ERROR: 'error',
+  GRASP: 'warning', HOLDING: 'gold', PLACE: 'warning', CALIB: 'purple', HOME: 'default', RECOVERY: 'error', ERROR: 'error',
 }
 const CHIP = { red: '#e14b4b', orange: '#ef8c2d', yellow: '#e8c020',
                green: '#43a047', blue: '#2e7ddb', purple: '#8e5bc4' }
@@ -60,30 +60,12 @@ async function restartService(unit) {
 }
 // 展开面板时如果还没查过，自动跑一次
 watch(() => healthCheck.show, v => { if (v && !healthCheck.data) runHealthCheck() })
-const inferenceLog = ref([])
-const inferSig = computed(() => JSON.stringify({
-  state: sb.value?.state, step: sb.value?.step, error: sb.value?.error,
-  n: dets.value.length, target: sb.value?.target?.xyz, held: !!sb.value?.held_target,
-  live: sb.value?.analysis?.live,
-}))
-function inferLine() {
-  if (!online.value) return '等待视觉抓取节点连接'
-  const s = sb.value
-  if (s.error) return `安全拦截：${s.error}`
-  if (s.step) return `执行：${s.step}`
-  if (!s.has_rgb) return '视觉输入：等待 RGB 相机帧'
-  const source = s.has_depth ? 'RGB + 深度' : 'RGB + 桌面平面兜底'
-  return `视觉输入：${source}；识别到 ${dets.value.length} 个目标`
+const decisionLines = computed(() => (sb.value?.decision_log || []).slice().reverse())
+function decisionTime(epoch) {
+  return epoch ? new Date(epoch * 1000).toLocaleTimeString('zh-CN', { hour12: false }) : '--:--:--'
 }
-watch(inferSig, () => {
-  const text = inferLine()
-  const last = inferenceLog.value.at(-1)
-  if (!last || last.text !== text) {
-    inferenceLog.value.push({ t: new Date().toLocaleTimeString('zh-CN', { hour12: false }), text,
-      kind: sb.value?.error ? 'bad' : sb.value?.state === 'GRASP' ? 'active' : 'ok' })
-    inferenceLog.value.splice(0, Math.max(0, inferenceLog.value.length - 14))
-  }
-}, { immediate: true })
+const PHASE_CN = { command: '命令', detect: '视觉', select: '筛选', safety: '安全', geometry: '坐标',
+  ik: 'IK', motion: '动作', orientation: '方向', gripper: '夹爪', verify: '复核', holding: '等待', place: '投放' }
 const inferenceSummary = computed(() => {
   const t = selectedDet.value || sb.value?.target
   if (!t?.xyz) return '等待选择目标；系统仅展示真实视觉、IK 与安全状态。'
@@ -710,12 +692,15 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
 
     <!-- 右：实时决策 + 高级设置 -->
     <a-col :xs="24" :xl="9">
-      <a-card size="small" title="LLM 推理" class="inference-panel">
-        <template #extra><a-tag :color="online ? 'processing' : 'default'">实时决策</a-tag></template>
+      <a-card size="small" title="抓取决策轨迹" class="inference-panel">
+        <template #extra><a-tag :color="online ? 'processing' : 'default'">节点原始决策 · 最新在上</a-tag></template>
         <div class="infer-summary">{{ inferenceSummary }}</div>
         <div class="infer-terminal">
-          <div v-for="(line, i) in inferenceLog" :key="i" :class="['infer-line', line.kind]">
-            <time>{{ line.t }}</time><b>{{ line.kind === 'bad' ? '安全' : line.kind === 'active' ? '执行' : '视觉' }}</b><span>{{ line.text }}</span>
+          <div v-if="!decisionLines.length" class="infer-empty">{{ online ? '等待下一条抓取决策' : '等待视觉抓取节点连接' }}</div>
+          <div v-for="line in decisionLines" :key="line.seq" :class="['infer-line', line.level]">
+            <time>{{ decisionTime(line.at) }}</time>
+            <b>{{ PHASE_CN[line.phase] || line.phase }}</b>
+            <span><strong>{{ line.summary }}</strong><small v-if="line.detail">{{ line.detail }}</small></span>
           </div>
         </div>
         <a-button v-if="selectedDet && !sb?.held_target" block size="small" style="margin-top:8px"
@@ -1033,10 +1018,12 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
 
 .inference-panel { overflow:hidden; }
 .infer-summary { padding:8px 10px; border:1px solid var(--border); border-radius:7px; background:var(--surface-2); font-size:12px; line-height:1.55; color:var(--text-2); }
-.infer-terminal { margin-top:9px; padding:8px 0; min-height:180px; max-height:250px; overflow:auto; border-radius:7px; background:#101821; font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; }
-.infer-line { display:grid; grid-template-columns:58px 34px minmax(0,1fr); gap:6px; padding:2px 9px; color:#c5d1df; }
-.infer-line time { color:#6f8295; }.infer-line b { color:#5dc3ff; font-weight:600; }.infer-line.active b { color:#ffbc5b; }.infer-line.bad b,.infer-line.bad span { color:#ff8e8e; }
-.infer-line span { overflow-wrap:anywhere; }.infer-detail { margin-top:8px; font-size:12px; line-height:1.6; color:var(--text-3); }
+.infer-terminal { margin-top:9px; padding:8px 0; min-height:260px; max-height:520px; overflow:auto; border-radius:7px; background:#101821; font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; }
+.infer-empty { padding:18px; text-align:center; color:#6f8295; }
+.infer-line { display:grid; grid-template-columns:58px 38px minmax(0,1fr); gap:6px; padding:5px 9px; color:#c5d1df; border-bottom:1px solid rgba(255,255,255,.035); }
+.infer-line time { color:#6f8295; }.infer-line b { color:#5dc3ff; font-weight:600; }.infer-line.warn b { color:#ffbc5b; }.infer-line.error b,.infer-line.error span { color:#ff8e8e; }.infer-line.success b { color:#6bd89b; }
+.infer-line span,.infer-line strong,.infer-line small { overflow-wrap:anywhere; }.infer-line strong { display:block; color:inherit; font-weight:600; }.infer-line small { display:block; margin-top:1px; color:#8fa2b5; font:11px/1.45 system-ui,sans-serif; }
+.infer-line.error small { color:#d98989; }.infer-detail { margin-top:8px; font-size:12px; line-height:1.6; color:var(--text-3); }
 .advanced-panels :deep(.ant-collapse-item) { border:1px solid var(--border); border-radius:8px!important; margin-bottom:8px; overflow:hidden; }
 .advanced-panels :deep(.ant-collapse-header) { font-weight:600; font-size:13px; background:var(--surface-2); }
 .advanced-panels :deep(.ant-collapse-content-box) { padding:8px!important; }
