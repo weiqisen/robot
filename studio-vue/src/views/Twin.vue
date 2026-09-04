@@ -1004,12 +1004,12 @@ function decorateArmJointMotors() {
 // 7 寸屏下方的黑罩里是 Jetson 的涡轮风扇，风扇下面压着 Nano 开发板。
 //
 // 探针实测 back_shell_black_link 局部系 bbox：x[-0.166, -0.0389] y[±0.0828] z[0.002, 0.158]
-// 板子必须塞在 x > -0.16 才不穿出去。Y 只有 ±0.0828（165mm），比实物 Nano 载板
-// （100mm）还窄，所以按 76×52mm 缩比例。屏幕在 base 系 x=-0.1469 z=0.1136，
+// 板子必须塞在 x > -0.16 才不穿出去。Y 向按护板四个固定孔展开到 145mm，
+// 两侧各留约 10mm 钢板边距。屏幕在 base 系 x=-0.1469 z=0.1136，
 // 对应局部系约 x=-0.139（link 原点在 base 系 x=-0.008），所以「屏下方」= 局部 x 接近 -0.14 且 z 明显低于 0.11。
 const JET = {
   x: -0.125, z: 0.003,        // 板底落在外壳内底面 z≈0.002，不再悬空
-  w: 0.076, d: 0.052,         // 板 x 向长 / y 向宽
+  w: 0.076, d: 0.145,         // 板 x 向长 / y 向宽，横向顶到护板两端固定区
   fanZ: 0.003 + 0.018,        // 风扇底面紧贴散热鳍片顶面
 }
 let fanBlades = null      // loop() 里转它
@@ -1037,6 +1037,25 @@ function buildJetsonInside() {
       roughness: 0.68, envMapIntensity: 0.7 })))
   pcb.position.set(PCB_X, 0, PCB_Z)
   g.add(pcb)
+
+  // 四个安装孔与护板上的固定孔对应：金属焊盘包住孔位，中心压入螺钉头。
+  const mountRingMat = new THREE.MeshStandardMaterial({ color: 0xb99245, metalness: .86,
+    roughness: .28, envMapIntensity: 1.25, side: THREE.DoubleSide })
+  const screwMat = new THREE.MeshStandardMaterial({ color: 0x252a30, metalness: .76,
+    roughness: .32, envMapIntensity: 1.15 })
+  const alignZ = new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1))
+  for (const dx of [-PCB_W / 2 + .008, PCB_W / 2 - .008]) {
+    for (const dy of [-PCB_D / 2 + .008, PCB_D / 2 - .008]) {
+      const ring = mark(new THREE.Mesh(new THREE.RingGeometry(.0023, .0040, 20), mountRingMat))
+      ring.position.set(PCB_X + dx, dy, PCB_Z + .00082)
+      g.add(ring)
+      const screw = mark(new THREE.Mesh(new THREE.CylinderGeometry(.0022, .0022, .0012, 16), screwMat))
+      screw.quaternion.copy(alignZ)
+      screw.position.set(PCB_X + dx, dy, PCB_Z + .00135)
+      g.add(screw)
+    }
+  }
 
   // 核心模块：贴在板中间的金属屏蔽罩
   const som = mark(new THREE.Mesh(
@@ -1149,8 +1168,6 @@ function buildJetsonInside() {
   // ---- CPU 风扇：低矮圆形外壳 + 顶部护圈 + 可见转子 ----
   // 外形类似一个很扁的雷达，但内部保留真实散热风扇的叶片。
   // Z 轴向上吹，所以圆柱要立着（默认沿 Y，转到 Z）。
-  const alignZ = new THREE.Quaternion().setFromUnitVectors(
-    new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1))
   const FAN_R = 0.018
   const fanX = PCB_X - 0.006
   const fanShellMat = new THREE.MeshStandardMaterial({ color: 0x101317, metalness: 0.35,
