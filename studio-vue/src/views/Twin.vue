@@ -19,7 +19,7 @@ const loading = ref(true), loadErr = ref('')
 // 尺寸标注（dimensions）对调试抓取高度有用，默认开着。
 const tools = reactive({ lidar: true, grid: true, points: false, ik: false, tags: false,
   workspace: false, selfbody: false, dimensions: false, angles: false, cameraFov: false,
-  axes: false, detections: true, detectionFeed: false })
+  axes: false, detections: true, intent: true, detectionFeed: false })
 const sceneMenu = ref('')
 function toggleSceneMenu(name) { sceneMenu.value = sceneMenu.value === name ? '' : name }
 
@@ -151,6 +151,7 @@ let lidarPoints = null
 let workspaceGroup = null, selfbodyGroup = null, dimensionsGroup = null
 let anglesGroup = null, cameraFovGroup = null, axesGroup = null
 let detectGroup = null      // YOLO 检测结果的 3D 投影
+let intentGroup = null      // 后端真实 IK 求解出的动作意图
 const detectionLabels = []  // 当前识别标签；loop() 按镜头距离做可读性限幅
 let detectionSyncRaf = null, lastDetectionSignature = ''
 const SERVO_MAP = [{ id: 1, joint: 'joint1' }, { id: 2, joint: 'joint2' }, { id: 3, joint: 'joint3' }, { id: 4, joint: 'joint4' }, { id: 5, joint: 'joint5' }, { id: 10, joint: 'r_joint' }]
@@ -306,8 +307,9 @@ function init() {
     cameraFovGroup = new THREE.Group()
     axesGroup = new THREE.Group()
     detectGroup = new THREE.Group()
+    intentGroup = new THREE.Group()
     for (const g of [workspaceGroup, selfbodyGroup, dimensionsGroup,
-                     anglesGroup, cameraFovGroup, axesGroup, detectGroup]) anchor.add(g)
+                     anglesGroup, cameraFovGroup, axesGroup, detectGroup, intentGroup]) anchor.add(g)
 
     // 构建辅助图层（单位：米，base_link 坐标系）
     buildWorkspace(workspaceGroup)
@@ -315,14 +317,15 @@ function init() {
     buildDimensions(dimensionsGroup)
     buildAxes(axesGroup)
     // 给所有辅助图层的 mesh 打标记，skinRobot 会跳过它们
-    for (const g of [workspaceGroup, selfbodyGroup, dimensionsGroup, axesGroup, detectGroup]) {
+    for (const g of [workspaceGroup, selfbodyGroup, dimensionsGroup, axesGroup, detectGroup, intentGroup]) {
       g.traverse(o => { if (o.isMesh) o.userData.helperLayer = true })
     }
     for (const [k, g] of [['workspace', workspaceGroup], ['selfbody', selfbodyGroup],
                           ['dimensions', dimensionsGroup], ['angles', anglesGroup],
                           ['cameraFov', cameraFovGroup], ['axes', axesGroup],
-                          ['detections', detectGroup]]) g.visible = tools[k]
+                          ['detections', detectGroup], ['intent', intentGroup]]) g.visible = tools[k]
     syncDetections()      // 首帧就把已有的检测结果画出来
+    syncMotionIntent()
 
     // 兜底：万一这台车的 URDF 没有任何外部网格，onLoad 可能已经先触发过了
     if (mgr.itemsLoaded >= mgr.itemsTotal) onRobotReady()
@@ -1475,6 +1478,55 @@ function scheduleDetections() {
 watch(() => [state.snack?.scene_objects, state.snack?.detections], scheduleDetections,
   { deep: true, flush: 'post' })
 
+let intentMarker = null
+const INTENT_PHASE = { planned:0, safe_move:0, pre_grasp:1, descending:2,
+  closing_gripper:2, lifting:3, verify_grasp:3, place_over:0, place_down:1, release:1 }
+function syncMotionIntent() {
+  if (!intentGroup) return
+  clearGroup(intentGroup); intentMarker = null
+  const intent = state.snack?.motion_intent
+  const samples = intent?.samples || [], waypoints = intent?.waypoints || []
+  if (samples.length < 2) return
+  const points = samples.map(p => new THREE.Vector3(...p))
+  const curve = new THREE.CatmullRomCurve3(points, false, 'centripetal')
+  const envelope = new THREE.Mesh(new THREE.TubeGeometry(curve, Math.max(16, points.length), .012, 8, false),
+    new THREE.MeshBasicMaterial({ color:0x38bdf8, transparent:true, opacity:.07,
+      depthWrite:false, toneMapped:false }))
+  envelope.userData.helperLayer = true; intentGroup.add(envelope)
+  const path = new THREE.Line(new THREE.BufferGeometry().setFromPoints(points),
+    new THREE.LineDashedMaterial({ color:0x67e8f9, dashSize:.012, gapSize:.006,
+      transparent:true, opacity:.92, toneMapped:false }))
+  path.computeLineDistances(); path.userData.helperLayer = true; intentGroup.add(path)
+  const active = INTENT_PHASE[intent.phase] ?? 0
+  waypoints.forEach((w, i) => {
+    if (!Array.isArray(w.xyz)) return
+    const current = i === active
+    const dot = new THREE.Mesh(new THREE.SphereGeometry(current ? .009 : .006, 16, 12),
+      new THREE.MeshBasicMaterial({ color: current ? 0xfbbf24 : 0x67e8f9,
+        transparent:true, opacity: current ? 1 : .72, toneMapped:false }))
+    dot.position.set(...w.xyz); dot.userData.helperLayer = true; intentGroup.add(dot)
+    const tag = layerLabel(current ? `▶ ${w.name}` : w.name,
+      current ? `正在执行 · ${intent.phase}` : `J${i + 1} · 已求解`, current ? '#fbbf24' : '#67e8f9')
+    tag.position.copy(dot.position).add(new THREE.Vector3(0, 0, .025))
+    intentGroup.add(tag); detectionLabels.push(tag)
+    if (current) intentMarker = dot
+  })
+  const last = waypoints[waypoints.length - 1]
+  if (last?.xyz) {
+    const ghost = new THREE.Group()
+    const palm = new THREE.Mesh(new THREE.BoxGeometry(.032,.052,.012),
+      new THREE.MeshBasicMaterial({ color:0x67e8f9, wireframe:true, transparent:true, opacity:.8 }))
+    ghost.add(palm)
+    for (const y of [-.021,.021]) {
+      const finger = new THREE.Mesh(new THREE.BoxGeometry(.009,.008,.055), palm.material)
+      finger.position.set(0,y,-.030); ghost.add(finger)
+    }
+    ghost.position.set(...last.xyz); ghost.position.z += .04
+    ghost.userData.helperLayer = true; intentGroup.add(ghost)
+  }
+}
+watch(() => state.snack?.motion_intent, syncMotionIntent, { deep:true, flush:'post' })
+
 // 辅助图层的标签。画法照 tagSprite：只画一个圆角框，框外留透明 ——
 // 整块画布铺底色的话，场景里就是一堆跟着透视缩放的灰板子。
 // 标签使用三维世界尺寸：镜头推近目标时，文字卡片也会随透视同步放大。
@@ -1655,6 +1707,7 @@ function toggleTool(k) {
   if (k === 'cameraFov' && cameraFovGroup) cameraFovGroup.visible = tools.cameraFov
   if (k === 'axes' && axesGroup) axesGroup.visible = tools.axes
   if (k === 'detections' && detectGroup) detectGroup.visible = tools.detections
+  if (k === 'intent' && intentGroup) intentGroup.visible = tools.intent
 }
 // 屏幕在车尾，默认机位在车前 —— 不给个入口就永远看不到它。
 // 机位按屏幕的实际世界位姿现算：车会随 /odom 转，写死的坐标转两下就偏了。
@@ -1795,7 +1848,7 @@ onBeforeUnmount(() => {
       <div class="sp-title">场景图层 <button @click="sceneMenu = ''">×</button></div>
       <div class="sp-grid">
         <button v-for="t in [['lidar','雷达'],['grid','网格'],['points','点云'],['tags','关节标注'],['ik','IK'],
-          ['workspace','工作区'],['selfbody','遮挡区'],['dimensions','尺寸'],['axes','坐标轴'],['detections','识别目标']]"
+          ['workspace','工作区'],['selfbody','遮挡区'],['dimensions','尺寸'],['axes','坐标轴'],['detections','识别目标'],['intent','动作意图']]"
           :key="t[0]" :class="{ on: tools[t[0]] }" @click="toggleTool(t[0])">{{ t[1] }}</button>
       </div>
     </div>

@@ -368,6 +368,8 @@ class SnackButler(Node):
         self.grasp_analysis = None  # 只算不动的抓取姿态诊断结果
         self.held_target = None
         self.target = None
+        # 当前动作的真实 IK 意图。网页只渲染这里已经求解成功的路径，不自行猜轨迹。
+        self.motion_intent = None
         self.auto = False
         self.stats = {'picked': 0, 'failed': 0, 'started': time.time()}
         self.calib_samples = []
@@ -479,7 +481,35 @@ class SnackButler(Node):
 
     def begin_decision_task(self, action, detail=''):
         self.decision_task_id = uuid.uuid4().hex[:8]
+        self.motion_intent = None
         self.decision('command', '收到命令：%s' % action, detail)
+
+    def set_motion_intent(self, kind, target, poses, phase='planned'):
+        """把离散 IK 姿态展开成可视化用的指尖轨迹；不参与真实控制。"""
+        clean = [(name, q) for name, q in poses if q is not None]
+        samples = []
+        previous = self.current_q()
+        for name, q in clean:
+            for i in range(1, 9):
+                t = i / 8.0
+                qi = [a + (b - a) * t for a, b in zip(previous, q)]
+                p = fk(qi, tool=self.cfg['tool_len'])
+                samples.append([round(p[0], 4), round(p[1], 4), round(p[2], 4)])
+            previous = q
+        self.motion_intent = {
+            'task_id': self.decision_task_id, 'kind': kind, 'phase': phase,
+            'target': {k: v for k, v in (target or {}).items() if not k.startswith('_')},
+            'waypoints': [{'name': name,
+                           'xyz': [round(v, 4) for v in fk(q, tool=self.cfg['tool_len'])[:3]],
+                           'q_deg': [round(math.degrees(v), 1) for v in q]}
+                          for name, q in clean],
+            'samples': samples, 'updated_at': round(time.time(), 3),
+        }
+
+    def motion_phase(self, phase):
+        if self.motion_intent:
+            self.motion_intent['phase'] = phase
+            self.motion_intent['updated_at'] = round(time.time(), 3)
 
     def watchdog_tick(self):
         self.watchdog.ping('state=%s rgb=%s depth=%s task=%s' %
@@ -1714,6 +1744,9 @@ class SnackButler(Node):
         # 只保留 joint1 转向目标，joint2~4 保持在一个安全的抬起姿态
         safe_z = cfg.get('safe_z', 0.08)
         q_safe = ik_best(x, y, safe_z, pitch, seed=q_pre, wrist_roll=0, tool=tool)
+        self.set_motion_intent('grasp', tgt,
+                               [('安全点', q_safe), ('预抓', q_pre),
+                                ('下探', q_grasp), ('抬起', q_lift)])
         self.decision('ik', '动作姿态求解完成',
                       '抓取=可解；预抓=%s；抬起=%s；安全中间点=%s' %
                       ('可解' if q_pre is not q_grasp else '回退抓取姿态',
@@ -1724,6 +1757,7 @@ class SnackButler(Node):
         self.journal_begin(tgt, q_safe, q_lift)
         self.state = 'GRASP'
         if q_safe:
+            self.motion_phase('safe_move')
             self.step = f'安全移动到目标上方 (z={safe_z:.3f})'
             self.journal_phase('safe_move')
             self.gripper(True)
@@ -1734,6 +1768,7 @@ class SnackButler(Node):
             self.decision('motion', '跳过安全中间点', '该姿态 IK 无解，直接进入预抓姿态', 'warn')
 
         self.step = f"预抓取 ({x:.3f}, {y:.3f}, {gz:.3f}) pitch={math.degrees(pitch):.0f}°"
+        self.motion_phase('pre_grasp')
         self.journal_phase('pre_grasp')
         if not q_safe:
             self.gripper(True)
@@ -1766,23 +1801,27 @@ class SnackButler(Node):
                       'success' if '旋转对齐' in self.step else 'info')
 
         self.step = '下探'
+        self.motion_phase('descending')
         self.journal_phase('descending')
         self.send_arm(q_grasp, 0.9)
         self.decision('motion', '垂直下探', '移动到合爪高度 z=%.3f' % gz)
         yield 0.9 + cfg['settle']
 
         self.step = '合爪'
+        self.motion_phase('closing_gripper')
         self.journal_phase('closing_gripper')
         self.decision('gripper', '合爪', '下发闭合脉冲 %s' % cfg['gripper_close'])
         yield self.gripper(False)
 
         self.step = '抬起'
+        self.motion_phase('lifting')
         self.journal_phase('lifting')
         self.send_arm(q_lift, 0.9)
         self.decision('motion', '抓取后抬起', '目标上方 %.0f mm' % (cfg['lift_h'] * 1000))
         yield 0.9 + 0.2
 
         self.step = '抓取复核：回观察位检查目标是否仍在桌面'
+        self.motion_phase('verify_grasp')
         self.journal_phase('verify_grasp')
         # 保持闭爪回观察位复核，不能在搬运途中释放物品。
         yield from self.seq_goto_observe()
@@ -1852,6 +1891,9 @@ class SnackButler(Node):
         q_over = ik_best(bx, by, bz + 0.05, pitch, seed=self.q_cmd, tool=cfg['tool_len'])
         q_drop = (ik_best(bx, by, bz, pitch, seed=q_over, tool=cfg['tool_len'])
                   if q_over else None)
+        self.set_motion_intent('place', self.held_target,
+                               [('投放区上方', q_over), ('投放点', q_drop), ('安全撤离', q_over)],
+                               'place_over')
         if q_over is None:
             self.last_error = f'投放区 {binname} 够不着，就地放下'
             q_over = q_drop = self.q_cmd
@@ -1861,10 +1903,12 @@ class SnackButler(Node):
         self.send_arm(q_over, cfg['move_time'])
         yield cfg['move_time'] + cfg['settle']
         if q_drop:
+            self.motion_phase('place_down')
             self.journal_phase('place_down')
             self.send_arm(q_drop, 0.7)
             yield 0.7 + 0.2
         self.step = '松爪'
+        self.motion_phase('release')
         self.journal_phase('release')
         self.decision('place', '到达投放位，松爪', '投放到 %s' % b.get('label', binname), 'success')
         yield self.gripper(True)
@@ -2167,6 +2211,7 @@ class SnackButler(Node):
                          'worker_queue': len(self._vision_jobs)},
             'error': self.last_error,
             'decision_log': self.decision_log,
+            'motion_intent': self.motion_intent,
             'target': None if not self.target else
                       {k: v for k, v in self.target.items() if not k.startswith('_')},
             'held_target': None if not self.held_target else
