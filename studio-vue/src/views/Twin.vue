@@ -687,6 +687,9 @@ function loop() {
 }
 
 // 关节反馈 -> 模型
+// 网页刚下发的关节目标。驱动的 joint_states 在舵机运动期间仍会短暂回报旧角度；
+// 在反馈真正追上目标前，不能让旧值把本地预览立即拉回原位。
+const jointPreview = new Map()
 watch(() => state.joints, m => {
   if (!robot || !m) return
   let n = 0
@@ -694,6 +697,16 @@ watch(() => state.joints, m => {
     const name = m.name[i], p = m.position[i]
     const j = robot.joints[name]
     if (!j || !Number.isFinite(p) || dragging) continue
+    const preview = jointPreview.get(name)
+    if (preview) {
+      // 反馈进入约 2° 容差才交还实时跟随；超时则以反馈为准，避免模型永久假装到位。
+      if (Math.abs(p - preview.angle) <= .035 || Date.now() >= preview.expires) {
+        jointPreview.delete(name)
+      } else {
+        n++
+        continue
+      }
+    }
     let lo = -Math.PI, hi = Math.PI
     if (j.limit && +j.limit.lower !== +j.limit.upper) { lo = +j.limit.lower; hi = +j.limit.upper }
     robot.setJointValue(name, Math.max(lo, Math.min(hi, p)))
@@ -732,7 +745,21 @@ function driveModelJoint(name, pulse) {
   if (!robot || !robot.joints[name]) return
   const j = robot.joints[name]; let lo = -1.57, hi = 1.57
   if (j.limit && +j.limit.lower !== +j.limit.upper) { lo = +j.limit.lower; hi = +j.limit.upper }
-  robot.setJointValue(name, lo + (pulse / 1000) * (hi - lo))
+  const mp = SERVO_MAP.find(m => m.joint === name)
+  let angle
+  if (mp && mp.id !== 10) {
+    // 与机器人端 ServoMap 完全同口径：pulse = center + dir * angle * 238.732。
+    const sm = state.snack?.servo_map
+    const idx = mp.id - 1
+    const dir = Number(sm?.dirs?.[idx]) || 1
+    const center = Number.isFinite(+sm?.centers?.[idx]) ? +sm.centers[idx] : 500
+    angle = (pulse - center) / (dir * (1000 / (Math.PI * 240 / 180)))
+  } else {
+    angle = lo + (pulse / 1000) * (hi - lo)
+  }
+  angle = Math.max(lo, Math.min(hi, angle))
+  robot.setJointValue(name, angle)
+  jointPreview.set(name, { angle, expires: Date.now() + 3200 })
   updateJointAngles()     // 本地拖动也要刷标签，别等回传
 }
 function syncArm() { actions.once('/controller_manager/servo_states', 'servo_controller_msgs/msg/ServoStateList', m => { (m.servo_state || []).forEach(s => { if (jval[s.id] != null) { jval[s.id] = s.position; const mp = SERVO_MAP.find(x => x.id === s.id); if (mp) driveModelJoint(mp.joint, s.position) } }) }) }
