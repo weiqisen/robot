@@ -739,7 +739,7 @@ watch(() => state.scan, s => {
 // ---- 关节控制滑块 ----
 const jval = reactive({ 1: 500, 2: 500, 3: 500, 4: 500, 5: 500, 10: 500 })
 let sq = {}, st = null
-function sendServo(id, pos) { sq[id] = pos; if (st) return; st = setTimeout(() => { st = null; const position = Object.entries(sq).map(([i, p]) => ({ id: +i, position: +p })); sq = {}; actions.setServos(position, 0.8) }, 60) }
+function sendServo(id, pos) { sq[id] = pos; if (st) return; st = setTimeout(() => { st = null; const position = Object.entries(sq).map(([i, p]) => ({ id: +i, position: +p })); sq = {}; actions.setServosCtl(position, 0.8) }, 60) }
 function onSlider(id, v) { jval[id] = v; sendServo(id, v); driveModelJoint(SERVO_MAP.find(m => m.id === id).joint, v) }
 function driveModelJoint(name, pulse) {
   if (!robot || !robot.joints[name]) return
@@ -1749,7 +1749,7 @@ function solveCCD(target) {
     robot.updateMatrixWorld(true); if (eeWorld().distanceTo(target) < 0.005) break
   }
   const position = IK_CHAIN.map(name => { const j = robot.joints[name], mp = SERVO_MAP.find(x => x.joint === name); let lo = -1.57, hi = 1.57; if (j.limit && +j.limit.lower !== +j.limit.upper) { lo = +j.limit.lower; hi = +j.limit.upper }; const pulse = Math.max(0, Math.min(1000, Math.round(1000 * ((j.angle || 0) - lo) / (hi - lo)))); jval[mp.id] = pulse; return { id: mp.id, position: pulse } })
-  if (!ikSend) ikSend = setTimeout(() => { ikSend = null; actions.setServos(position, 0.3) }, 120)
+  if (!ikSend) ikSend = setTimeout(() => { ikSend = null; actions.setServosCtl(position, 0.3) }, 120)
 }
 let ikSend = null
 function ptrDown(e) { if (!tools.ik || !ikTarget) return; const r = renderer.domElement.getBoundingClientRect(); ndc.x = (e.clientX - r.left) / r.width * 2 - 1; ndc.y = -((e.clientY - r.top) / r.height) * 2 + 1; raycaster.setFromCamera(ndc, camera); if (raycaster.intersectObject(ikTarget, true).length) { dragging = true; controls.enabled = false } }

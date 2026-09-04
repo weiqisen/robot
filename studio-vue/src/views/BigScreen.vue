@@ -238,17 +238,17 @@ function onJoint(id, v) {
     st = null
     const position = Object.entries(sq).map(([i, p]) => ({ id: +i, position: +p }))
     sq = {}
-    actions.setServos(position, 0.3)
+    actions.setServosCtl(position, 0.3)
     dragging = Date.now()      // 以「下发时刻」起算静默窗口，见 SERVO_SETTLE
   }, 60)
 }
 
 // 这三个按钮也是「我下发的目标」，同样先把模型摆过去
-function gripOpen() { jval[10] = 200; pushTwin(10, 200); actions.setServos([{ id: 10, position: 200 }], 1); dragging = Date.now() }
-function gripClose() { jval[10] = 800; pushTwin(10, 800); actions.setServos([{ id: 10, position: 800 }], 1); dragging = Date.now() }
+function gripOpen() { jval[10] = 200; pushTwin(10, 200); actions.setServosCtl([{ id: 10, position: 200 }], 1); dragging = Date.now() }
+function gripClose() { jval[10] = 800; pushTwin(10, 800); actions.setServosCtl([{ id: 10, position: 800 }], 1); dragging = Date.now() }
 function armHome() {
   for (const id of [1, 2, 3, 4, 5]) { jval[id] = 500; pushTwin(id, 500) }
-  actions.setServos([1, 2, 3, 4, 5].map(id => ({ id, position: 500 })), 1.5)
+  actions.setServosCtl([1, 2, 3, 4, 5].map(id => ({ id, position: 500 })), 1.5)
   dragging = Date.now() + 600   // 复位要走 1.5s，把窗口起点往后推一点
 }
 function armPose(action, label) {

@@ -148,7 +148,7 @@ const jval = reactive({ 1: 500, 2: 500, 3: 500, 4: 500, 5: 500 })
 const grip = ref(500)
 const armDur = ref(1000)
 let sq = {}, st = null
-function sendServo(id, pos) { sq[id] = pos; if (st) return; st = setTimeout(() => { st = null; const position = Object.entries(sq).map(([i, p]) => ({ id: +i, position: +p })); sq = {}; actions.setServos(position, armDur.value / 1000) }, 60) }
+function sendServo(id, pos) { sq[id] = pos; if (st) return; st = setTimeout(() => { st = null; const position = Object.entries(sq).map(([i, p]) => ({ id: +i, position: +p })); sq = {}; actions.setServosCtl(position, armDur.value / 1000) }, 60) }
 function onJoint(id, v) { jval[id] = v; sendServo(id, v) }
 function onGrip(v) { grip.value = v; sendServo(10, v) }
 function gripBtn(open) { const v = open ? 200 : 800; grip.value = v; sendServo(10, v) }

@@ -50,8 +50,8 @@ const ee = computed(() => {
   return a.length === 3 ? deg(a[0] + a[1] + a[2]) : null
 })
 
-function home() { actions.setServos([1, 2, 3, 4, 5].map(id => ({ id, position: 500 })), 1.5) }
-function grip(open) { actions.setServos([{ id: 10, position: open ? 200 : 620 }], 0.8) }
+function home() { actions.setServosCtl([1, 2, 3, 4, 5].map(id => ({ id, position: 500 })), 1.5) }
+function grip(open) { actions.setServosCtl([{ id: 10, position: open ? 200 : 620 }], 0.8) }
 </script>
 
 <template>
