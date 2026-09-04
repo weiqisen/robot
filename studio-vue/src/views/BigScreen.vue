@@ -373,10 +373,10 @@ onUnmounted(() => {
             <div><small>航向</small><b>{{ deg(euler.yaw).toFixed(1) }}<em>°</em></b></div>
             <div><small>雷达回波</small><b :class="{ dangerText: !scanN }">{{ scanN }}</b></div>
           </div>
-          <!-- 专注视图下左栏被藏了，机械臂控制搬到画面里来，压在安全状态上方 -->
-          <div v-if="focusMode" :class="['scene-arm', { collapsed: armPanelCollapsed }]">
+          <!-- 机械臂控制与驾驶盘同级：始终独立存在，默认收起，不依赖左右监控栏。 -->
+          <div :class="['scene-arm', { collapsed: armPanelCollapsed }]">
             <div class="sa-head" @click="armPanelCollapsed = !armPanelCollapsed">
-              <b>机械臂姿态</b>
+              <b>机械臂控制</b>
               <button :class="['sa-lock', { open: armControlUnlocked }]"
                 @click.stop="armControlUnlocked = !armControlUnlocked">{{ armControlUnlocked ? '控制已解锁' : '只读监控' }}</button>
               <span class="sa-toggle" :title="armPanelCollapsed ? '展开' : '收起'">{{ armPanelCollapsed ? '▼' : '▲' }}</span>
@@ -461,14 +461,7 @@ onUnmounted(() => {
 
     <!-- 底控栏 -->
     <footer class="ctrlbar">
-      <!-- 专注视图下这几个已经搬进画面里的 scene-arm 了，底栏不再重复 -->
-      <div v-show="!focusMode" class="cb">
-        <button class="cbtn" :disabled="!armControlUnlocked" @click="armHome">复位姿态</button>
-        <button class="cbtn" :disabled="!armControlUnlocked" @click="gripOpen">夹爪张开</button>
-        <button class="cbtn" :disabled="!armControlUnlocked" @click="gripClose">夹爪闭合</button>
-        <button class="cbtn" @click="beep">蜂鸣提示</button>
-      </div>
-      <div v-show="focusMode" class="cb" />
+      <div class="cb"><button class="cbtn ghost" @click="beep">蜂鸣提示</button></div>
       <div class="cb r">
         <button class="cbtn ghost" @click="emit('open-admin')">控制台</button>
         <button class="cbtn danger" @click="estop">急停 · STOP</button>
@@ -517,6 +510,7 @@ onUnmounted(() => {
 .body { flex: 1; display: grid; grid-template-columns: 350px 1fr 350px; gap: 10px; padding: 10px; min-height: 0; position: relative; z-index: 1; }
 /* 专注视图：两侧栏 v-show 隐藏后，把网格收成单列让孪生铺满 */
 .body.focus { grid-template-columns: 1fr; }
+.body.focus .scene-status,.body.focus .scene-safety { display:none; }
 .col { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
 .center { min-width: 0; }
 .jctrl { display: flex; flex-direction: column; gap: 7px; }
@@ -694,8 +688,8 @@ onUnmounted(() => {
 .scene-safety.warn { border-color:rgba(245,158,11,.45); background:rgba(41,25,8,.82); }
 .scene-safety.warn span { color:#F59E0B; }
 
-/* ---- 专注视图下的机械臂控制：压在安全状态标签上方 ---- */
-.scene-arm { position:absolute; z-index:4; left:28px; bottom:160px; width:236px;
+/* ---- 独立机械臂控制卡：与右侧驾驶盘对称，均默认折叠 ---- */
+.scene-arm { position:absolute; z-index:4; left:24px; bottom:24px; width:236px;
   padding:11px 12px 10px; border:1px solid rgba(148,163,184,.22); border-radius:10px;
   background:rgba(8,12,18,.82); backdrop-filter:blur(6px);
   display:flex; flex-direction:column; gap:6px; }
@@ -722,9 +716,7 @@ onUnmounted(() => {
 .sa-btns button:disabled { opacity:.4; cursor:not-allowed; }
 
 /* ---- 手动驾驶盘：浮在孪生画面右下角 ---- */
-/* right 留出 Twin 自己那列工具按钮（44px 宽 + 14px 右距）的位置，否则会压在
-   「坐标轴 / 视角 / 材质」上面。 */
-.drive-pad { position:absolute; z-index:4; right:76px; bottom:24px; width:168px;
+.drive-pad { position:absolute; z-index:4; right:24px; bottom:24px; width:168px;
   padding:11px 12px 10px; border:1px solid rgba(148,163,184,.22); border-radius:10px;
   background:rgba(8,12,18,.78); backdrop-filter:blur(6px);
   display:flex; flex-direction:column; gap:8px; }
@@ -818,10 +810,10 @@ onUnmounted(() => {
   .focus-btn { padding: 5px 10px; font-size: 10px; }
   .clock { font-size: 12px; margin-left: auto; }
 
-  .drive-pad { right: 56px; bottom: 8px; width: 138px; padding: 8px 9px; }
+  .drive-pad { right: 8px; bottom: 8px; width: 138px; padding: 8px 9px; }
   .dp-joy { width: 108px; height: 108px; }
   .dp-hint { display: none; }
-  .scene-arm { left: 8px; bottom: 84px; width: 176px; padding: 8px 9px; }
+  .scene-arm { left: 8px; bottom: 8px; width: 176px; padding: 8px 9px; }
   .scene-status { left: 8px; right: 200px; bottom: 8px; gap: 6px; }
   .scene-status > div { min-width: 58px; padding: 6px 7px; }
   .scene-status b { font-size: 12px; }
