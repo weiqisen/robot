@@ -715,6 +715,8 @@ onUnmounted(() => {
   padding:11px 12px 10px; border:1px solid rgba(148,163,184,.22); border-radius:10px;
   background:rgba(8,12,18,.82); backdrop-filter:blur(6px);
   display:flex; flex-direction:column; gap:6px; }
+/* 完整总览会在左下显示线速度指标，机械臂卡改锚到场景标题下方，避免共用 bottom 锚点。 */
+.body:not(.focus) .scene-arm { top:72px; bottom:auto; }
 .scene-arm.collapsed { width:auto; }
 .sa-head { display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none; }
 .sa-head b { color:#E2E8F0; font-size:11px; letter-spacing:.4px; margin-right:auto; }
