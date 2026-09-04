@@ -65,6 +65,7 @@ const alarms = computed(() => [
   { n: '惯性单元', bad: !state.imu },
 ])
 const activeAlarms = computed(() => alarms.value.filter(a => a.bad))
+const targetN = computed(() => (state.snack?.scene_objects || state.snack?.detections || []).length)
 const cpuHist = ref([]), voltHist = ref([])
 let timer = null
 onMounted(() => { timer = setInterval(() => {
@@ -76,11 +77,13 @@ onUnmounted(() => clearInterval(timer))
 function estop() { resetJoy(); for (const k in keys) keys[k] = false; actions.emergencyStop(); lastZero = true }
 function beep() { actions.buzzer(1900, 0.15, 0.05, 1) }
 const armControlUnlocked = ref(false)
-// 专注视图：藏掉左右两栏，中央孪生铺满。演示和调姿态时用得上。
-const focusMode = ref(false)
+// 工作台默认以数字孪生为主；完整旧总览仍可通过顶栏按钮临时展开。
+const focusMode = ref(true)
+const topPanel = ref('')
+function toggleTopPanel(name) { topPanel.value = topPanel.value === name ? '' : name }
 // 两块浮窗都能点标题栏收起，只留一行标题，腾出画面
-const drivePadCollapsed = ref(false)
-const armPanelCollapsed = ref(false)
+const drivePadCollapsed = ref(true)
+const armPanelCollapsed = ref(true)
 
 // ---- 底盘手动驾驶：摇杆 + WASD，和实时控制页同一套安全前提 ----
 // 解锁条件、限速、发布频率都跟 Control.vue 对齐，避免两个入口行为不一致。
@@ -277,15 +280,42 @@ onUnmounted(() => {
     <!-- 顶栏：远距离也能一眼读懂任务和安全状态 -->
     <header class="topbar">
       <div class="brand"><span class="brand-mark">JR</span><div><b>JETROVER</b><small>工具台态势中心</small></div></div>
-      <div class="top-state"><span :class="['ldot', { on: state.connected }]" /><div><small>通信链路</small><b>{{ state.connected ? '在线' : '离线' }}</b></div></div>
-      <div class="top-state"><span :class="['mode-icon', { armed: driveArmed }]">{{ driveArmed ? '●' : '◆' }}</span><div><small>安全状态</small><b :class="{ dangerText: driveArmed }">{{ driveMode }}</b></div></div>
-      <div class="top-state"><span class="mode-icon">◎</span><div><small>任务模式</small><b>{{ taskMode }}</b></div></div>
-      <div class="top-state battery"><div><small>剩余电量</small><b :class="{ dangerText: volt != null && volt < BATT_WARN }">{{ pct }}<em>%</em></b></div></div>
+      <button :class="['top-state', { active: topPanel === 'health' }]" @click="toggleTopPanel('health')"><span :class="['ldot', { on: state.connected }]" /><div><small>通信链路</small><b>{{ state.connected ? '在线' : '离线' }}</b></div></button>
+      <button :class="['top-state', { active: topPanel === 'safety' }]" @click="toggleTopPanel('safety')"><span :class="['mode-icon', { armed: driveArmed }]">{{ driveArmed ? '●' : '◆' }}</span><div><small>安全状态</small><b :class="{ dangerText: driveArmed }">{{ driveMode }}</b></div></button>
+      <button :class="['top-state', { active: topPanel === 'task' }]" @click="toggleTopPanel('task')"><span class="mode-icon">◎</span><div><small>任务模式</small><b>{{ taskMode }}</b></div></button>
+      <button :class="['top-state battery', { active: topPanel === 'power' }]" @click="toggleTopPanel('power')"><div><small>剩余电量</small><b :class="{ dangerText: volt != null && volt < BATT_WARN }">{{ pct }}<em>%</em></b></div></button>
+      <button :class="['top-state', { active: topPanel === 'compute' }]" @click="toggleTopPanel('compute')"><span class="mode-icon">◇</span><div><small>Jetson</small><b>{{ cpuAvg }}% · {{ maxTemp.toFixed(0) }}℃</b></div></button>
+      <button :class="['top-state', { active: topPanel === 'vision' }]" @click="toggleTopPanel('vision')"><span class="mode-icon">◉</span><div><small>视觉目标</small><b>{{ targetN }} 个</b></div></button>
       <div class="tb-sep" />
-      <button :class="['focus-btn', { on: focusMode }]" :title="focusMode ? '恢复两侧面板' : '只看数字孪生'"
-        @click="focusMode = !focusMode">{{ focusMode ? '退出专注' : '专注视图' }}</button>
+      <button :class="['focus-btn', { on: !focusMode }]" :title="focusMode ? '打开完整监控总览' : '返回专注工作台'"
+        @click="focusMode = !focusMode">{{ focusMode ? '完整总览' : '返回工作台' }}</button>
       <div class="clock">{{ clock }}<span class="date">{{ date }}</span></div>
     </header>
+
+    <div v-if="topPanel" class="top-pop">
+      <div class="tp-head"><b>{{ { health:'设备健康', safety:'安全状态', task:'任务状态', power:'电源状态', compute:'Jetson 算力', vision:'视觉感知' }[topPanel] }}</b><button @click="topPanel = ''">×</button></div>
+      <div v-if="topPanel === 'health'" class="tp-grid">
+        <div v-for="s in status" :key="s.k" class="tp-item"><span>{{ s.k }}</span><b :class="s.on ? 'ok' : 'off'">{{ s.on ? '正常' : '离线' }}</b></div>
+      </div>
+      <div v-else-if="topPanel === 'safety'" class="tp-grid">
+        <div class="tp-item"><span>控制来源</span><b>{{ driveMode }}</b></div><div class="tp-item"><span>安全闸门</span><b :class="safetyFresh ? 'ok' : 'off'">{{ safetyFresh ? '在线' : '离线' }}</b></div>
+        <div class="tp-item"><span>雷达就绪</span><b :class="scanFresh ? 'ok' : 'off'">{{ scanFresh ? '是' : '否' }}</b></div><div class="tp-item"><span>告警</span><b :class="activeAlarms.length ? 'off' : 'ok'">{{ activeAlarms.length }} 项</b></div>
+      </div>
+      <div v-else-if="topPanel === 'task'" class="tp-grid">
+        <div class="tp-item"><span>当前模式</span><b>{{ taskMode }}</b></div><div class="tp-item"><span>抓取状态</span><b>{{ state.snack?.state || '待机' }}</b></div>
+        <div class="tp-item"><span>前进速度</span><b>{{ vx.toFixed(2) }} m/s</b></div><div class="tp-item"><span>转向速度</span><b>{{ wz.toFixed(2) }} rad/s</b></div>
+      </div>
+      <div v-else-if="topPanel === 'power'" class="tp-grid">
+        <div class="tp-item"><span>电池电压</span><b :class="{ off: volt != null && volt < BATT_WARN }">{{ volt?.toFixed(2) ?? '—' }} V</b></div><div class="tp-item"><span>估算电量</span><b>{{ pct }}%</b></div>
+      </div>
+      <div v-else-if="topPanel === 'compute'" class="tp-grid">
+        <div v-for="m in loadMetrics" :key="m.l" class="tp-item"><span>{{ m.l }}</span><b :class="m.e">{{ m.v }}{{ m.u }}</b></div>
+      </div>
+      <div v-else class="tp-grid">
+        <div class="tp-item"><span>识别目标</span><b>{{ targetN }} 个</b></div><div class="tp-item"><span>雷达回波</span><b>{{ scanN }}</b></div>
+        <div class="tp-item"><span>视觉状态</span><b>{{ state.snack?.state || '待机' }}</b></div><div class="tp-item"><span>更新时间</span><b>{{ state.snack ? '实时' : '无数据' }}</b></div>
+      </div>
+    </div>
 
     <div :class="['body', { focus: focusMode }]">
       <!-- 左栏 -->
@@ -456,7 +486,7 @@ onUnmounted(() => {
   background-image: linear-gradient(rgba(255,255,255,.02) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.02) 1px, transparent 1px);
   background-size: 48px 48px; mask-image: radial-gradient(circle at 50% 40%, #000, transparent 85%); }
 /* 顶栏 */
-.topbar { height: 48px; flex-shrink: 0; display: flex; align-items: center; gap: 22px; padding: 0 24px;
+.topbar { height: 48px; flex-shrink: 0; display: flex; align-items: center; gap: 12px; padding: 0 18px;
   border-bottom: 1px solid rgba(255,255,255,.06); position: relative; z-index: 2; }
 .conn { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #94A3B8; letter-spacing: .5px; }
 .ldot { width: 7px; height: 7px; border-radius: 50%; background: #F43F5E; box-shadow: 0 0 8px #F43F5E; }
@@ -469,6 +499,20 @@ onUnmounted(() => {
 .focus-btn.on { border-color: rgba(245,158,11,.45); background: rgba(120,53,15,.3); color: #F59E0B; }
 .clock { display: flex; flex-direction: column; align-items: flex-end; font: 500 16px/1.1 Inter, monospace; color: #E2E8F0; font-variant-numeric: tabular-nums; letter-spacing: 1.5px; }
 .date { font-size: 10px; color: #556072; letter-spacing: 1.5px; margin-top: 3px; text-transform: uppercase; }
+.top-pop { position:absolute; z-index:30; top:56px; left:50%; transform:translateX(-50%);
+  width:min(560px,calc(100% - 32px)); padding:12px; border:1px solid rgba(148,163,184,.2);
+  border-radius:11px; background:rgba(8,12,18,.9); backdrop-filter:blur(16px);
+  box-shadow:0 18px 50px rgba(0,0,0,.42); }
+.tp-head { display:flex; align-items:center; padding:0 2px 9px; margin-bottom:8px;
+  border-bottom:1px solid rgba(148,163,184,.12); }
+.tp-head b { color:#E2E8F0; font-size:12px; letter-spacing:.6px; }
+.tp-head button { margin-left:auto; border:0; background:transparent; color:#64748B; cursor:pointer;
+  font-size:20px; line-height:1; }
+.tp-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; }
+.tp-item { display:flex; justify-content:space-between; gap:14px; padding:9px 10px;
+  border:1px solid rgba(148,163,184,.1); border-radius:7px; background:rgba(255,255,255,.025);
+  font-size:11px; }
+.tp-item span { color:#64748B; }.tp-item b { color:#CBD5E1; font-weight:600; }
 /* 主体 */
 .body { flex: 1; display: grid; grid-template-columns: 350px 1fr 350px; gap: 10px; padding: 10px; min-height: 0; position: relative; z-index: 1; }
 /* 专注视图：两侧栏 v-show 隐藏后，把网格收成单列让孪生铺满 */
@@ -621,7 +665,10 @@ onUnmounted(() => {
 .brand div,.top-state div { display:flex; flex-direction:column; gap:3px; }
 .brand b { font:700 13px/1 Inter; letter-spacing:1.8px; }
 .brand small,.top-state small { color:#64748B; font-size:9px; letter-spacing:.8px; }
-.top-state { display:flex; align-items:center; gap:9px; min-width:108px; }
+.top-state { display:flex; align-items:center; gap:8px; min-width:88px; padding:5px 7px;
+  border:1px solid transparent; border-radius:7px; background:transparent; color:inherit;
+  font-family:inherit; text-align:left; cursor:pointer; transition:.16s; }
+.top-state:hover,.top-state.active { border-color:rgba(56,189,248,.24); background:rgba(56,189,248,.07); }
 .top-state b { font-size:13px; font-weight:600; color:#E2E8F0; white-space:nowrap; }
 .top-state.battery b { font:700 22px/1 Inter,monospace; color:#34D399; }
 .top-state em,.scene-status em,.chart-now em { font-style:normal; font-size:9px; color:#64748B; margin-left:3px; font-weight:500; }
