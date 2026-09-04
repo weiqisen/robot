@@ -67,7 +67,9 @@ WEB_ONLY=1 ./agents/deploy_snack.sh
 3. 更新 `webctl_server.py` 并安装/重启 `webctl.service`。
 4. 非 `WEB_ONLY` 时复制 agents，并保留已有 `~/snack_butler_config.json`。
 5. 重启已经安装的 `jetson-agent`、`webrtc-agent`。
-6. 安装/重启 `snack-butler`、`lidar-watchdog`、`nav-safety`、`exploration-nav` 和 `explorer-agent`；存在 `~/.llm_agent.env` 时启用 `llm-agent.service`。
+6. 用 `web_bringup.launch.py` 配置精简的 `start_app_node`，只保留网页所需硬件、
+   rosbridge 和视频节点，不再常驻巡线、手势、AR、目标追踪等厂商演示应用。
+7. 安装/重启 `snack-butler`、`lidar-watchdog`、`nav-safety`、`exploration-nav` 和 `explorer-agent`；存在 `~/.llm_agent.env` 时启用 `llm-agent.service`。
 
 `snack-butler`、`explorer-agent` 和 `nav-safety` 使用 systemd 原生 watchdog：各 agent 每 5 秒由 ROS
 事件循环发送心跳，事件循环卡死或启动超时会被 systemd 终止并按重启策略恢复。可用
