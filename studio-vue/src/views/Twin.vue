@@ -150,6 +150,7 @@ let workspaceGroup = null, selfbodyGroup = null, dimensionsGroup = null
 let anglesGroup = null, cameraFovGroup = null, axesGroup = null
 let detectGroup = null      // YOLO 检测结果的 3D 投影
 const detectionLabels = []  // 当前识别标签；loop() 按镜头距离做可读性限幅
+let detectionSyncRaf = null, lastDetectionSignature = ''
 const SERVO_MAP = [{ id: 1, joint: 'joint1' }, { id: 2, joint: 'joint2' }, { id: 3, joint: 'joint3' }, { id: 4, joint: 'joint4' }, { id: 5, joint: 'joint5' }, { id: 10, joint: 'r_joint' }]
 
 function init() {
@@ -1354,12 +1355,23 @@ function contourDetection(footprint, center, height, col, opacity) {
 // 检测结果整体重建。优先使用持久跟踪后的真实轮廓/尺寸；兼容旧节点时退回检测方块。
 function syncDetections() {
   if (!detectGroup) return
-  clearGroup(detectGroup)
-  detectionLabels.length = 0
   const dets = state.snack?.detections || []
   const tracked = state.snack?.scene_objects || []
   const objects = tracked.length ? tracked : dets.map((d, i) => ({ track_id:i, label:d.label,
     scene_xyz:d.xyz, geometry:d.geometry, confidence:d.confidence, reachable:d.reachable }))
+  // 过滤小于 1mm / 1% 置信度的视觉抖动；相同快照不销毁并重建 GPU 资源。
+  const q3 = v => Number.isFinite(+v) ? Math.round(+v * 1000) : null
+  const signature = JSON.stringify(objects.map((d, i) => {
+    const g = d.geometry || {}
+    return [d.track_id ?? i, d.label, (d.scene_xyz || []).map(q3),
+      Number.isFinite(+d.confidence) ? Math.round(+d.confidence * 100) : null,
+      !!d.reachable, !!d.occluded, g.kind, (g.size || []).map(q3), q3(g.yaw_deg),
+      (g.footprint || []).map(p => p.map(q3))]
+  }))
+  if (signature === lastDetectionSignature) return
+  lastDetectionSignature = signature
+  clearGroup(detectGroup)
+  detectionLabels.length = 0
   for (const [objectIndex, d] of objects.entries()) {
     const xyz = d.scene_xyz
     if (!Array.isArray(xyz) || xyz.length !== 3) continue
@@ -1436,7 +1448,15 @@ function syncDetections() {
   info.detN = objects.length ? objects.length + ' 个目标' : '无'
 }
 
-watch(() => [state.snack?.scene_objects, state.snack?.detections], syncDetections, { deep: true })
+function scheduleDetections() {
+  if (detectionSyncRaf != null) return
+  detectionSyncRaf = requestAnimationFrame(() => {
+    detectionSyncRaf = null
+    syncDetections()
+  })
+}
+watch(() => [state.snack?.scene_objects, state.snack?.detections], scheduleDetections,
+  { deep: true, flush: 'post' })
 
 // 辅助图层的标签。画法照 tagSprite：只画一个圆角框，框外留透明 ——
 // 整块画布铺底色的话，场景里就是一堆跟着透视缩放的灰板子。
@@ -1719,15 +1739,18 @@ onDeactivated(() => {
   pageActive = false; pollSeq++
   if (screenTimer) { clearInterval(screenTimer); screenTimer = null }
   if (raf) { cancelAnimationFrame(raf); raf = null }
+  if (detectionSyncRaf != null) { cancelAnimationFrame(detectionSyncRaf); detectionSyncRaf = null }
 })
 onActivated(() => {
   pageActive = true
   if (renderer && !raf) loop()
+  scheduleDetections()
   if (screenMesh) { startPolling(); restartScreenTimer() }
 })
 onBeforeUnmount(() => {
   pageActive = false; pollSeq++
   cancelAnimationFrame(raf)
+  if (detectionSyncRaf != null) cancelAnimationFrame(detectionSyncRaf)
   if (hostRO) hostRO.disconnect()
   window.removeEventListener('resize', fit); window.removeEventListener('pointerup', ptrUp)
   document.removeEventListener('fullscreenchange', onFsChange)
