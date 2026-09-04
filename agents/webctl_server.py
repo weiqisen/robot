@@ -543,15 +543,44 @@ class Handler(SimpleHTTPRequestHandler):
             if not os.path.isfile(fpath) or not (fname.endswith('.mp4') or fname.endswith('.json')):
                 return self._json(404, {'error': 'file not found'})
             try:
-                with open(fpath, 'rb') as f:
-                    content = f.read()
-                self.send_response(200)
+                size = os.path.getsize(fpath)
+                start, end, status = 0, max(0, size - 1), 200
+                range_header = self.headers.get('Range') if fname.endswith('.mp4') else None
+                if range_header and range_header.startswith('bytes='):
+                    spec = range_header[6:].split(',', 1)[0].strip()
+                    first, last = spec.split('-', 1)
+                    if first:
+                        start = int(first)
+                        end = min(int(last), size - 1) if last else size - 1
+                    elif last:  # suffix range: bytes=-4096
+                        start = max(0, size - int(last))
+                        end = size - 1
+                    if start < 0 or start >= size or end < start:
+                        self.send_response(416)
+                        self.send_header('Content-Range', f'bytes */{size}')
+                        self.end_headers()
+                        return
+                    status = 206
+                length = end - start + 1
+                self.send_response(status)
                 self.send_header('Content-Type', 'application/json; charset=utf-8'
                                  if fname.endswith('.json') else 'video/mp4')
-                self.send_header('Content-Length', len(content))
+                self.send_header('Content-Length', str(length))
                 self.send_header('Accept-Ranges', 'bytes')
+                if status == 206:
+                    self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
                 self.end_headers()
-                self.wfile.write(content)
+                with open(fpath, 'rb') as f:
+                    f.seek(start)
+                    remaining = length
+                    while remaining:
+                        chunk = f.read(min(256 * 1024, remaining))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        remaining -= len(chunk)
+                return
+            except (BrokenPipeError, ConnectionResetError):
                 return
             except Exception as e:
                 return self._json(500, {'error': str(e)})

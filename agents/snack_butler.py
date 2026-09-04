@@ -25,7 +25,7 @@ JetRover「视觉抓取」——识别目标 -> 算坐标 -> 机械臂抓到指�
     {"action":"set_config","patch":{...}}    改参数并落盘
 状态输出： /snack_butler/state (std_msgs/String, JSON)，标注图 /snack_butler/image_result
 """
-import os, sys, json, math, time, threading, traceback, uuid, copy
+import os, sys, json, math, time, threading, traceback, uuid, copy, subprocess
 from collections import deque
 from datetime import datetime
 
@@ -163,6 +163,27 @@ class GraspRecorder:
             self.writer.release()
             self.writer = None
         result = self.filename
+        # OpenCV 在这台 Jetson 上稳定可写的是 mp4v（MPEG-4 Part 2），但 Chrome/Safari
+        # 的 HTML5 video 通常不能解码。录制结束后转成 H.264，并把 moov atom 前移，
+        # 既兼容浏览器，也允许不等整段下载完成就开始播放。
+        if result and os.path.isfile(result) and os.path.getsize(result) > 0:
+            browser_mp4 = result + '.browser.mp4'
+            try:
+                converted = subprocess.run([
+                    'ffmpeg', '-y', '-loglevel', 'error', '-i', result, '-an',
+                    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+                    '-pix_fmt', 'yuv420p', '-movflags', '+faststart', browser_mp4,
+                ], capture_output=True, timeout=180)
+                if converted.returncode == 0 and os.path.getsize(browser_mp4) > 0:
+                    os.replace(browser_mp4, result)
+                elif os.path.exists(browser_mp4):
+                    os.unlink(browser_mp4)
+            except Exception:
+                try:
+                    if os.path.exists(browser_mp4):
+                        os.unlink(browser_mp4)
+                except Exception:
+                    pass
         if result:
             manifest = {
                 'version': 1, 'video': os.path.basename(result),
