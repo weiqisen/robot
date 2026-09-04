@@ -3,7 +3,7 @@ import { ref, computed, watch, onMounted, onUnmounted, markRaw } from 'vue'
 import {
   DashboardOutlined, LineChartOutlined, DeploymentUnitOutlined, RadarChartOutlined,
   ThunderboltOutlined, ApiOutlined, ProfileOutlined, EnvironmentOutlined, ScanOutlined, ApartmentOutlined,
-  UnorderedListOutlined, SearchOutlined, ControlOutlined, AimOutlined, FileTextOutlined,
+  UnorderedListOutlined, SearchOutlined, ControlOutlined, FileTextOutlined,
   RobotOutlined, MenuOutlined, FundProjectionScreenOutlined, ShoppingOutlined, DesktopOutlined, BuildOutlined, CompassOutlined,
 } from '@ant-design/icons-vue'
 import { useRos, ROBOT_HOST, battPct, BATT_WARN } from './composables/useRos'
@@ -25,7 +25,6 @@ import Topics from './views/Topics.vue'
 import Explorer from './views/Explorer.vue'
 import Logs from './views/Logs.vue'
 import Control from './views/Control.vue'
-import Twin from './views/Twin.vue'
 import Snack from './views/Snack.vue'
 import Remote from './views/Remote.vue'
 import ArmStudio from './views/ArmStudio.vue'
@@ -57,7 +56,6 @@ const MENU = [
   { key: 'logs', icon: FileTextOutlined, label: '运行日志', comp: markRaw(Logs) },
   { group: '操作' },
   { key: 'control', icon: ControlOutlined, label: '实时控制', comp: markRaw(Control), full: true },
-  { key: 'twin', icon: AimOutlined, label: '数字孪生', comp: markRaw(Twin), full: true },
   { key: 'armstudio', icon: BuildOutlined, label: '动作组编辑器', comp: markRaw(ArmStudio), full: true },
   { key: 'remote', icon: DesktopOutlined, label: '远程桌面', comp: markRaw(Remote), full: true },
 ]
@@ -101,8 +99,6 @@ const volt = computed(() => (state.batt != null ? (state.batt / 1000).toFixed(2)
 <template>
   <a-config-provider :theme="antdTheme">
   <!-- 工作台：全屏大屏视图，无侧栏 -->
-  <!-- 两处 Three.js 画布均保持挂载，只切换可见性。异步模型加载期间销毁
-       renderer 容器会触发 Vue 3.5 的空 vnode 卸载异常。 -->
   <BigScreen key="bigscreen-root" v-show="current === 'bigscreen'" @open-admin="current = 'overview'" />
 
   <!-- 管理系统外壳 -->
@@ -147,10 +143,7 @@ const volt = computed(() => (state.batt != null ? (state.batt / 1000).toFixed(2)
         </div>
       </a-layout-header>
       <a-layout-content :class="['content', { full: isFull }]">
-        <div v-show="current === 'twin'" key="twin-host" class="page-host full-host">
-          <Twin />
-        </div>
-        <div v-if="current !== 'twin' && currentItem.comp" :key="'page-' + current" class="page-host">
+        <div v-if="currentItem.comp" :key="'page-' + current" class="page-host">
           <component :is="currentItem.comp" />
         </div>
       </a-layout-content>
