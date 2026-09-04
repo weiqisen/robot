@@ -1119,12 +1119,14 @@ function decorateChassis() {
   // lidar_link bbox（base 系）x[0.1574, 0.0226] y[±0.0325] z[0.002, 0.0531]
   // 官方实物图里屏幕嵌在车头上层绿色前围板：板面是 YZ 平面，屏面朝车头 +X，
   // 屏幕背面贴住钢板，而不是平放在雷达下方的水平顶板上。
+  // 从 base_link.stl 三角面实测：前围板外表面 x=0.15014，z 约 [-0.082,-0.029]。
+  const FRONT_PANEL_X = 0.15014
   // 两孔估计间距 ~30mm，所以屏幅约 60mm。0.96" 实际可视区约 21.7×11mm，外壳约 27×27mm。
   // 这里按两块屏并排的感觉（实物可能就是两块0.96"拼的），总宽 60mm。
   const oledGrp = new THREE.Group()
   mark(oledGrp)
-  // 前围板外表面约 x=0.190；3mm 背壳的后表面贴板，所以中心前移一半厚度。
-  oledGrp.position.set(0.1915, 0, 0.017)
+  // 3mm 背壳的后表面贴板，所以中心只前移一半厚度；高度落在围板中央。
+  oledGrp.position.set(FRONT_PANEL_X + 0.0015, 0, -0.0545)
   bl.add(oledGrp)
   // 黑色外壳
   const oledCase = mark(new THREE.Mesh(
@@ -1156,12 +1158,12 @@ function decorateChassis() {
   bl.userData.oledCanvas = oledCv
   bl.userData.oledTexture = oledTex
 
-  // ---- 雷达前方左右各一个拨挡开关 ----
-  // 开关位置：雷达 +X 前方，左右对称 y ≈ ±0.022，高度 z ≈ 0.032
+  // ---- 屏幕下方左右两个拨挡开关 ----
+  // 与 OLED 共用前围板基准；6mm 开关座的背面贴板，避免各自手填 x 再次漂移。
   for (const ySide of [-1, 1]) {
     const sw = new THREE.Group()
     mark(sw)
-    sw.position.set(0.158, ySide * 0.022, 0.032)
+    sw.position.set(FRONT_PANEL_X + 0.003, ySide * 0.014, -0.074)
     bl.add(sw)
     // 开关座：黑色方块
     const base = mark(new THREE.Mesh(
