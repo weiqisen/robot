@@ -25,7 +25,8 @@ JetRover「视觉抓取」——识别目标 -> 算坐标 -> 机械臂抓到指�
     {"action":"set_config","patch":{...}}    改参数并落盘
 状态输出： /snack_butler/state (std_msgs/String, JSON)，标注图 /snack_butler/image_result
 """
-import os, sys, json, math, time, threading, traceback, uuid
+import os, sys, json, math, time, threading, traceback, uuid, copy
+from collections import deque
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -373,6 +374,16 @@ class SnackButler(Node):
         self._last_idle_count = None
         self.live_analysis = False  # 页面显式开启时才提高到实时分析频率，不写入抓取方案
         self.last_detection_at = 0.0
+        self._idle_vision_request = None
+        # 视觉只在这个单一 worker 中运行。ROS executor 不再执行 YOLO/HSV/深度分割，
+        # 因此舵机发送、安全回调和状态机 tick 不会被一次推理卡住。
+        self._vision_cv = threading.Condition()
+        self._vision_jobs = deque()
+        self._vision_results = {}
+        self._vision_stopping = False
+        self._vision_active = None
+        self._vision_worker = threading.Thread(target=self._vision_loop,
+                                               name='snack-vision', daemon=True)
         self.recorder = GraspRecorder()     # 抓取流程录像；只在页面点录制时才写盘
         self.llm_note = ''                  # LLM 推理文字，录像右上角小窗用
         self.batt_v = None          # 最近一次电池电压（V）
@@ -435,7 +446,7 @@ class SnackButler(Node):
         self.create_timer(1.0 / 3.0, self.publish_image)  # 标注图 3Hz，兼顾首帧可靠性与 CPU
         self.create_timer(5.0, self.watchdog_tick)
         self.get_logger().info('视觉抓取已启动。发 /snack_butler/cmd 开工。')
-        threading.Thread(target=self.preload_detector, daemon=True).start()
+        self._vision_worker.start()
         # 正常启动时保持原有的观察位初始化；若存在中断动作日志，则绝不自动移动。
         if not self.recovery_journal:
             # 正常开机没有在夹物，才明确张爪进入观察位。
@@ -479,6 +490,42 @@ class SnackButler(Node):
                                    (status['weights'], status['yolo_device']))
         elif status['yolo_error']:
             self.get_logger().error('[detector] YOLO 加载失败：%s' % status['yolo_error'])
+
+    def _vision_loop(self):
+        """视觉 worker：模型加载和所有 detector.detect 调用都固定在这一条线程。"""
+        self.preload_detector()
+        while True:
+            with self._vision_cv:
+                while not self._vision_jobs and not self._vision_stopping:
+                    self._vision_cv.wait(timeout=0.5)
+                if self._vision_stopping:
+                    return
+                job = self._vision_jobs.popleft()
+                self._vision_active = job['purpose']
+            try:
+                result = self._scan_snapshot(job['snapshot'])
+                error = ''
+            except Exception as e:
+                result = []
+                error = '%s: %s' % (type(e).__name__, e)
+                self.get_logger().error('[vision_worker] %s\n%s' % (error, traceback.format_exc()))
+            with self._vision_cv:
+                self._vision_active = None
+                self._vision_results[job['id']] = {
+                    'detections': result, 'error': error, 'finished_at': time.time(),
+                    'purpose': job['purpose'], 'captured_at': job['snapshot']['captured_at'],
+                }
+                # 已取消/停止的请求可能没人消费；限制结果缓存，避免常驻进程缓慢增长。
+                if len(self._vision_results) > 32:
+                    oldest = next(iter(self._vision_results))
+                    self._vision_results.pop(oldest, None)
+
+    def stop_vision_worker(self):
+        with self._vision_cv:
+            self._vision_stopping = True
+            self._vision_cv.notify_all()
+        if self._vision_worker.is_alive():
+            self._vision_worker.join(timeout=2.0)
 
     # ---------------- 配置 ----------------
     def load_config(self):
@@ -616,7 +663,9 @@ class SnackButler(Node):
             self.profiles.insert(0, item)
             self.profiles = self.profiles[:50]
         deep_update(self.cfg, params)
-        self.detector.cfg = self.cfg
+        # 原子替换不可变快照；worker 可能正在读取旧配置，不能把主线程持续修改的
+        # self.cfg 字典直接交给检测器。
+        self.detector.cfg = copy.deepcopy(self.cfg)
         self.active_profile_id = profile_id
         self.save_config(); self.save_profiles()
         self.step = f'已保存并启用方案「{name}」'
@@ -627,7 +676,7 @@ class SnackButler(Node):
         if not item:
             raise ValueError('参数方案不存在')
         deep_update(self.cfg, self.profile_params(item.get('params') or {}))
-        self.detector.cfg = self.cfg
+        self.detector.cfg = copy.deepcopy(self.cfg)
         self.active_profile_id = profile_id
         self.save_config(); self.save_profiles()
         self.step = f'已启用方案「{item.get("name", profile_id)}」'
@@ -910,22 +959,22 @@ class SnackButler(Node):
             q.append(v if v is not None else self.q_cmd[i])
         return q
 
-    def locate(self, det, T_bo):
-        """检测框 -> base_link 坐标。定位算法在 snack_detector.locate（离线可测）。"""
-        if not self.K:
+    @staticmethod
+    def locate_snapshot(det, snapshot):
+        """在冻结的图像/深度/内参/外参上定位，避免 worker 使用运动后的关节姿态。"""
+        K, rgb, depth = snapshot['K'], snapshot['rgb'], snapshot['depth']
+        cfg, T_bo = snapshot['cfg'], snapshot['T_bo']
+        if not K:
             return None, 'no_intrinsics'
-        with self.lock:
-            rgb = self.rgb
-            depth = None if self.depth is None else self.depth
-            shape = None if rgb is None else rgb.shape
+        shape = None if rgb is None else rgb.shape
         if shape is None:
             return None, 'no_rgb'
-        p, how = locate_3d(det, depth, shape, self.K, T_bo,
-                           self.cfg['table_z'], self.cfg['assume_object_h'])
+        p, how = locate_3d(det, depth, shape, K, T_bo,
+                           cfg['table_z'], cfg['assume_object_h'])
         # 深度算出来的点掉到桌面以下 = 明显噪声，退回平面法
-        if p is not None and how == 'depth' and p[2] < self.cfg['table_z'] - 0.03:
-            p, how = locate_3d(det, None, shape, self.K, T_bo,
-                               self.cfg['table_z'], self.cfg['assume_object_h'])
+        if p is not None and how == 'depth' and p[2] < cfg['table_z'] - 0.03:
+            p, how = locate_3d(det, None, shape, K, T_bo,
+                               cfg['table_z'], cfg['assume_object_h'])
             how = 'plane(深度异常)'
         return p, how
 
@@ -949,41 +998,116 @@ class SnackButler(Node):
         return (ws['x'][0] <= p[0] <= ws['x'][1] and ws['y'][0] <= p[1] <= ws['y'][1]
                 and ws['z'][0] <= dz <= ws['z'][1])
 
-    def scan_once(self):
-        """在观察位跑一次识别 + 定位，写入 self.detections"""
+    @staticmethod
+    def _in_workspace_cfg(p, cfg):
+        for b in cfg.get('self_body_boxes') or []:
+            if b[0] <= p[0] <= b[1] and b[2] <= p[1] <= b[3] and b[4] <= p[2] <= b[5]:
+                return False
+        ws = cfg['workspace_rel']
+        dz = p[2] - cfg['table_z']
+        return (ws['x'][0] <= p[0] <= ws['x'][1] and ws['y'][0] <= p[1] <= ws['y'][1]
+                and ws['z'][0] <= dz <= ws['z'][1])
+
+    @staticmethod
+    def _grasp_z_cfg(top_z, cfg):
+        return max(top_z + cfg['grasp_z_offset'], cfg['table_z'] + cfg['grasp_clearance'])
+
+    def _capture_vision_snapshot(self):
+        """主线程冻结一次视觉输入；T_bo 与这份图像一起进入 worker。"""
         with self.lock:
             rgb = None if self.rgb is None else self.rgb.copy()
+            depth = None if self.depth is None else self.depth.copy()
+            K = None if self.K is None else list(self.K)
         if rgb is None:
-            self.last_error = '没收到 RGB 图像'
-            self.detections = []
-            return []
+            return None
         T_bo, src = self.optical_to_base_mat()
+        return {'rgb': rgb, 'depth': depth, 'K': K, 'T_bo': T_bo, 'extrinsic': src,
+                'cfg': copy.deepcopy(self.cfg), 'captured_at': time.time()}
+
+    def _scan_snapshot(self, snapshot):
+        """worker 内执行一次识别与定位；不读写 ROS 主线程的实时状态。"""
+        rgb, depth, K = snapshot['rgb'], snapshot['depth'], snapshot['K']
+        cfg, T_bo, src = snapshot['cfg'], snapshot['T_bo'], snapshot['extrinsic']
+        self.detector.cfg = cfg
         dets = self.detector.detect(rgb)
-        if self.cfg.get('depth_object_enabled', True):
-            with self.lock:
-                depth = None if self.depth is None else self.depth.copy()
-            generic = detect_depth_objects(depth, rgb.shape, self.K, T_bo,
-                                           self.cfg['table_z'], self.cfg)
+        if cfg.get('depth_object_enabled', True):
+            generic = detect_depth_objects(depth, rgb.shape, K, T_bo, cfg['table_z'], cfg)
             # YOLO/HSV 已经给出更具体标签时不重复显示同一个物体。
             generic = [g for g in generic
                        if not any(UniversalDetector._iou(g, d) > .35 for d in dets)]
             dets += generic
         out = []
         for d in dets:
-            p, how = self.locate(d, T_bo)
+            p, how = self.locate_snapshot(d, snapshot)
             d['xyz'] = None if p is None else [round(v, 4) for v in p]
             d['depth_src'] = how
             d['reachable'] = False
-            if p is not None and self.in_workspace(p):
-                q = ik_best(p[0], p[1], self.grasp_z(p[2]), GRASP_PITCH,
-                            tool=self.cfg['tool_len'])
+            if p is not None and self._in_workspace_cfg(p, cfg):
+                q = ik_best(p[0], p[1], self._grasp_z_cfg(p[2], cfg), GRASP_PITCH,
+                            tool=cfg['tool_len'])
                 d['reachable'] = q is not None
                 d['pitch_deg'] = 180.0 if q is not None else None
             d['extrinsic'] = src
             out.append(d)
-        self.detections = out
-        self.last_detection_at = time.time()
         return out
+
+    def submit_vision_scan(self, purpose='idle', priority=False):
+        snapshot = self._capture_vision_snapshot()
+        if snapshot is None:
+            return None
+        request_id = uuid.uuid4().hex
+        job = {'id': request_id, 'purpose': purpose, 'snapshot': snapshot}
+        with self._vision_cv:
+            # 后台帧只保留最新一个；事务型抓取请求永不被后台请求覆盖。
+            if purpose == 'idle':
+                self._vision_jobs = deque(j for j in self._vision_jobs if j['purpose'] != 'idle')
+            if priority:
+                self._vision_jobs.appendleft(job)
+            else:
+                self._vision_jobs.append(job)
+            self._vision_cv.notify()
+        return request_id
+
+    def poll_vision_scan(self, request_id):
+        if not request_id:
+            return None
+        with self._vision_cv:
+            return self._vision_results.pop(request_id, None)
+
+    def apply_vision_result(self, result):
+        if result.get('error'):
+            self.last_error = '视觉识别失败：' + result['error']
+            self.detections = []
+            return []
+        self.detections = result['detections']
+        self.last_detection_at = result['finished_at']
+        return self.detections
+
+    def async_scan_once(self, purpose, timeout=8.0):
+        """状态机使用的非阻塞扫描：等待期间每 50ms 把控制权还给 ROS executor。"""
+        # 命令到来时作废尚未领取的后台结果。事务请求必须使用自己冻结的新快照，
+        # 不能误消费命令之前的旧画面。
+        if self._idle_vision_request:
+            stale_id = self._idle_vision_request
+            self._idle_vision_request = None
+            with self._vision_cv:
+                self._vision_jobs = deque(j for j in self._vision_jobs if j['id'] != stale_id)
+                self._vision_results.pop(stale_id, None)
+        request_id = self.submit_vision_scan(purpose, priority=True)
+        if not request_id:
+            self.last_error = '没收到 RGB 图像'
+            self.detections = []
+            return []
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            result = self.poll_vision_scan(request_id)
+            if result is not None:
+                return self.apply_vision_result(result)
+            yield 0.05
+        self.last_error = '视觉识别超时（%.1f 秒）' % timeout
+        self.detections = []
+        self.decision('detect', '视觉识别超时', '%s 请求未按时返回' % purpose, 'error')
+        return []
 
     def at_observe(self):
         """只有机械臂确实在观察位时才做后台识别，避免 eye-in-hand 位姿不一致。"""
@@ -996,17 +1120,22 @@ class SnackButler(Node):
         hz = (min(float(self.cfg.get('proc_fps') or 3), 3.0) if self.live_analysis
               else float(self.cfg.get('idle_detect_hz', 2.0)))
         now = time.time()
-        if hz <= 0 or self.state != 'IDLE' or self.rgb is None:
+        if self._idle_vision_request:
+            result = self.poll_vision_scan(self._idle_vision_request)
+            if result is not None:
+                self._idle_vision_request = None
+                count = len(self.apply_vision_result(result))
+                self.step = f'识别到 {count} 个目标'
+                if count != self._last_idle_count:
+                    self.get_logger().info('[idle_detect] count=%d labels=%s' %
+                                           (count, [d.get('label') for d in self.detections]))
+                    self._last_idle_count = count
+        if hz <= 0 or self.state != 'IDLE' or self.rgb is None or self._idle_vision_request:
             return
         if now - self._last_idle_scan < 1.0 / hz:
             return
         self._last_idle_scan = now
-        count = len(self.scan_once())
-        self.step = f'识别到 {count} 个目标'
-        if count != self._last_idle_count:
-            self.get_logger().info('[idle_detect] count=%d labels=%s' %
-                                   (count, [d.get('label') for d in self.detections]))
-            self._last_idle_count = count
+        self._idle_vision_request = self.submit_vision_scan('idle')
 
     def vision_guard(self):
         """深度点落入车体/机械臂前上方保护盒时，返回最近的 base_link X 距离。"""
@@ -1051,8 +1180,8 @@ class SnackButler(Node):
             self.decision('verify', '跳过抓取复核', 'post_grasp_verify 已关闭', 'warn')
             return 'uncertain'
         seen = []
-        for _ in range(max(1, int(self.cfg.get('post_grasp_verify_frames', 3)))):
-            seen = self.scan_once()
+        for i in range(max(1, int(self.cfg.get('post_grasp_verify_frames', 3)))):
+            seen = yield from self.async_scan_once('verify_%d' % (i + 1))
         radius = float(self.cfg.get('post_grasp_verify_radius_m', .055))
         tx, ty = tgt['xyz'][:2]
         remains = [d for d in seen if d.get('xyz') and math.hypot(d['xyz'][0]-tx, d['xyz'][1]-ty) <= radius]
@@ -1136,8 +1265,8 @@ class SnackButler(Node):
         self.decision('detect', '开始视觉识别', '连续采集 %d 帧，当前实现以最后一帧作为决策结果' % frames)
         best = []
         frame_counts = []
-        for _ in range(frames):
-            best = self.scan_once()
+        for i in range(frames):
+            best = yield from self.async_scan_once('detect_%d' % (i + 1))
             frame_counts.append(len(best))
             yield 0.12
         self.step = f'识别到 {len(best)} 个目标'
@@ -1404,7 +1533,7 @@ class SnackButler(Node):
 
     def refine_roll_at_pregrasp(self, tgt, old_roll):
         """悬停位重新识别同一物体，仅在可信时更新 wrist roll。"""
-        fresh = self.scan_once()
+        fresh = yield from self.async_scan_once('pregrasp_orientation')
         xyz = tgt.get('xyz')
         if not xyz:
             return old_roll, '无目标坐标，保持初始角度'
@@ -1487,7 +1616,7 @@ class SnackButler(Node):
 
         # eye-in-hand 相机已到悬停位；此时重识别主方向，只校正 joint5，不改变垂直 pitch。
         self.step = '预抓复核物体方向'
-        refined_roll, note = self.refine_roll_at_pregrasp(tgt, roll)
+        refined_roll, note = yield from self.refine_roll_at_pregrasp(tgt, roll)
         if abs(refined_roll - roll) > math.radians(2):
             refined_pre = ik_best(x, y, gz + cfg['approach_h'], pitch, seed=q_pre,
                                   wrist_roll=refined_roll, tool=tool)
@@ -1531,7 +1660,7 @@ class SnackButler(Node):
         # 保持闭爪回观察位复核，不能在搬运途中释放物品。
         yield from self.seq_goto_observe()
         self.decision('verify', '返回观察位复核', '保持闭爪，检查原抓取坐标附近')
-        verify = self.verify_grasp(tgt)
+        verify = yield from self.verify_grasp(tgt)
         if verify == 'remains':
             self.gripper(True)  # 疑似空抓：目标还在原位，松爪避免带着物品穿越桌面上方
             self.target = None
@@ -1827,7 +1956,7 @@ class SnackButler(Node):
                 deep_update(self.cfg, patch)
                 if 'servo_map' in patch:
                     self.smap = ServoMap(**{k: self.cfg['servo_map'][k] for k in ('dirs', 'centers')})
-                self.detector.cfg = self.cfg
+                self.detector.cfg = copy.deepcopy(self.cfg)
                 if any(k in patch for k in PROFILE_KEYS):
                     self.active_profile_id = None
                     self.save_profiles()
@@ -1906,7 +2035,9 @@ class SnackButler(Node):
             'state': self.state, 'step': self.step, 'auto': self.auto,
             'analysis': {'live': self.live_analysis,
                          'last_at': round(self.last_detection_at, 3) if self.last_detection_at else None,
-                         'detections': len(self.detections)},
+                         'detections': len(self.detections),
+                         'worker_active': self._vision_active,
+                         'worker_queue': len(self._vision_jobs)},
             'error': self.last_error,
             'decision_log': self.decision_log,
             'target': None if not self.target else
@@ -2027,6 +2158,10 @@ def main():
         if 'context is invalid' not in str(e) and 'shutdown' not in str(e).lower():
             raise
     finally:
+        try:
+            node.stop_vision_worker()
+        except Exception:
+            pass
         try:
             node.destroy_node()
         except Exception:
