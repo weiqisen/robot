@@ -311,7 +311,7 @@ function init() {
     robotReady = true
     skinRobot()
     decorateDepthCam()   // 素模相机补镜头，必须在 skinRobot 之后（那边会重刷材质）
-    decorateMiddleJointMotor() // joint3 实物也有舵机，复用末端同款网格补齐
+    decorateArmJointMotors() // joint3 / joint4 实物都有舵机，复用末端同款网格补齐
     buildJetsonInside()  // 屏蔽罩里的 Jetson 风扇 + 开发板，同理
     decorateChassis()    // 底盘：轮毂电机、电池包、OLED 屏、开关
     makeJointTags()
@@ -969,27 +969,32 @@ function decorateDepthCam() {
   link.add(led)
 }
 
-// ---- 机械臂中间关节电机 ----
-// 原 URDF 在肩部和腕部都有 servo 网格，但 joint3（link2 顶端）漏了实物舵机。
-// 复用腕部同款 STL，并挂在 joint3 的父 link2 上，保证它会跟随上臂运动。
-function decorateMiddleJointMotor() {
-  const link = robot && robot.links && robot.links.link2
-  if (!link || link.userData.middleMotor) return
-  link.userData.middleMotor = true
+// ---- 机械臂中间两级关节电机 ----
+// 原 URDF 只画了肩部和 joint5 的 servo 网格，joint3 / joint4 的实物舵机外壳缺失。
+// 两处均复用腕部同款 STL，并挂到各自转轴的父 link 上，保证随对应臂段运动。
+function decorateArmJointMotors() {
+  const joints = [
+    { link: robot?.links?.link2, z: 0.129416446394797, name: 'joint3_motor' },
+    { link: robot?.links?.link3, z: 0.129444631186569, name: 'joint4_motor' },
+  ].filter(j => j.link && !j.link.userData[j.name])
+  if (!joints.length) return
   new STLLoader().load('model/jetrover_description/meshes/arm/servo_link2.STL', geometry => {
     geometry.computeVertexNormals()
-    const material = new THREE.MeshStandardMaterial({
-      color: mat.black.color, metalness: mat.black.metalness,
-      roughness: mat.black.roughness, envMapIntensity: mat.black.env,
-    })
-    ;(matGroups.black || (matGroups.black = [])).push(material)
-    const motor = new THREE.Mesh(geometry, material)
-    motor.name = 'joint3_motor'
-    motor.userData.helperLayer = true
-    motor.castShadow = true
-    motor.receiveShadow = true
-    motor.position.set(0, 0, 0.129416446394797)
-    link.add(motor)
+    for (const joint of joints) {
+      const material = new THREE.MeshStandardMaterial({
+        color: mat.black.color, metalness: mat.black.metalness,
+        roughness: mat.black.roughness, envMapIntensity: mat.black.env,
+      })
+      ;(matGroups.black || (matGroups.black = [])).push(material)
+      const motor = new THREE.Mesh(geometry, material)
+      motor.name = joint.name
+      motor.userData.helperLayer = true
+      motor.castShadow = true
+      motor.receiveShadow = true
+      motor.position.set(0, 0, joint.z)
+      joint.link.userData[joint.name] = true
+      joint.link.add(motor)
+    }
   })
 }
 
@@ -1002,7 +1007,7 @@ function decorateMiddleJointMotor() {
 // （100mm）还窄，所以按 76×52mm 缩比例。屏幕在 base 系 x=-0.1469 z=0.1136，
 // 对应局部系约 x=-0.139（link 原点在 base 系 x=-0.008），所以「屏下方」= 局部 x 接近 -0.14 且 z 明显低于 0.11。
 const JET = {
-  x: -0.135, z: 0.026,        // 板中心（局部系）
+  x: -0.125, z: 0.026,        // 板中心（局部系），向机身内收避免后缘穿出外壳
   w: 0.076, d: 0.052,         // 板 x 向长 / y 向宽
   fanZ: 0.026 + 0.025,        // 风扇悬在板上方
 }
@@ -1021,49 +1026,6 @@ function buildJetsonInside() {
 
   const { x: PCB_X, z: PCB_Z, w: PCB_W, d: PCB_D, fanZ: FAN_Z } = JET
   const frontX = PCB_X + PCB_W / 2      // 板的 +X 边 = 朝机身那一侧
-
-  // ---- STM32 控制板：位于 Jetson 下方的独立悬空层 ----
-  // back_shell 局部底面约 z=0.002；STM32 板中心在 z=0.010，Jetson 在 z=0.026。
-  const STM_Z = 0.010, STM_W = 0.070, STM_D = 0.046
-  const stm = mark(new THREE.Mesh(
-    new THREE.BoxGeometry(STM_W, STM_D, 0.0016),
-    new THREE.MeshStandardMaterial({ color: 0x123d63, metalness: 0.16,
-      roughness: 0.68, envMapIntensity: 0.75 })))
-  stm.position.set(PCB_X, 0, STM_Z)
-  g.add(stm)
-
-  const brass = new THREE.MeshStandardMaterial({ color: 0xb98a32, metalness: 0.82,
-    roughness: 0.30, envMapIntensity: 1.2 })
-  for (const dx of [-0.029, 0.029]) for (const dy of [-0.018, 0.018]) {
-    const lower = mark(new THREE.Mesh(new THREE.CylinderGeometry(.0022, .0022, .007, 10), brass))
-    lower.rotation.x = Math.PI / 2
-    lower.position.set(PCB_X + dx, dy, STM_Z - .0043)
-    g.add(lower)
-    const upper = mark(new THREE.Mesh(new THREE.CylinderGeometry(.0022, .0022, .014, 10), brass))
-    upper.rotation.x = Math.PI / 2
-    upper.position.set(PCB_X + dx, dy, (STM_Z + PCB_Z) / 2)
-    g.add(upper)
-  }
-
-  const stmChip = mark(new THREE.Mesh(new THREE.BoxGeometry(.016, .016, .0024),
-    new THREE.MeshStandardMaterial({ color: 0x11161c, metalness: .35, roughness: .52 })))
-  stmChip.position.set(PCB_X - .007, 0, STM_Z + .002)
-  g.add(stmChip)
-  const crystal = mark(new THREE.Mesh(new THREE.BoxGeometry(.008, .004, .003),
-    new THREE.MeshStandardMaterial({ color: 0xb7bec6, metalness: .86, roughness: .28 })))
-  crystal.position.set(PCB_X + .008, .010, STM_Z + .0023)
-  g.add(crystal)
-
-  function boardLed(color, x, y, pulse=false) {
-    const led = mark(new THREE.Mesh(new THREE.SphereGeometry(.0017, 10, 10),
-      new THREE.MeshStandardMaterial({ color, emissive:color, emissiveIntensity:1.8,
-        toneMapped:false })))
-    led.position.set(x, y, STM_Z + .003)
-    g.add(led)
-    if (pulse) stm32BlueLed = led
-  }
-  boardLed(0xff3344, PCB_X + .026, -.015)
-  boardLed(0x258cff, PCB_X + .020, -.015, true)
 
   // ---- 载板本体 ----
   // 实物这块板是黑色阻焊，不是常见的绿板；只在边缘留一点点绿意都不该有。
@@ -1299,6 +1261,57 @@ function decorateChassis() {
   // 存到 userData 供 loop() 刷新
   bl.userData.oledCanvas = oledCv
   bl.userData.oledTexture = oledTex
+
+  // ---- STM32 控制板：OLED 后方、与屏幕平行的车身内侧层 ----
+  // 实物不是叠在 Jetson 下方，而是固定在小屏幕背后的 YZ 平面空间。
+  // 元件面朝机身内部（-X），从开口侧观察时能看到芯片、排针和红蓝状态灯。
+  const stmGrp = new THREE.Group()
+  mark(stmGrp)
+  stmGrp.position.set(UPPER_PANEL_X - 0.007, 0, -0.014)
+  bl.add(stmGrp)
+
+  const stmBoard = mark(new THREE.Mesh(
+    new THREE.BoxGeometry(0.0016, 0.052, 0.038),
+    new THREE.MeshStandardMaterial({ color: 0x123d63, metalness: 0.16,
+      roughness: 0.68, envMapIntensity: 0.75 })))
+  stmGrp.add(stmBoard)
+
+  const brass = new THREE.MeshStandardMaterial({ color: 0xb98a32, metalness: 0.82,
+    roughness: 0.30, envMapIntensity: 1.2 })
+  for (const y of [-0.021, 0.021]) for (const z of [-0.014, 0.014]) {
+    const spacer = mark(new THREE.Mesh(new THREE.CylinderGeometry(.0020, .0020, .005, 10), brass))
+    spacer.rotation.z = Math.PI / 2
+    spacer.position.set(0.0032, y, z)
+    stmGrp.add(spacer)
+  }
+
+  const stmChip = mark(new THREE.Mesh(new THREE.BoxGeometry(.0030, .016, .016),
+    new THREE.MeshStandardMaterial({ color: 0x11161c, metalness: .35, roughness: .52 })))
+  stmChip.position.set(-0.0022, -0.004, 0)
+  stmGrp.add(stmChip)
+  const crystal = mark(new THREE.Mesh(new THREE.BoxGeometry(.0034, .008, .004),
+    new THREE.MeshStandardMaterial({ color: 0xb7bec6, metalness: .86, roughness: .28 })))
+  crystal.position.set(-0.0024, 0.012, 0.008)
+  stmGrp.add(crystal)
+
+  // 两列排针，沿板子的上下边缘布置。
+  for (const z of [-0.0155, 0.0155]) {
+    const header = mark(new THREE.Mesh(new THREE.BoxGeometry(.0032, .040, .0035),
+      new THREE.MeshStandardMaterial({ color: 0x15191d, metalness: .28, roughness: .58 })))
+    header.position.set(-0.0022, 0, z)
+    stmGrp.add(header)
+  }
+
+  function stmLed(color, y, z, pulse = false) {
+    const led = mark(new THREE.Mesh(new THREE.SphereGeometry(.0017, 10, 10),
+      new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 1.8,
+        toneMapped: false })))
+    led.position.set(-0.0032, y, z)
+    stmGrp.add(led)
+    if (pulse) stm32BlueLed = led
+  }
+  stmLed(0xff3344, 0.019, -0.010)
+  stmLed(0x258cff, 0.019, -0.004, true)
 
   // ---- 雷达前方左右两个拨挡开关 ----
   // 开关立在雷达前方的内收水平顶板上：板前缘约 x=0.1404，6mm 座体须整体留在边缘内。
