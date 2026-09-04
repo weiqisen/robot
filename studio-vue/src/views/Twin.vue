@@ -593,6 +593,10 @@ function loop() {
   }
   // 雷达在线（/scan 有新数据）就一直转。10Hz 扫描 ≈ 每帧 0.1 rad 看着合适。
   if (lidarMesh && state.now - state.scanAt < 2000) lidarMesh.rotation.z += 0.1
+  if (stm32BlueLed) {
+    const pulse = .5 + .5 * Math.sin(performance.now() * .006)
+    stm32BlueLed.material.emissiveIntensity = .45 + pulse * 2.2
+  }
   // OLED 三行内容 1Hz 刷够了，别每帧重画 canvas
   if (++oledTick % 60 === 0) drawOLED()
   controls.update(); renderer.render(scene, camera)
@@ -862,6 +866,7 @@ const JET = {
   fanZ: 0.026 + 0.025,        // 风扇悬在板上方
 }
 let fanBlades = null      // loop() 里转它
+let stm32BlueLed = null   // loop() 里做心跳呼吸
 function buildJetsonInside() {
   const link = robot && robot.links && robot.links.back_shell_black_link
   if (!link) return
@@ -875,6 +880,49 @@ function buildJetsonInside() {
 
   const { x: PCB_X, z: PCB_Z, w: PCB_W, d: PCB_D, fanZ: FAN_Z } = JET
   const frontX = PCB_X + PCB_W / 2      // 板的 +X 边 = 朝机身那一侧
+
+  // ---- STM32 控制板：位于 Jetson 下方的独立悬空层 ----
+  // back_shell 局部底面约 z=0.002；STM32 板中心在 z=0.010，Jetson 在 z=0.026。
+  const STM_Z = 0.010, STM_W = 0.070, STM_D = 0.046
+  const stm = mark(new THREE.Mesh(
+    new THREE.BoxGeometry(STM_W, STM_D, 0.0016),
+    new THREE.MeshStandardMaterial({ color: 0x123d63, metalness: 0.16,
+      roughness: 0.68, envMapIntensity: 0.75 })))
+  stm.position.set(PCB_X, 0, STM_Z)
+  g.add(stm)
+
+  const brass = new THREE.MeshStandardMaterial({ color: 0xb98a32, metalness: 0.82,
+    roughness: 0.30, envMapIntensity: 1.2 })
+  for (const dx of [-0.029, 0.029]) for (const dy of [-0.018, 0.018]) {
+    const lower = mark(new THREE.Mesh(new THREE.CylinderGeometry(.0022, .0022, .007, 10), brass))
+    lower.rotation.x = Math.PI / 2
+    lower.position.set(PCB_X + dx, dy, STM_Z - .0043)
+    g.add(lower)
+    const upper = mark(new THREE.Mesh(new THREE.CylinderGeometry(.0022, .0022, .014, 10), brass))
+    upper.rotation.x = Math.PI / 2
+    upper.position.set(PCB_X + dx, dy, (STM_Z + PCB_Z) / 2)
+    g.add(upper)
+  }
+
+  const stmChip = mark(new THREE.Mesh(new THREE.BoxGeometry(.016, .016, .0024),
+    new THREE.MeshStandardMaterial({ color: 0x11161c, metalness: .35, roughness: .52 })))
+  stmChip.position.set(PCB_X - .007, 0, STM_Z + .002)
+  g.add(stmChip)
+  const crystal = mark(new THREE.Mesh(new THREE.BoxGeometry(.008, .004, .003),
+    new THREE.MeshStandardMaterial({ color: 0xb7bec6, metalness: .86, roughness: .28 })))
+  crystal.position.set(PCB_X + .008, .010, STM_Z + .0023)
+  g.add(crystal)
+
+  function boardLed(color, x, y, pulse=false) {
+    const led = mark(new THREE.Mesh(new THREE.SphereGeometry(.0017, 10, 10),
+      new THREE.MeshStandardMaterial({ color, emissive:color, emissiveIntensity:1.8,
+        toneMapped:false })))
+    led.position.set(x, y, STM_Z + .003)
+    g.add(led)
+    if (pulse) stm32BlueLed = led
+  }
+  boardLed(0xff3344, PCB_X + .026, -.015)
+  boardLed(0x258cff, PCB_X + .020, -.015, true)
 
   // ---- 载板本体 ----
   // 实物这块板是黑色阻焊，不是常见的绿板；只在边缘留一点点绿意都不该有。
@@ -1067,27 +1115,27 @@ function decorateChassis() {
   xt60.position.set(0.048, 0, -0.080)
   bl.add(xt60)
 
-  // ---- OLED 小屏：0.96" 128×64，雷达下方护板凹槽里 ----
+  // ---- OLED 小屏：雷达前方，水平紧贴机身钢板 ----
   // lidar_link bbox（base 系）x[0.1574, 0.0226] y[±0.0325] z[0.002, 0.0531]
-  // 雷达前方（+X）护板那两个圆孔的上方有凹槽，OLED 屏贴在那。屏长度是两孔间距的 2 倍。
+  // 雷达前方（+X）护板有凹槽，OLED 背壳贴着钢板、屏面朝 +Z。
   // 两孔估计间距 ~30mm，所以屏幅约 60mm。0.96" 实际可视区约 21.7×11mm，外壳约 27×27mm。
   // 这里按两块屏并排的感觉（实物可能就是两块0.96"拼的），总宽 60mm。
   const oledGrp = new THREE.Group()
   mark(oledGrp)
-  // 位置：雷达前脸 +X ≈ 0.16，屏往前凸一点点 0.162，垂直居中 y=0，高度 z≈0.015
-  oledGrp.position.set(0.162, 0, 0.015)
+  // lidar 最前端约 x=0.157；屏位于前方钢板，背壳底面贴 z≈0.001。
+  oledGrp.position.set(0.190, 0, 0.0025)
   bl.add(oledGrp)
   // 黑色外壳
   const oledCase = mark(new THREE.Mesh(
-    new THREE.BoxGeometry(0.003, 0.060, 0.027),
+    new THREE.BoxGeometry(0.027, 0.060, 0.003),
     new THREE.MeshStandardMaterial({ color: 0x0a0d10, metalness: 0.25, roughness: 0.65 })))
   oledGrp.add(oledCase)
   // 蓝色 OLED 屏面：带微弱自发光
   const oledScreen = mark(new THREE.Mesh(
-    new THREE.BoxGeometry(0.0005, 0.054, 0.021),
+    new THREE.BoxGeometry(0.021, 0.054, 0.0005),
     new THREE.MeshStandardMaterial({ color: 0x1e3a5f, emissive: 0x2a5a8f,
       emissiveIntensity: 0.6, toneMapped: false })))
-  oledScreen.position.set(0.0018, 0, 0)
+  oledScreen.position.set(0, 0, 0.0018)
   oledGrp.add(oledScreen)
   // 三行文字用 canvas 纹理画，动态刷（loop 里根据 state 更新）
   const oledCv = document.createElement('canvas')
@@ -1097,8 +1145,8 @@ function decorateChassis() {
   const oledText = mark(new THREE.Mesh(
     new THREE.PlaneGeometry(0.053, 0.020),
     new THREE.MeshBasicMaterial({ map: oledTex, transparent: true, toneMapped: false })))
-  oledText.position.set(0.0022, 0, 0)
-  oledText.rotation.y = -Math.PI / 2
+  oledText.position.set(0, 0, 0.0022)
+  oledText.rotation.z = Math.PI / 2
   oledGrp.add(oledText)
   // 存到 userData 供 loop() 刷新
   bl.userData.oledCanvas = oledCv
