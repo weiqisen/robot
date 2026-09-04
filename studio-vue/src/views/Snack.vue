@@ -279,6 +279,8 @@ const binLabel = k => cfg.value.bins?.[k]?.label || k
 
 // ---- 录像列表：webctl 的 /api/recordings（和 rosbridge 无关，节点没起也能看历史）----
 const recordings = ref([])
+const replayOpen = ref(false), replayData = ref(null), replayItem = ref(null)
+const replayVideo = ref(null), replayTime = ref(0), replaySpeed = ref(1)
 async function loadRecordings() {
   try {
     const r = await fetch(`http://${HOST}:8000/api/recordings`)
@@ -287,6 +289,29 @@ async function loadRecordings() {
     message.error('读取录像列表失败：' + e.message)
   }
 }
+async function openReplay(item) {
+  if (!item.replay) return window.open(`http://${HOST}:8000${item.url}`, '_blank')
+  try {
+    const r = await fetch(`http://${HOST}:8000${item.replay}`, { cache:'no-store' })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    replayData.value = await r.json(); replayItem.value = item; replayTime.value = 0; replayOpen.value = true
+  } catch (e) { message.error('加载任务回放失败：' + e.message) }
+}
+const replaySnapshot = computed(() => {
+  const rows = replayData.value?.timeline || []
+  return rows.reduce((best, row) => row.t <= replayTime.value ? row : best, rows[0] || null)
+})
+const replayEvents = computed(() => (replayData.value?.events || []).filter(e => e.t <= replayTime.value).slice(-7).reverse())
+const replayPath = computed(() => {
+  const pts = replaySnapshot.value?.intent?.samples || []
+  if (!pts.length) return ''
+  const xs = pts.map(p => p[0]), ys = pts.map(p => p[1])
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys)
+  return pts.map(p => `${20 + (p[0]-x0)/Math.max(.02,x1-x0)*260},${170-(p[1]-y0)/Math.max(.02,y1-y0)*140}`).join(' ')
+})
+function replayTick(e) { replayTime.value = e.target.currentTime }
+function seekReplay(t) { if (replayVideo.value) { replayVideo.value.currentTime = t; replayTime.value = t } }
+function setReplaySpeed(v) { replaySpeed.value = +v; if (replayVideo.value) replayVideo.value.playbackRate = +v }
 // 录制刚停下时自动刷一次，省得手点
 watch(recording, (now, before) => { if (before && !now) setTimeout(loadRecordings, 600) })
 loadRecordings()
@@ -934,8 +959,8 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
                   <a-list-item-meta :title="item.name"
                     :description="`${(item.size / 1048576).toFixed(1)} MB · ${new Date(item.mtime * 1000).toLocaleString('zh-CN', { hour12: false })}`" />
                   <template #actions>
-                    <a :href="item.url" target="_blank">播放</a>
-                    <a :href="item.url" :download="item.name">下载</a>
+                    <a @click="openReplay(item)">{{ item.replay ? '电影回放' : '播放' }}</a>
+                    <a :href="`http://${HOST}:8000${item.url}`" :download="item.name">下载</a>
                   </template>
                 </a-list-item>
               </template>
@@ -945,6 +970,46 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
       </a-collapse>
     </a-col>
   </a-row>
+
+  <a-modal v-model:open="replayOpen" title="任务电影回放" width="1040px" :footer="null" destroyOnClose>
+    <div class="replay-shell">
+      <div class="replay-stage">
+        <video ref="replayVideo" controls autoplay playsinline
+          :src="replayItem ? `http://${HOST}:8000${replayItem.url}` : ''"
+          @timeupdate="replayTick" @loadedmetadata="setReplaySpeed(replaySpeed)" />
+        <div class="replay-badge"><i /> TASK REPLAY · {{ replayTime.toFixed(1) }}s</div>
+      </div>
+      <div class="replay-side">
+        <div class="replay-head">
+          <b>{{ replaySnapshot?.state || 'WAITING' }}</b><span>{{ replaySnapshot?.step || '等待时间轴数据' }}</span>
+        </div>
+        <div class="replay-twin">
+          <div class="rt-title">3D 指尖轨迹 · TOP VIEW</div>
+          <svg viewBox="0 0 300 190" preserveAspectRatio="none">
+            <defs><filter id="glow"><feGaussianBlur stdDeviation="2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+            <path d="M20 170H280M20 130H280M20 90H280M20 50H280M60 20V170M120 20V170M180 20V170M240 20V170" class="rt-grid" />
+            <polyline v-if="replayPath" :points="replayPath" class="rt-path" filter="url(#glow)" />
+          </svg>
+          <div class="rt-phase">{{ replaySnapshot?.intent?.phase || '尚未生成 IK 意图' }}</div>
+        </div>
+        <div class="replay-log">
+          <div v-for="e in replayEvents" :key="e.seq" :class="['re', e.level]" @click="seekReplay(e.t)">
+            <time>{{ e.t.toFixed(1) }}s</time><b>{{ e.phase }}</b><span>{{ e.summary }}</span>
+          </div>
+          <div v-if="!replayEvents.length" class="re-empty">播放后，真实决策节点将在这里同步出现</div>
+        </div>
+      </div>
+    </div>
+    <div class="replay-timeline">
+      <button v-for="e in (replayData?.events || [])" :key="e.seq" :title="e.summary"
+        :class="[e.level, { passed:e.t <= replayTime }]" :style="{ left:`${e.t / Math.max(.1,replayData.duration) * 100}%` }"
+        @click="seekReplay(e.t)" />
+    </div>
+    <div class="replay-controls">速度
+      <button v-for="s in [.25,.5,1,1.5,2]" :key="s" :class="{on:replaySpeed===s}" @click="setReplaySpeed(s)">{{ s }}×</button>
+      <span>{{ replayData?.events?.length || 0 }} 个决策节点 · {{ replayData?.timeline?.length || 0 }} 帧孪生状态</span>
+    </div>
+  </a-modal>
 
   <!-- 人工确认弹窗 -->
   <a-modal
@@ -1080,4 +1145,12 @@ code { font-family: ui-monospace, monospace; font-size: 13px; }
   overflow-wrap: anywhere;
 }
 .status-sources { display: flex; max-width: 100%; }
+.replay-shell{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(300px,.85fr);gap:12px;background:#070b11;padding:12px;border-radius:12px;color:#dbeafe}
+.replay-stage{position:relative;background:#000;border-radius:9px;overflow:hidden;min-height:360px}.replay-stage video{display:block;width:100%;height:100%;max-height:65vh;object-fit:contain}
+.replay-badge{position:absolute;left:12px;top:12px;padding:6px 9px;border:1px solid rgba(56,189,248,.35);border-radius:6px;background:rgba(2,8,18,.72);font:10px ui-monospace;color:#7dd3fc;letter-spacing:1px}.replay-badge i{display:inline-block;width:6px;height:6px;border-radius:50%;background:#fb3355;margin-right:7px;box-shadow:0 0 9px #fb3355}
+.replay-side{display:flex;flex-direction:column;gap:9px;min-width:0}.replay-head{border-left:2px solid #38bdf8;padding:5px 9px;background:rgba(30,41,59,.5)}.replay-head b{display:block;color:#67e8f9;font:12px ui-monospace}.replay-head span{display:block;margin-top:3px;color:#cbd5e1;font-size:11px;line-height:1.4}
+.replay-twin{position:relative;height:190px;border:1px solid rgba(56,189,248,.18);border-radius:8px;background:radial-gradient(circle at center,rgba(14,116,144,.14),transparent 66%);overflow:hidden}.replay-twin svg{width:100%;height:100%}.rt-title{position:absolute;left:9px;top:7px;font:9px ui-monospace;color:#64748b;letter-spacing:1px}.rt-grid{stroke:#164e63;stroke-width:.45;fill:none;opacity:.55}.rt-path{fill:none;stroke:#22d3ee;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}.rt-phase{position:absolute;right:8px;bottom:6px;color:#fbbf24;font:10px ui-monospace}
+.replay-log{flex:1;min-height:130px;max-height:220px;overflow:auto;background:rgba(15,23,42,.48);border-radius:8px}.re{display:grid;grid-template-columns:42px 66px 1fr;gap:5px;padding:7px 8px;border-bottom:1px solid rgba(148,163,184,.08);font-size:10px;cursor:pointer}.re:hover{background:rgba(56,189,248,.08)}.re time{color:#64748b;font-family:ui-monospace}.re b{color:#38bdf8}.re span{color:#cbd5e1}.re.error b,.re.error span{color:#fb7185}.re.warn b{color:#fbbf24}.re-empty{padding:22px;text-align:center;color:#64748b;font-size:11px}
+.replay-timeline{position:relative;height:24px;margin:14px 8px 5px;border-top:2px solid var(--border)}.replay-timeline button{position:absolute;top:-6px;width:10px;height:10px;margin-left:-5px;padding:0;border:2px solid #64748b;border-radius:50%;background:var(--surface-1);cursor:pointer}.replay-timeline button.passed{border-color:#22d3ee;background:#0891b2}.replay-timeline button.error{border-color:#fb3355}.replay-controls{display:flex;align-items:center;gap:5px;color:var(--text-3);font-size:11px}.replay-controls button{border:1px solid var(--border);background:var(--surface-2);color:var(--text-2);border-radius:5px;padding:3px 7px;cursor:pointer}.replay-controls button.on{border-color:#22d3ee;color:#0891b2}.replay-controls span{margin-left:auto}
+@media(max-width:780px){.replay-shell{grid-template-columns:1fr}.replay-stage{min-height:240px}.replay-side{max-height:390px}.replay-twin{height:150px}}
 </style>

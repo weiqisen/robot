@@ -527,7 +527,9 @@ class Handler(SimpleHTTPRequestHandler):
                             'name': fname,
                             'size': stat.st_size,
                             'mtime': stat.st_mtime,
-                            'url': f'/api/recordings/{fname}'
+                            'url': f'/api/recordings/{fname}',
+                            'replay': (f'/api/recordings/{os.path.splitext(fname)[0]}.json'
+                                       if os.path.isfile(os.path.splitext(fpath)[0] + '.json') else None),
                         })
                 return self._json(200, {'files': files})
             except Exception as e:
@@ -538,13 +540,14 @@ class Handler(SimpleHTTPRequestHandler):
             if '/' in fname or '..' in fname:
                 return self._json(403, {'error': 'invalid filename'})
             fpath = os.path.expanduser(os.path.join('~/recordings', fname))
-            if not os.path.isfile(fpath):
+            if not os.path.isfile(fpath) or not (fname.endswith('.mp4') or fname.endswith('.json')):
                 return self._json(404, {'error': 'file not found'})
             try:
                 with open(fpath, 'rb') as f:
                     content = f.read()
                 self.send_response(200)
-                self.send_header('Content-Type', 'video/mp4')
+                self.send_header('Content-Type', 'application/json; charset=utf-8'
+                                 if fname.endswith('.json') else 'video/mp4')
                 self.send_header('Content-Length', len(content))
                 self.send_header('Accept-Ranges', 'bytes')
                 self.end_headers()

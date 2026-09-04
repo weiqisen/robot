@@ -58,6 +58,8 @@ class GraspRecorder:
         self.filename = None
         self.log_entries = []  # [(timestamp, state, step), ...]
         self.last_state_step = (None, None)  # 去重：只在 state/step 变化时才记一条
+        self.timeline = []
+        self.last_snapshot_at = -1.0
 
     def start(self):
         if self.recording:
@@ -69,8 +71,11 @@ class GraspRecorder:
         self.writer = None  # 延迟创建，等第一帧确定尺寸
         self.log_entries = []
         self.last_state_step = (None, None)
+        self.timeline = []
+        self.last_snapshot_at = -1.0
 
-    def add_frame(self, img, state, step):
+    def add_frame(self, img, state, step, q_deg=None, ee=None, decision_log=None,
+                  motion_intent=None, detections=None):
         """添加一帧：img 是 BGR 图像，叠加状态信息和执行日志"""
         if not self.recording:
             return
@@ -134,6 +139,15 @@ class GraspRecorder:
 
         # 底部状态栏（时间戳）
         elapsed = time.time() - self.start_time
+        # 5Hz 的轻量数字孪生时间轴，与视频共用同一个起点。
+        if elapsed - self.last_snapshot_at >= .18:
+            self.timeline.append({
+                't': round(elapsed, 2), 'state': state, 'step': step,
+                'q_deg': q_deg or [], 'ee': ee or {},
+                'intent': copy.deepcopy(motion_intent),
+                'detections': copy.deepcopy(detections or []),
+            })
+            self.last_snapshot_at = elapsed
         timestamp_text = f'REC {int(elapsed//60):02d}:{int(elapsed%60):02d}'
         cv2.circle(frame, (w - 85, h - 15), 6, (0, 0, 255), -1)  # 红点
         cv2.putText(frame, timestamp_text, (w - 75, h - 10),
@@ -141,7 +155,7 @@ class GraspRecorder:
 
         self.writer.write(frame)
 
-    def stop(self):
+    def stop(self, decision_log=None):
         if not self.recording:
             return None
         self.recording = False
@@ -149,7 +163,22 @@ class GraspRecorder:
             self.writer.release()
             self.writer = None
         result = self.filename
+        if result:
+            manifest = {
+                'version': 1, 'video': os.path.basename(result),
+                'started_at': self.start_time, 'duration': round(time.time() - self.start_time, 2),
+                'events': [{'t': round(max(0, e.get('at', self.start_time) - self.start_time), 2),
+                            **{k: e.get(k) for k in ('seq', 'task_id', 'phase', 'level', 'summary', 'detail')}}
+                           for e in (decision_log or []) if e.get('at', 0) >= self.start_time],
+                'timeline': self.timeline,
+            }
+            try:
+                with open(os.path.splitext(result)[0] + '.json', 'w', encoding='utf-8') as f:
+                    json.dump(manifest, f, ensure_ascii=False, separators=(',', ':'))
+            except Exception:
+                pass
         self.filename = None
+        self.timeline = []
         return result
 
 # 这些是机器人自带的自定义消息；缺任何一个都没法动，直接报清楚
@@ -2107,7 +2136,7 @@ class SnackButler(Node):
                     self.recorder.start()
                     self.step = '开始录制：%s' % os.path.basename(self.recorder.filename)
             elif a == 'stop_recording':
-                path = self.recorder.stop()
+                path = self.recorder.stop(self.decision_log)
                 self.step = ('录制已保存：%s' % os.path.basename(path)) if path else '当前没有在录制'
             elif a == 'llm_note':
                 # LLM 侧把推理文字发过来，录像右上角小窗同步显示
@@ -2301,10 +2330,16 @@ class SnackButler(Node):
         # 录像走同一张已标注的图：网页看到什么，录下来就是什么
         if self.recorder.recording:
             try:
-                self.recorder.add_frame(img, self.state, self.step)
+                q = self.current_q()
+                p = fk(q, tool=self.cfg['tool_len'])
+                self.recorder.add_frame(
+                    img, self.state, self.step,
+                    [round(math.degrees(v), 1) for v in q],
+                    {'x': round(p[0], 4), 'y': round(p[1], 4), 'z': round(p[2], 4)},
+                    self.decision_log, self.motion_intent, self.scene_objects)
             except Exception as e:
                 self.get_logger().warn('录像写帧失败，已停止录制：%s' % e)
-                self.recorder.stop()
+                self.recorder.stop(self.decision_log)
 
     def image_msg(self, img):
         msg = Image()
