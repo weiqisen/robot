@@ -144,7 +144,7 @@ const jointRows = computed(() => {
 const jetson = computed(() => state.jetson)
 const battV = computed(() => (state.batt != null ? (state.batt / 1000).toFixed(2) : '—'))
 
-let renderer, scene, camera, controls, world, grid, groundGlow, robot, raf
+let renderer, scene, camera, controls, world, grid, groundGlow, robotShadow, robot, raf
 let lidarPoints = null
 let workspaceGroup = null, selfbodyGroup = null, dimensionsGroup = null
 let anglesGroup = null, cameraFovGroup = null, axesGroup = null
@@ -213,6 +213,21 @@ function init() {
   groundGlow.position.z = -0.001
   groundGlow.renderOrder = -10
   world.add(groundGlow)
+  // 低成本接触阴影：一张柔边透明贴图跟随底盘，不开启全场 shadow map。
+  const shadowCv = document.createElement('canvas'); shadowCv.width = shadowCv.height = 128
+  const shadowCtx = shadowCv.getContext('2d')
+  const shadowGrad = shadowCtx.createRadialGradient(64, 64, 8, 64, 64, 62)
+  shadowGrad.addColorStop(0, 'rgba(0,0,0,.48)')
+  shadowGrad.addColorStop(.55, 'rgba(0,0,0,.27)')
+  shadowGrad.addColorStop(1, 'rgba(0,0,0,0)')
+  shadowCtx.fillStyle = shadowGrad; shadowCtx.fillRect(0, 0, 128, 128)
+  robotShadow = new THREE.Mesh(new THREE.CircleGeometry(.5, 48),
+    new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(shadowCv), transparent: true,
+      opacity: .72, depthWrite: false, toneMapped: false }))
+  robotShadow.scale.set(.47, .34, 1)
+  robotShadow.position.z = .0006
+  robotShadow.renderOrder = -2
+  world.add(robotShadow)
   fit(); loop()
   // urdf-loader 的 load() 回调在 URDF **解析完**就触发，而 STL 网格是异步加载的。
   // 在那个回调里 traverse 根本遍历不到网格 —— 网格随后带着 loader 默认的
@@ -650,6 +665,9 @@ watch(() => state.odom, m => {
   if (!robot || !m) return
   const p = m.pose.pose.position, e = quatToEuler(m.pose.pose.orientation)
   robot.position.set(p.x, p.y, 0); robot.rotation.set(0, 0, e.yaw)
+  if (robotShadow) {
+    robotShadow.position.x = p.x; robotShadow.position.y = p.y; robotShadow.rotation.z = e.yaw
+  }
   info.ox = p.x.toFixed(3); info.oy = p.y.toFixed(3); info.yaw = deg(e.yaw).toFixed(1)
 })
 watch(() => state.scan, s => {
@@ -1358,6 +1376,15 @@ function syncDetections() {
     model.position.x = x; model.position.y = y; model.position.z += bottom
     detectGroup.add(model)
 
+    // 目标底部接触阴影：让投影模型真正“落”在台面上，不再像悬浮标记。
+    const objShadow = new THREE.Mesh(new THREE.CircleGeometry(.5, 24),
+      new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true,
+        opacity: occluded ? .08 : .22, depthWrite: false, toneMapped: false }))
+    objShadow.scale.set(Math.max(.018, size[0] * 1.18), Math.max(.018, size[1] * 1.18), 1)
+    objShadow.position.set(x, y, bottom + .0004)
+    objShadow.userData.helperLayer = true
+    detectGroup.add(objShadow)
+
     const hasContour = Array.isArray(geom.footprint) && geom.footprint.length >= 3 && geom.kind === 'contour'
     const edgeGeo = hasContour ? model.geometry.clone() : new THREE.BoxGeometry(...size)
     const edge = new THREE.LineSegments(new THREE.EdgesGeometry(edgeGeo),
@@ -1374,7 +1401,8 @@ function syncDetections() {
         dashSize: 0.008, gapSize: 0.006, toneMapped: false }))
     drop.computeLineDistances()      // 虚线必须算一次线长才显示成虚线
     detectGroup.add(drop)
-    const ring = new THREE.Mesh(new THREE.RingGeometry(0.012, 0.016, 20),
+    const targetR = Math.max(.012, Math.min(.05, Math.max(size[0], size[1]) * .62))
+    const ring = new THREE.Mesh(new THREE.RingGeometry(targetR, targetR + .004, 24),
       new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.5,
         side: THREE.DoubleSide, toneMapped: false }))
     ring.position.copy(foot)
