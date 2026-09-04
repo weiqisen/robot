@@ -105,7 +105,7 @@ const volt = computed(() => (state.batt != null ? (state.batt / 1000).toFixed(2)
   <a-layout key="admin-root" v-show="current !== 'bigscreen'" class="shell">
     <div v-if="isMobile && !collapsed" class="mask" @click="collapsed = true" />
     <a-layout-sider
-      v-model:collapsed="collapsed" :collapsed-width="isMobile ? 0 : 80" :trigger="null"
+      v-model:collapsed="collapsed" :collapsed-width="0" :trigger="null"
       theme="dark" :width="224" :class="['sider', { mobile: isMobile }]">
       <div class="brand">
         <robot-outlined style="color:#4096ff;font-size:20px;flex-shrink:0" />
