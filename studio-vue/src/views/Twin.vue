@@ -1184,39 +1184,100 @@ function clearGroup(g) {
   if (!g) return
   for (let i = g.children.length - 1; i >= 0; i--) {
     const o = g.children[i]
-    if (o.geometry) o.geometry.dispose()
-    if (o.material) { o.material.map && o.material.map.dispose(); o.material.dispose() }
+    o.traverse(n => {
+      if (n.geometry) n.geometry.dispose()
+      if (n.material) {
+        const mats = Array.isArray(n.material) ? n.material : [n.material]
+        mats.forEach(m => { m.map && m.map.dispose(); m.dispose() })
+      }
+    })
     g.remove(o)
   }
 }
 
-// 检测结果整体重建。目标数量本来就只有几个，逐个 diff 不值当。
+function detMaterial(col, opacity) {
+  return new THREE.MeshStandardMaterial({ color: col, transparent: true, opacity,
+    roughness: .62, metalness: .05, side: THREE.DoubleSide })
+}
+
+function markDetectionObject(o) {
+  o.traverse(n => { n.userData.helperLayer = true })
+  return o
+}
+
+// 用深度实测尺寸生成语义外形；这些是类别模型，不虚构品牌和不可见纹理。
+function semanticDetection(kind, size, col, opacity) {
+  const [sx, sy, sz] = size, g = new THREE.Group(), mat = detMaterial(col, opacity)
+  if (kind === 'bottle') {
+    const r = Math.max(.004, Math.min(sx, sy) * .45)
+    const bodyH = sz * .72, neckH = sz * .28
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(r, r, bodyH, 18), mat)
+    body.rotation.x = Math.PI / 2; body.position.z = bodyH / 2; g.add(body)
+    const neck = new THREE.Mesh(new THREE.CylinderGeometry(r*.48, r*.62, neckH, 16), mat.clone())
+    neck.rotation.x = Math.PI / 2; neck.position.z = bodyH + neckH/2; g.add(neck)
+  } else if (kind === 'cup') {
+    const cup = new THREE.Mesh(new THREE.CylinderGeometry(Math.min(sx,sy)*.48,
+      Math.min(sx,sy)*.38, sz, 20, 1, true), mat)
+    cup.rotation.x = Math.PI / 2; cup.position.z = sz/2; g.add(cup)
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(Math.min(sx,sy)*.48, .0015, 6, 20), mat.clone())
+    rim.position.z = sz; g.add(rim)
+  } else if (kind === 'apple') {
+    const fruit = new THREE.Mesh(new THREE.SphereGeometry(.5, 20, 14), mat)
+    fruit.scale.set(sx, sy, sz); fruit.position.z = sz/2; g.add(fruit)
+  } else if (kind === 'box') {
+    const box = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), mat)
+    box.position.z = sz/2; g.add(box)
+  } else return null
+  return markDetectionObject(g)
+}
+
+function contourDetection(footprint, center, height, col, opacity) {
+  if (!Array.isArray(footprint) || footprint.length < 3) return null
+  const shape = new THREE.Shape()
+  footprint.forEach((p, i) => {
+    const x = p[0] - center[0], y = p[1] - center[1]
+    if (i) shape.lineTo(x, y); else shape.moveTo(x, y)
+  })
+  shape.closePath()
+  const geometry = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false, steps: 1 })
+  const mesh = new THREE.Mesh(geometry, detMaterial(col, opacity))
+  return markDetectionObject(mesh)
+}
+
+// 检测结果整体重建。优先使用持久跟踪后的真实轮廓/尺寸；兼容旧节点时退回检测方块。
 function syncDetections() {
   if (!detectGroup) return
   clearGroup(detectGroup)
   const dets = state.snack?.detections || []
-  for (const d of dets) {
-    if (!Array.isArray(d.xyz) || d.xyz.length !== 3) continue
-    const [x, y, z] = d.xyz
-    const reachable = !!d.reachable
+  const tracked = state.snack?.scene_objects || []
+  const objects = tracked.length ? tracked : dets.map((d, i) => ({ track_id:i, label:d.label,
+    scene_xyz:d.xyz, geometry:d.geometry, confidence:d.confidence, reachable:d.reachable }))
+  for (const d of objects) {
+    const xyz = d.scene_xyz
+    if (!Array.isArray(xyz) || xyz.length !== 3) continue
+    const [x, y, z] = xyz, geom = d.geometry || {}
+    const reachable = !!d.reachable, occluded = !!d.occluded
     const col = DET_COLOR[d.label] ?? (reachable ? 0x43a047 : 0x8b949e)
+    const opacity = occluded ? .18 : reachable ? .62 : .32
+    const size = Array.isArray(geom.size) ? geom.size : [.028,.028,.028]
+    const bottom = Number.isFinite(geom.bottom_z) ? geom.bottom_z : z-size[2]/2
+    let model = semanticDetection(geom.kind, size, col, opacity)
+    if (model) model.rotation.z = THREE.MathUtils.degToRad(geom.yaw_deg || 0)
+    else model = contourDetection(geom.footprint, xyz, size[2], col, opacity)
+    if (!model) {
+      model = markDetectionObject(new THREE.Mesh(new THREE.BoxGeometry(...size), detMaterial(col, opacity)))
+      model.position.z = size[2]/2
+    }
+    model.position.x = x; model.position.y = y; model.position.z += bottom
+    detectGroup.add(model)
 
-    // 目标本体：一个小方块，可抓的实心一点、够不着的更透
-    const box = new THREE.Mesh(
-      new THREE.BoxGeometry(0.028, 0.028, 0.028),
-      new THREE.MeshBasicMaterial({ color: col, transparent: true,
-        opacity: reachable ? 0.55 : 0.28, toneMapped: false }))
-    box.position.set(x, y, z)
-    box.userData.helperLayer = true
-    detectGroup.add(box)
-
-    // 描边，让位置在深色背景下看得清
-    const edge = new THREE.LineSegments(
-      new THREE.EdgesGeometry(new THREE.BoxGeometry(0.028, 0.028, 0.028)),
-      new THREE.LineBasicMaterial({ color: col, transparent: true,
-        opacity: reachable ? 0.95 : 0.5, toneMapped: false }))
-    edge.position.set(x, y, z)
-    detectGroup.add(edge)
+    const hasContour = Array.isArray(geom.footprint) && geom.footprint.length >= 3 && geom.kind === 'contour'
+    const edgeGeo = hasContour ? model.geometry.clone() : new THREE.BoxGeometry(...size)
+    const edge = new THREE.LineSegments(new THREE.EdgesGeometry(edgeGeo),
+      new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: occluded ? .25 : .75 }))
+    edge.position.set(x, y, hasContour ? bottom : bottom + size[2]/2)
+    if (geom.kind && geom.kind !== 'contour') edge.rotation.z = THREE.MathUtils.degToRad(geom.yaw_deg || 0)
+    edge.userData.helperLayer = true; detectGroup.add(edge)
 
     // 竖直投影线 + 台面上的落点，判断高度用
     const foot = new THREE.Vector3(x, y, TABLE_Z)
@@ -1234,18 +1295,18 @@ function syncDetections() {
     detectGroup.add(ring)
 
     // 标签：类别 + 坐标 + 可达性
-    const name = DET_CN[d.label] || d.label || '目标'
+    const name = `${DET_CN[d.label] || d.label || '目标'} #${d.track_id ?? '—'}`
     const conf = d.confidence != null ? ` ${(d.confidence * 100).toFixed(0)}%` : ''
     const tag = layerLabel(name + conf,
-      `${CM(x)} ${CM(y)} · ${reachable ? '可夹' : '够不着'}`,
+      `${CM(x)} ${CM(y)} · ${occluded ? '暂时遮挡' : reachable ? '可夹' : '够不着'}`,
       '#' + col.toString(16).padStart(6, '0'))
-    tag.position.set(x, y, z + 0.042)
+    tag.position.set(x, y, bottom + size[2] + 0.025)
     detectGroup.add(tag)
   }
-  info.detN = dets.length ? dets.length + ' 个目标' : '无'
+  info.detN = objects.length ? objects.length + ' 个目标' : '无'
 }
 
-watch(() => state.snack?.detections, syncDetections, { deep: true })
+watch(() => [state.snack?.scene_objects, state.snack?.detections], syncDetections, { deep: true })
 
 // 辅助图层的标签。画法照 tagSprite：只画一个圆角框，框外留透明 ——
 // 整块画布铺底色的话，场景里就是一堆跟着透视缩放的灰板子。

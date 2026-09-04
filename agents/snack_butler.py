@@ -357,6 +357,9 @@ class SnackButler(Node):
         self.step = ''
         self.last_error = ''
         self.detections = []
+        self.scene_objects = []       # 带 track_id/滤波姿态的数字孪生物体
+        self._scene_tracks = {}
+        self._next_track_id = 1
         # 给网页的结构化决策轨迹。它记录“为什么这样做”，而不只是当前 state/step；
         # 环形上限避免 5Hz 状态消息无限膨胀。
         self.decision_log = []
@@ -1047,9 +1050,52 @@ class SnackButler(Node):
                             tool=cfg['tool_len'])
                 d['reachable'] = q is not None
                 d['pitch_deg'] = 180.0 if q is not None else None
+            if p is not None:
+                d['geometry'] = self._object_geometry(d, p, snapshot)
             d['extrinsic'] = src
             out.append(d)
         return out
+
+    @staticmethod
+    def _object_geometry(det, xyz, snapshot):
+        """把像素轮廓投到物体顶面，生成轻量 2.5D 几何；失败时返回实测中心和高度。"""
+        cfg, K, T_bo = snapshot['cfg'], snapshot['K'], snapshot['T_bo']
+        top_z = float(xyz[2])
+        bottom_z = float(cfg['table_z'])
+        height = min(.25, max(.006, top_z - bottom_z))
+        points = []
+        cnt = det.get('_cnt')
+        if cnt is not None and K:
+            peri = cv2.arcLength(cnt, True)
+            approx = cv2.approxPolyDP(cnt, max(1.5, peri * .012), True).reshape(-1, 2)
+            # 复杂包装轮廓最多保留 20 个顶点，避免状态 JSON 和前端几何过重。
+            if len(approx) > 20:
+                idx = np.linspace(0, len(approx) - 1, 20).astype(int)
+                approx = approx[idx]
+            for u, v in approx:
+                hit = vg.pixel_to_base_on_plane(float(u), float(v), K, None, top_z, T_bo=T_bo)
+                if hit:
+                    points.append([round(float(hit[0]), 4), round(float(hit[1]), 4)])
+        size_x = size_y = .028
+        yaw_deg = float(-det.get('angle_px', 0.0))
+        if len(points) >= 3:
+            rect = cv2.minAreaRect(np.asarray(points, dtype=np.float32))
+            (_, _), (rw, rh), angle = rect
+            if rw < rh:
+                rw, rh, angle = rh, rw, angle + 90.0
+            size_x, size_y = max(.006, float(rw)), max(.006, float(rh))
+            yaw_deg = float(angle)
+        return {
+            'footprint': points,
+            'size': [round(size_x, 4), round(size_y, 4), round(height, 4)],
+            'bottom_z': round(bottom_z, 4), 'top_z': round(top_z, 4),
+            'yaw_deg': round(yaw_deg, 1),
+            'kind': ('bottle' if det.get('label') == 'bottle' else
+                     'cup' if det.get('label') in ('cup', 'vase') else
+                     'apple' if det.get('label') == 'apple' else
+                     'box' if det.get('label') in ('book', 'keyboard', 'cell phone', 'remote') else
+                     'contour'),
+        }
 
     def submit_vision_scan(self, purpose='idle', priority=False):
         snapshot = self._capture_vision_snapshot()
@@ -1081,7 +1127,60 @@ class SnackButler(Node):
             return []
         self.detections = result['detections']
         self.last_detection_at = result['finished_at']
+        self.update_scene_tracks(self.detections, self.last_detection_at)
         return self.detections
+
+    @staticmethod
+    def _angle_blend(old, new, alpha):
+        """180° 对称物体的角度滤波。"""
+        delta = (new - old + 90.0) % 180.0 - 90.0
+        return old + alpha * delta
+
+    def update_scene_tracks(self, detections, now):
+        """用标签+空间距离关联目标，短暂漏检时保留半透明轨迹，避免 3D 物体闪烁。"""
+        unmatched = set(self._scene_tracks)
+        for det in detections:
+            xyz, geom = det.get('xyz'), det.get('geometry')
+            if not xyz or not geom:
+                continue
+            candidates = []
+            for track_id in unmatched:
+                tr = self._scene_tracks[track_id]
+                distance = math.dist(xyz, tr['raw_xyz'])
+                label_ok = tr['label'] == det.get('label') or 'object' in (tr['label'], det.get('label'))
+                if label_ok and distance <= .085:
+                    candidates.append((distance, track_id))
+            if candidates:
+                _, track_id = min(candidates)
+                unmatched.remove(track_id)
+                tr = self._scene_tracks[track_id]
+                alpha = .45
+                scene_xyz = [round((1-alpha)*a + alpha*b, 4) for a, b in zip(tr['scene_xyz'], xyz)]
+                old_size = tr['geometry']['size']; new_size = geom['size']
+                geom['size'] = [round(.65*a + .35*b, 4) for a, b in zip(old_size, new_size)]
+                geom['yaw_deg'] = round(self._angle_blend(tr['geometry']['yaw_deg'], geom['yaw_deg'], .35), 1)
+                # 保留轮廓形状，但把它的中心平移到滤波后的跟踪中心。
+                if geom['footprint']:
+                    dx, dy = scene_xyz[0] - xyz[0], scene_xyz[1] - xyz[1]
+                    geom['footprint'] = [[round(p[0]+dx, 4), round(p[1]+dy, 4)] for p in geom['footprint']]
+                tr.update(label=det.get('label'), raw_xyz=list(xyz), scene_xyz=scene_xyz,
+                          geometry=geom, confidence=det.get('confidence'), reachable=bool(det.get('reachable')),
+                          last_seen=now, missed=0)
+            else:
+                track_id = self._next_track_id; self._next_track_id += 1
+                self._scene_tracks[track_id] = {
+                    'track_id': track_id, 'label': det.get('label'), 'raw_xyz': list(xyz),
+                    'scene_xyz': list(xyz), 'geometry': geom, 'confidence': det.get('confidence'),
+                    'reachable': bool(det.get('reachable')), 'last_seen': now, 'missed': 0,
+                }
+            det['track_id'] = track_id
+        for track_id in unmatched:
+            self._scene_tracks[track_id]['missed'] += 1
+        # 最多保留 1.5 秒/3 次漏检；这里只影响显示，不参与抓取决策。
+        self._scene_tracks = {k: v for k, v in self._scene_tracks.items()
+                              if now - v['last_seen'] <= 1.5 and v['missed'] <= 3}
+        self.scene_objects = [dict(v, occluded=v['missed'] > 0)
+                              for v in sorted(self._scene_tracks.values(), key=lambda x: x['track_id'])]
 
     def async_scan_once(self, purpose, timeout=8.0):
         """状态机使用的非阻塞扫描：等待期间每 50ms 把控制权还给 ROS executor。"""
@@ -2048,6 +2147,7 @@ class SnackButler(Node):
                            {k: v for k, v in self.held_target.items() if not k.startswith('_')},
             'detections': [{k: v for k, v in d.items() if not k.startswith('_')}
                            for d in self.detections],
+            'scene_objects': self.scene_objects,
             'ee': {'x': round(ee[0], 4), 'y': round(ee[1], 4), 'z': round(ee[2], 4),
                    'pitch_deg': round(math.degrees(ee[3]), 1)},
             'q_deg': [round(math.degrees(v), 1) for v in q],
