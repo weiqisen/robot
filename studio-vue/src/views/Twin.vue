@@ -1008,9 +1008,9 @@ function decorateArmJointMotors() {
 // （100mm）还窄，所以按 76×52mm 缩比例。屏幕在 base 系 x=-0.1469 z=0.1136，
 // 对应局部系约 x=-0.139（link 原点在 base 系 x=-0.008），所以「屏下方」= 局部 x 接近 -0.14 且 z 明显低于 0.11。
 const JET = {
-  x: -0.125, z: 0.026,        // 板中心（局部系），向机身内收避免后缘穿出外壳
+  x: -0.125, z: 0.003,        // 板底落在外壳内底面 z≈0.002，不再悬空
   w: 0.076, d: 0.052,         // 板 x 向长 / y 向宽
-  fanZ: 0.026 + 0.018,        // 风扇底面紧贴散热鳍片顶面
+  fanZ: 0.003 + 0.018,        // 风扇底面紧贴散热鳍片顶面
 }
 let fanBlades = null      // loop() 里转它
 let stm32BlueLed = null   // loop() 里做心跳呼吸
@@ -1146,32 +1146,31 @@ function buildJetsonInside() {
   led.position.set(outerX + 0.012, -0.023, PCB_Z + 0.002)
   g.add(led)
 
-  // ---- 涡轮风扇：外框 + 转子 ----
-  // Z 轴向上吹，所以圆柱要立着（默认沿 Y，转到 Z）
+  // ---- CPU 风扇：低矮圆形外壳 + 顶部护圈 + 可见转子 ----
+  // 外形类似一个很扁的雷达，但内部保留真实散热风扇的叶片。
+  // Z 轴向上吹，所以圆柱要立着（默认沿 Y，转到 Z）。
   const alignZ = new THREE.Quaternion().setFromUnitVectors(
     new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1))
-  const FAN_R = 0.016                    // 罩内只有 32mm 余量，别再画 40mm 框
+  const FAN_R = 0.018
+  const fanX = PCB_X - 0.006
+  const fanShellMat = new THREE.MeshStandardMaterial({ color: 0x101317, metalness: 0.35,
+    roughness: 0.6, envMapIntensity: 0.9, side: THREE.DoubleSide })
 
-  const frame = mark(new THREE.Mesh(
-    new THREE.BoxGeometry(FAN_R * 2.1, FAN_R * 2.1, 0.010),
-    new THREE.MeshStandardMaterial({ color: 0x101317, metalness: 0.35,
-      roughness: 0.6, envMapIntensity: 0.9 })))
-  frame.position.set(PCB_X - 0.006, 0, FAN_Z)
-  g.add(frame)
-
-  // 框内挖空的观感靠一圈深色内壁营造
-  const bore = mark(new THREE.Mesh(
-    new THREE.CylinderGeometry(FAN_R, FAN_R, 0.0105, 28, 1, true),
-    new THREE.MeshStandardMaterial({ color: 0x07090b, metalness: 0.2,
-      roughness: 0.85, side: THREE.DoubleSide })))
-  bore.quaternion.copy(alignZ)
-  bore.position.set(PCB_X - 0.006, 0, FAN_Z)
-  g.add(bore)
+  // 无端盖圆柱作为低矮外壁，顶部圆环压住外壳边缘，叶片不会被挡住。
+  const shell = mark(new THREE.Mesh(
+    new THREE.CylinderGeometry(FAN_R, FAN_R, 0.009, 32, 1, true), fanShellMat))
+  shell.quaternion.copy(alignZ)
+  shell.position.set(fanX, 0, FAN_Z)
+  g.add(shell)
+  const topRing = mark(new THREE.Mesh(
+    new THREE.RingGeometry(FAN_R * 0.76, FAN_R, 32), fanShellMat))
+  topRing.position.set(fanX, 0, FAN_Z + 0.00455)
+  g.add(topRing)
 
   // 转子：轮毂 + 7 片扇叶，整体绕 Z 转
   fanBlades = new THREE.Group()
   mark(fanBlades)
-  fanBlades.position.set(PCB_X - 0.006, 0, FAN_Z)
+  fanBlades.position.set(fanX, 0, FAN_Z + 0.001)
   g.add(fanBlades)
 
   const hub = mark(new THREE.Mesh(
