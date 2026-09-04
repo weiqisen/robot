@@ -375,6 +375,8 @@ class SnackButler(Node):
         self._last_dec = 0.0        # 上次解码时刻，用于限速
         self._last_idle_scan = 0.0  # 观察位后台识别节流
         self._last_idle_count = None
+        self._last_idle_signature = None
+        self._last_idle_decision_at = 0.0
         self.live_analysis = False  # 页面显式开启时才提高到实时分析频率，不写入抓取方案
         self.last_detection_at = 0.0
         self._idle_vision_request = None
@@ -1232,6 +1234,30 @@ class SnackButler(Node):
                     self.get_logger().info('[idle_detect] count=%d labels=%s' %
                                            (count, [d.get('label') for d in self.detections]))
                     self._last_idle_count = count
+                # 后台识别也属于真实决策输入，必须进入网页轨迹。按稳定特征去重，
+                # 目标不变时每 10 秒留一条心跳，避免 2Hz 扫描挤掉抓取过程日志。
+                signature = tuple(sorted((str(d.get('label')), str(d.get('detector')),
+                                          bool(d.get('reachable'))) for d in self.detections))
+                now_done = time.time()
+                if signature != self._last_idle_signature or now_done - self._last_idle_decision_at >= 10.0:
+                    self.decision_task_id = None
+                    reachable = sum(1 for d in self.detections if d.get('reachable'))
+                    parts = []
+                    for d in self.detections[:12]:
+                        src = 'YOLO' if d.get('detector') == 'yolov5' else ('深度' if d.get('detector') == 'depth' else 'HSV')
+                        conf = (' %.0f%%' % (float(d['confidence']) * 100)) if d.get('confidence') is not None else ''
+                        xyz = d.get('xyz')
+                        pos = (' @ %.3f,%.3f,%.3f' % tuple(xyz)) if xyz else ' @ 定位失败'
+                        parts.append('%s:%s%s%s [%s]' %
+                                     (src, d.get('label', '目标'), conf, pos,
+                                      '可抓' if d.get('reachable') else '不可抓'))
+                    if count > 12:
+                        parts.append('另有 %d 个目标' % (count - 12))
+                    self.decision('detect', '实时识别：%d 个目标，%d 个可抓' % (count, reachable),
+                                  '；'.join(parts) if parts else '当前画面没有检测目标',
+                                  'success' if reachable else ('info' if count else 'warn'))
+                    self._last_idle_signature = signature
+                    self._last_idle_decision_at = now_done
         if hz <= 0 or self.state != 'IDLE' or self.rgb is None or self._idle_vision_request:
             return
         if now - self._last_idle_scan < 1.0 / hz:
