@@ -1057,6 +1057,79 @@ function buildJetsonInside() {
     }
   }
 
+  // ---- PCB 元件细节 ----
+  // 加宽后的空白区域按 Jetson 载板常见布局补齐电源、滤波与高速接口器件。
+  const chipMat = new THREE.MeshStandardMaterial({ color: 0x080a0c, metalness: .28, roughness: .48 })
+  const smdTanMat = new THREE.MeshStandardMaterial({ color: 0xb89a70, metalness: .18, roughness: .62 })
+  const smdDarkMat = new THREE.MeshStandardMaterial({ color: 0x34383d, metalness: .38, roughness: .50 })
+  const capMat = new THREE.MeshStandardMaterial({ color: 0x15191e, metalness: .42, roughness: .46 })
+  const capTopMat = new THREE.MeshStandardMaterial({ color: 0xb8bec4, metalness: .88, roughness: .26 })
+  const coilMat = new THREE.MeshStandardMaterial({ color: 0x4b5057, metalness: .55, roughness: .42 })
+  const whiteSocketMat = new THREE.MeshStandardMaterial({ color: 0xd9dcda, metalness: .08, roughness: .58 })
+  const pcbTop = PCB_Z + .00085
+
+  // 两颗供电滤波电解电容，银色顶盖带十字泄压槽的观感。
+  for (const [cx, cy] of [[PCB_X + .024, -.043], [PCB_X + .024, .043]]) {
+    const cap = mark(new THREE.Mesh(new THREE.CylinderGeometry(.0033, .0033, .0065, 18), capMat))
+    cap.quaternion.copy(alignZ)
+    cap.position.set(cx, cy, pcbTop + .00325)
+    g.add(cap)
+    const top = mark(new THREE.Mesh(new THREE.CircleGeometry(.0027, 18), capTopMat))
+    top.position.set(cx, cy, pcbTop + .00655)
+    g.add(top)
+    for (const rot of [0, Math.PI / 2]) {
+      const groove = mark(new THREE.Mesh(new THREE.BoxGeometry(.00035, .0040, .00018), chipMat))
+      groove.rotation.z = rot
+      groove.position.set(cx, cy, pcbTop + .00666)
+      g.add(groove)
+    }
+  }
+
+  // 三颗电源电感与两颗外围控制芯片。
+  for (const [cx, cy] of [[PCB_X + .012, -.052], [PCB_X, -.052], [PCB_X - .012, -.052]]) {
+    const coil = mark(new THREE.Mesh(new THREE.BoxGeometry(.007, .007, .0036), coilMat))
+    coil.position.set(cx, cy, pcbTop + .0018)
+    g.add(coil)
+  }
+  const detailChips = [
+    [PCB_X - .020, .046, .014, .010],
+    [PCB_X + .014, .053, .011, .008],
+  ]
+  for (const [cx, cy, cw, cd] of detailChips) {
+    const chip = mark(new THREE.Mesh(new THREE.BoxGeometry(cw, cd, .0022), chipMat))
+    chip.position.set(cx, cy, pcbTop + .0011)
+    g.add(chip)
+    // 两侧银色引脚。
+    for (const side of [-1, 1]) for (let i = -2; i <= 2; i++) {
+      const pin = mark(new THREE.Mesh(new THREE.BoxGeometry(.0015, .00045, .00035), capTopMat))
+      pin.position.set(cx + side * (cw / 2 + .0007), cy + i * cd / 6, pcbTop + .00045)
+      g.add(pin)
+    }
+  }
+
+  // 贴片电容/电阻阵列，分布在板子两翼，避免机械式整齐造成玩具感。
+  const smdParts = [
+    [-.026,-.034,1],[-.018,-.035,0],[-.010,-.036,1],[.010,-.034,0],[.019,-.032,1],
+    [-.028,.030,0],[-.020,.034,1],[-.011,.038,0],[.006,.034,1],[.017,.031,0],
+    [-.028,.056,1],[-.008,.058,0],[.004,.060,1],[.024,.057,0],
+  ]
+  for (const [dx, dy, tan] of smdParts) {
+    const smd = mark(new THREE.Mesh(new THREE.BoxGeometry(.0046, .0020, .00125), tan ? smdTanMat : smdDarkMat))
+    smd.position.set(PCB_X + dx, dy, pcbTop + .00062)
+    smd.rotation.z = (Math.abs(dx * 1000) % 3) * .18
+    g.add(smd)
+  }
+
+  // 内侧的 MIPI/显示排线座，白色翻盖与黑色插槽分层建模。
+  for (const cy of [-.046, .046]) {
+    const socket = mark(new THREE.Mesh(new THREE.BoxGeometry(.005, .019, .0040), whiteSocketMat))
+    socket.position.set(innerX - .004, cy, pcbTop + .0020)
+    g.add(socket)
+    const slot = mark(new THREE.Mesh(new THREE.BoxGeometry(.0012, .015, .0015), chipMat))
+    slot.position.set(innerX - .0014, cy, pcbTop + .0022)
+    g.add(slot)
+  }
+
   // 核心模块：贴在板中间的金属屏蔽罩
   const som = mark(new THREE.Mesh(
     new THREE.BoxGeometry(0.038, 0.034, 0.0032),
