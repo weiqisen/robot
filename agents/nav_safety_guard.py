@@ -20,7 +20,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
-from nav_safety_logic import safe_velocity, sector_min, twist_nonzero
+from nav_safety_logic import degraded_manual_velocity, safe_velocity, sector_min, twist_nonzero
 from service_watchdog import ServiceWatchdog
 
 
@@ -35,6 +35,8 @@ class NavSafetyGuard(Node):
         self.nav_cmd = Twist(); self.manual_cmd = Twist(); self.grasp_cmd = Twist()
         self.last_nav_cmd = 0.0; self.last_manual_cmd = 0.0; self.last_grasp_cmd = 0.0
         self.source = None
+        self.degraded_manual = False
+        self.degraded_until = 0.0
         self.zero_ticks = 0
         self.last_legacy_cmd = 0.0
         self.vision_guard_m = None; self.vision_guard_reason = None; self.last_vision = 0.0
@@ -119,6 +121,7 @@ class NavSafetyGuard(Node):
         self.last_legacy_cmd = time.monotonic()
         self.legacy_count += 1
         self.armed, self.source = False, None
+        self.degraded_manual = False; self.degraded_until = 0.0
         self.reason = '检测到旧 /cmd_vel 旁路，已急停锁定'
         self.zero_ticks = max(self.zero_ticks, 30)
 
@@ -136,6 +139,7 @@ class NavSafetyGuard(Node):
             data = json.loads(msg.data); action = data.get('action'); source = data.get('source')
         except Exception: action = source = None
         if action == 'arm':
+            self.degraded_manual = False; self.degraded_until = 0.0
             if self.legacy_active():
                 self.armed, self.source, self.reason = False, None, '拒绝解锁：旧 /cmd_vel 仍有非零指令'
             elif source not in ('nav', 'manual', 'grasp'):
@@ -144,8 +148,22 @@ class NavSafetyGuard(Node):
                 self.armed, self.source, self.reason = True, source, '%s 驱动已解锁' % source
             else:
                 self.armed, self.source, self.reason = False, None, '拒绝解锁：雷达无数据'
+        elif action == 'arm_degraded':
+            # 只允许人工控制源进入短时无雷达模式；Nav2 和自动抓取绝不允许绕过雷达。
+            if self.legacy_active():
+                self.armed, self.source, self.reason = False, None, '拒绝降级解锁：旧 /cmd_vel 仍有非零指令'
+            elif source != 'manual':
+                self.armed, self.source, self.reason = False, None, '拒绝降级解锁：仅允许人工控制源'
+            else:
+                seconds = max(10.0, min(60.0, float(data.get('seconds', 60))))
+                self.armed, self.source = True, 'manual'
+                self.degraded_manual = True
+                self.degraded_until = time.monotonic() + seconds
+                self.reason = '无雷达降级驾驶已解锁 %.0f 秒' % seconds
+                self.last_manual_cmd = time.monotonic()
         elif action in ('disarm', 'stop'):
             self.armed, self.source, self.reason = False, None, '驱动锁定'
+            self.degraded_manual = False; self.degraded_until = 0.0
             self.zero_ticks = 10
         elif action == 'set_limits':
             if self.armed:
@@ -178,6 +196,23 @@ class NavSafetyGuard(Node):
     def safe_twist(self):
         now = time.monotonic()
         if not self.armed: return None, '导航驱动锁定'
+        if self.degraded_manual:
+            if now >= self.degraded_until:
+                self.armed = False; self.source = None; self.degraded_manual = False
+                self.zero_ticks = 10
+                return None, '无雷达降级授权已到期，自动锁定'
+            if self.source != 'manual':
+                self.armed = False; self.source = None; self.degraded_manual = False
+                return None, '降级模式控制源异常，已锁定'
+            if self.scan_fresh():
+                self.degraded_manual = False; self.degraded_until = 0.0
+                self.reason = '雷达已恢复，自动切回正常手动驾驶'
+            else:
+                if now - self.last_manual_cmd > 0.30:
+                    return None, '无雷达降级驾驶：速度指令超时'
+                vx, vy, wz, reason = degraded_manual_velocity(
+                    self.manual_cmd.linear.x, self.manual_cmd.linear.y, self.manual_cmd.angular.z)
+                return self.make_twist(vx, vy, wz), reason
         if not self.scan_fresh():
             self.armed = False; self.source = None; self.zero_ticks = 10
             return None, '雷达数据中断，已自动锁定'
@@ -225,7 +260,10 @@ class NavSafetyGuard(Node):
     def publish_state(self):
         front = self.sector_min(self.scan_forward_angle, math.radians(38)) if self.scan else None
         body = self.sector_min(self.scan_forward_angle, math.pi) if self.scan else None
+        remaining = max(0.0, self.degraded_until - time.monotonic()) if self.degraded_manual else 0.0
         data = {'armed': self.armed, 'source': self.source, 'reason': self.reason, 'scan_ready': self.scan_fresh(),
+                'degraded_manual': self.degraded_manual, 'degraded_remaining_s': round(remaining, 1),
+                'degraded_limits': {'vx': .05, 'vy': .05, 'wz': .20},
                 'legacy_active': self.legacy_active(), 'legacy_count': self.legacy_count,
                 'front_m': None if front is None or not math.isfinite(front) else round(front, 3),
                 'body_m': None if body is None or not math.isfinite(body) else round(body, 3),

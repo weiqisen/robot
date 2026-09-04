@@ -92,6 +92,7 @@ const maxLinear = computed(() => state.navSafety?.limits?.vx || 0.12)
 const maxAngular = computed(() => state.navSafety?.limits?.wz || 0.45)
 const manualArmed = computed(() => safetyFresh.value && !!state.navSafety?.armed
   && state.navSafety?.source === 'manual')
+const degradedManual = computed(() => manualArmed.value && !!state.navSafety?.degraded_manual)
 const driveMode2 = ref('turn')          // turn=原地转向，pan=横向平移（麦轮）
 const driveSpeed = ref(70)
 const tele = reactive({ vx: '0.00', vy: '0.00', wz: '0.00' })
@@ -183,20 +184,24 @@ function pubLoop() {
 function unlockManual() {
   if (!safetyFresh.value) return message.error('安全闸门未连接，禁止解锁')
   if (state.navSafety?.legacy_active) return message.error('检测到旧 /cmd_vel 控制旁路，禁止解锁')
-  if (!state.navSafety?.scan_ready) return message.error('雷达无数据，禁止解锁手动驱动')
   const bv = state.batt == null ? null : state.batt / 1000
   if (bv == null) return message.error('没有底盘电池遥测，禁止解锁手动驱动')
   if (bv < 10.5) return message.error(`底盘电池仅 ${bv.toFixed(2)}V，请充电到 10.5V 以上再驾驶`)
+  const degraded = !state.navSafety?.scan_ready
   Modal.confirm({
-    title: '解锁手动驾驶？',
-    content: `当前硬限速 ${maxLinear.value.toFixed(2)}m/s、${maxAngular.value.toFixed(2)}rad/s，并启用雷达近障急停。仍不能识别悬崖、玻璃和低矮障碍，请保持有人看护。`,
+    title: degraded ? '启用无雷达降级驾驶？' : '解锁手动驾驶？',
+    content: degraded
+      ? '雷达当前无数据。将只解锁人工控制 60 秒，速度硬限制为前进/横移 0.05m/s、旋转 0.20rad/s；松开操作或网络中断会自动停车。没有近障、悬崖与盲区保护，请保持目视并随时准备急停。'
+      : `当前硬限速 ${maxLinear.value.toFixed(2)}m/s、${maxAngular.value.toFixed(2)}rad/s，并启用雷达近障急停。仍不能识别悬崖、玻璃和低矮障碍，请保持有人看护。`,
     okText: '确认解锁', cancelText: '保持锁定',
     onOk: () => {
       actions.explorerCmd({ action: 'stop' })
-      if (!actions.navSafetyCmd({ action: 'arm', source: 'manual' })) {
+      const cmd = degraded ? { action: 'arm_degraded', source: 'manual', seconds: 60 }
+        : { action: 'arm', source: 'manual' }
+      if (!actions.navSafetyCmd(cmd)) {
         return message.error('rosbridge 未连接，解锁命令未发送')
       }
-      message.success('手动驾驶解锁命令已发送')
+      message.success(degraded ? '无雷达降级驾驶授权已发送' : '手动驾驶解锁命令已发送')
       setTimeout(() => {
         if (!manualArmed.value) message.error(`解锁失败：${state.navSafety?.reason || '安全闸门没有确认'}`)
       }, 1200)
@@ -410,14 +415,14 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <div :class="['scene-safety', { warn: driveArmed }]"><span>{{ driveArmed ? '驱动已解锁' : '安全锁定' }}</span><small>{{ driveArmed ? '车辆可能运动' : '底盘不会响应速度指令' }}</small></div>
+          <div :class="['scene-safety', { warn: driveArmed, degraded: degradedManual }]"><span>{{ degradedManual ? '无雷达降级驾驶' : driveArmed ? '驱动已解锁' : '安全锁定' }}</span><small>{{ degradedManual ? `${state.navSafety?.degraded_remaining_s?.toFixed?.(0) || 0}s 后自动锁定 · 最高 0.05m/s` : driveArmed ? '车辆可能运动' : '底盘不会响应速度指令' }}</small></div>
 
           <!-- 手动驾驶：摇杆浮在画面右下角，锁定时整块压暗且不接收指针事件 -->
           <div :class="['drive-pad', { locked: !manualArmed, collapsed: drivePadCollapsed }]">
             <div class="dp-head" @click="drivePadCollapsed = !drivePadCollapsed">
               <b>手动驾驶</b>
               <button v-if="!manualArmed" class="dp-unlock" @click.stop="unlockManual">解锁</button>
-              <button v-else class="dp-unlock on" @click.stop="lockManual">锁定</button>
+              <button v-else :class="['dp-unlock','on',{ degraded:degradedManual }]" @click.stop="lockManual">{{ degradedManual ? '降级 · 锁定' : '锁定' }}</button>
               <span class="dp-toggle" :title="drivePadCollapsed ? '展开' : '收起'">{{ drivePadCollapsed ? '▼' : '▲' }}</span>
             </div>
             <div v-show="!drivePadCollapsed" class="dp-body">
@@ -701,6 +706,9 @@ onUnmounted(() => {
 .scene-safety small { color:#64748B; font-size:9px; }
 .scene-safety.warn { border-color:rgba(245,158,11,.45); background:rgba(41,25,8,.82); }
 .scene-safety.warn span { color:#F59E0B; }
+.scene-safety.degraded { border-color:rgba(244,63,94,.7); background:rgba(76,5,25,.9); box-shadow:0 0 18px rgba(244,63,94,.16); }
+.scene-safety.degraded span { color:#FB7185; }
+.body.focus .scene-safety.degraded { display:inline-flex; }
 
 /* ---- 独立机械臂控制卡：与右侧驾驶盘对称，均默认折叠 ---- */
 .scene-arm { position:absolute; z-index:4; left:24px; bottom:24px; width:236px;
@@ -755,6 +763,7 @@ onUnmounted(() => {
 .dp-unlock { padding:2px 9px; border:1px solid rgba(52,211,153,.45); border-radius:5px;
   background:rgba(6,78,59,.3); color:#34D399; font-size:10px; cursor:pointer; }
 .dp-unlock.on { border-color:rgba(245,158,11,.5); background:rgba(120,53,15,.3); color:#F59E0B; }
+.dp-unlock.on.degraded { border-color:rgba(244,63,94,.65); background:rgba(76,5,25,.55); color:#FB7185; }
 .dp-joy { display:block; margin:0 auto; touch-action:none; cursor:grab; }
 .dp-seg { display:flex; gap:5px; }
 .dp-seg button { flex:1; padding:3px 0; border:1px solid rgba(148,163,184,.24); border-radius:5px;

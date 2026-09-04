@@ -10,6 +10,7 @@ const maxLinear = computed(() => state.navSafety?.limits?.vx || 0.12)
 const maxAngular = computed(() => state.navSafety?.limits?.wz || 0.45)
 const safetyFresh = computed(() => state.now - state.navSafetyAt < 1500)
 const manualArmed = computed(() => safetyFresh.value && !!state.navSafety?.armed && state.navSafety?.source === 'manual')
+const degradedManual = computed(() => manualArmed.value && !!state.navSafety?.degraded_manual)
 const camTopic = ref('/depth_cam/rgb/image_raw')
 const camOptions = [
   { value: '/depth_cam/rgb/image_raw', label: 'RGB 彩色' },
@@ -122,20 +123,24 @@ function eStop() { resetJoy(); for (const k in keys) keys[k] = false; actions.em
 function unlockManual() {
   if (!safetyFresh.value) return message.error('安全闸门未连接，禁止解锁')
   if (state.navSafety?.legacy_active) return message.error('检测到旧 /cmd_vel 控制旁路，禁止解锁')
-  if (!state.navSafety?.scan_ready) return message.error('雷达无数据，禁止解锁手动驱动')
   const batteryV = state.batt == null ? null : state.batt / 1000
   if (batteryV == null) return message.error('没有底盘电池遥测，禁止解锁手动驱动')
   if (batteryV < 10.5) return message.error(`底盘电池仅 ${batteryV.toFixed(2)}V，请充电到 10.5V 以上再驾驶`)
-  Modal.confirm({ title: '解锁手动驾驶？',
-    content: `当前硬限速 ${maxLinear.value.toFixed(2)}m/s、${maxAngular.value.toFixed(2)}rad/s，并启用雷达近障急停。仍不能识别悬崖、玻璃和低矮障碍，请保持有人看护。`,
+  const degraded = !state.navSafety?.scan_ready
+  Modal.confirm({ title: degraded ? '启用无雷达降级驾驶？' : '解锁手动驾驶？',
+    content: degraded
+      ? '雷达当前无数据。将只解锁人工控制 60 秒，速度硬限制为前进/横移 0.05m/s、旋转 0.20rad/s；松开操作或网络中断会自动停车。没有近障、悬崖与盲区保护，请保持目视并随时准备急停。'
+      : `当前硬限速 ${maxLinear.value.toFixed(2)}m/s、${maxAngular.value.toFixed(2)}rad/s，并启用雷达近障急停。仍不能识别悬崖、玻璃和低矮障碍，请保持有人看护。`,
     okText: '确认解锁', cancelText: '保持锁定',
     onOk: () => {
       // 手动接管时停止自主任务，避免 Nav2 继续计算并反复抢占控制源。
       actions.explorerCmd({ action: 'stop' })
-      if (!actions.navSafetyCmd({ action: 'arm', source: 'manual' })) {
+      const cmd = degraded ? { action: 'arm_degraded', source: 'manual', seconds: 60 }
+        : { action: 'arm', source: 'manual' }
+      if (!actions.navSafetyCmd(cmd)) {
         return message.error('rosbridge 未连接，解锁命令未发送')
       }
-      message.success('手动驾驶解锁命令已发送')
+      message.success(degraded ? '无雷达降级驾驶授权已发送' : '手动驾驶解锁命令已发送')
       setTimeout(() => {
         if (!manualArmed.value) message.error(`解锁失败：${state.navSafety?.reason || '安全闸门没有确认'}`)
       }, 1200)
@@ -186,7 +191,7 @@ onUnmounted(() => {
       <a-select v-model:value="camTopic" :options="camOptions" size="small" class="cam-sel" @change="onCamTopic" />
       <span :class="['link-pill', { online: state.connected }]"><i />{{ state.connected ? 'ROS 在线' : 'ROS 离线' }}</span>
       <button v-if="!manualArmed" class="drive-lock locked" @click="unlockManual">手动驾驶 · 已锁定</button>
-      <button v-else class="drive-lock armed" @click="eStop">手动驾驶 · 已解锁（点击锁定）</button>
+      <button v-else :class="['drive-lock','armed',{ degraded:degradedManual }]" @click="eStop">{{ degradedManual ? `无雷达降级 · ${state.navSafety?.degraded_remaining_s?.toFixed?.(0) || 0}s` : '手动驾驶 · 已解锁（点击锁定）' }}</button>
       <div v-if="state.navSafety?.legacy_active" class="legacy-warning">⚠ 旧 /cmd_vel 旁路活动</div>
     </div>
 
@@ -277,6 +282,8 @@ onUnmounted(() => {
   border: 1px solid rgba(255,255,255,.18); color: #fff; background: rgba(14,17,22,.65); }
 .drive-lock.locked { color: rgba(255,255,255,.72); }
 .drive-lock.armed { color: #ff8b84; border-color: rgba(255,69,58,.65); background: rgba(255,69,58,.18); }
+.drive-lock.armed.degraded { color:#fff; border-color:#F43F5E; background:rgba(159,18,57,.78);
+  box-shadow:0 0 18px rgba(244,63,94,.25); }
 .legacy-warning { padding: 7px 10px; border-radius: 8px; color: #ff8b84;
   background: rgba(255,69,58,.18); border: 1px solid rgba(255,69,58,.55); font-size: 12px; }
 .safety-strip { position:absolute; top:66px; left:14px; z-index:18; border-radius:10px; display:flex; overflow:hidden; }
