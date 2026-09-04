@@ -93,6 +93,16 @@ const battLevel = computed(() => {
   return pct.value != null && pct.value < 20 ? 'warn' : 'ok'
 })
 const volt = computed(() => (state.batt != null ? (state.batt / 1000).toFixed(2) : '--.-'))
+const cpuPct = computed(() => {
+  const cores = state.jetson?.cpu
+  return Array.isArray(cores) && cores.length
+    ? Math.round(cores.reduce((sum, core) => sum + (+core.load || 0), 0) / cores.length)
+    : null
+})
+const ramPct = computed(() => state.jetson?.ram_total
+  ? Math.round(state.jetson.ram_used / state.jetson.ram_total * 100) : null)
+const gpuPct = computed(() => state.jetson?.gpu != null ? Math.round(state.jetson.gpu) : null)
+const loadText = value => value == null ? '--' : `${value}%`
 
 </script>
 
@@ -139,6 +149,12 @@ const volt = computed(() => (state.batt != null ? (state.batt / 1000).toFixed(2)
             <span class="health-link"><i /><span><small>机器人</small><b>{{ state.connected ? '在线' : '离线' }}</b></span></span>
             <span class="health-sep" />
             <span class="health-batt"><span><small>底盘电源</small><b>{{ volt }} V</b></span><em>{{ pct == null ? '--' : pct }}%</em></span>
+            <span class="health-sep health-load-sep" />
+            <span class="health-load">
+              <span :class="{ hot: cpuPct != null && cpuPct >= 85 }"><small>CPU</small><b>{{ loadText(cpuPct) }}</b></span>
+              <span :class="{ hot: ramPct != null && ramPct >= 85 }"><small>内存</small><b>{{ loadText(ramPct) }}</b></span>
+              <span :class="{ hot: gpuPct != null && gpuPct >= 90 }"><small>GPU</small><b>{{ loadText(gpuPct) }}</b></span>
+            </span>
           </div>
         </div>
       </a-layout-header>
@@ -192,6 +208,7 @@ const volt = computed(() => (state.batt != null ? (state.batt / 1000).toFixed(2)
 .health-link,.health-batt { display:flex; align-items:center; gap:8px; }.health-link i{width:8px;height:8px;border-radius:50%;background:var(--live);box-shadow:0 0 0 3px var(--live-halo);}
 .health-link span,.health-batt>span{display:flex;flex-direction:column;line-height:1.05}.robot-health small{font-size:9px;color:var(--text-4);font-weight:500}.robot-health b{font-size:12px;color:var(--text-1);margin-top:3px}.health-sep{width:1px;height:20px;background:var(--divider)}
 .health-batt em{font-style:normal;font:600 11px var(--font-code);padding:3px 5px;border-radius:5px;background:var(--surface);color:var(--text-3)}
+.health-load{display:grid;grid-template-columns:repeat(3,auto);align-items:center;gap:10px}.health-load>span{display:flex;flex-direction:column;line-height:1.05;min-width:31px}.health-load b{font-family:var(--font-code);font-variant-numeric:tabular-nums}.health-load .hot b{color:var(--warn)}
 .robot-health.bad .health-batt b,.robot-health.bad .health-batt em{color:var(--bad)}.robot-health.warn .health-batt b{color:var(--warn)}.robot-health.off .health-link i{background:var(--live-off);box-shadow:none}.robot-health.off .health-link b{color:var(--text-4)}
 .hdr.dark .robot-health{background:rgba(255,255,255,.06);border-color:var(--side-border)}.hdr.dark .robot-health b{color:var(--side-text)}.hdr.dark .robot-health small{color:var(--side-group)}.hdr.dark .health-batt em{background:rgba(0,0,0,.18)}
 .theme-tgl { width: 30px; height: 26px; display: flex; align-items: center; justify-content: center; border-radius: 7px; cursor: pointer; background: var(--surface-2); border: 1px solid var(--border); color: var(--text-3); }
@@ -200,5 +217,6 @@ const volt = computed(() => (state.batt != null ? (state.batt / 1000).toFixed(2)
 .content.full { padding: 0; overflow: hidden; position: relative; }
 .page-host { min-height: 100%; }
 .content.full > .page-host { height: 100%; }
+@media(max-width:900px){.health-load,.health-load-sep{display:none}}
 @media(max-width:600px){.robot-health{gap:7px;padding:0 8px}.robot-health small,.health-batt em{display:none}.health-sep{height:16px}.health-link span,.health-batt>span{display:block}.robot-health b{margin:0}}
 </style>
