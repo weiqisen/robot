@@ -311,6 +311,7 @@ function init() {
     robotReady = true
     skinRobot()
     decorateDepthCam()   // 素模相机补镜头，必须在 skinRobot 之后（那边会重刷材质）
+    decorateMiddleJointMotor() // joint3 实物也有舵机，复用末端同款网格补齐
     buildJetsonInside()  // 屏蔽罩里的 Jetson 风扇 + 开发板，同理
     decorateChassis()    // 底盘：轮毂电机、电池包、OLED 屏、开关
     makeJointTags()
@@ -919,9 +920,9 @@ function decorateDepthCam() {
   link.userData.decorated = true
 
   const mark = o => { o.userData.helperLayer = true; return o }   // skinRobot 跳过
-  // 让 Y 轴的圆柱躺倒朝 +X
-  const alignX = new THREE.Quaternion().setFromUnitVectors(
-    new THREE.Vector3(0, 1, 0), new THREE.Vector3(1, 0, 0))
+  // Circle/RingGeometry 默认朝 +Z；转到相机正面的 +X。
+  const faceX = new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 0, 1), new THREE.Vector3(1, 0, 0))
 
   // 玻璃面板：深色、光滑，压在外壳前脸上
   const panel = mark(new THREE.Mesh(
@@ -931,23 +932,24 @@ function decorateDepthCam() {
   panel.position.set(CAM_FX, 0.001, 0)
   link.add(panel)
 
-  // 镜头：镜筒 + 镜片。镜片高金属低粗糙，靠环境反射出「玻璃」的感觉。
+  // 实物的光圈与前面板基本齐平：只画金属压圈和玻璃面，不再做凸出的镜筒。
   function lens(y, rBarrel, rGlass, glassColor, emissive) {
-    const barrel = mark(new THREE.Mesh(
-      new THREE.CylinderGeometry(rBarrel, rBarrel * 1.06, 0.0042, 24),
-      new THREE.MeshStandardMaterial({ color: 0x15181d, metalness: 0.55,
-        roughness: 0.42, envMapIntensity: 1.1 })))
-    barrel.quaternion.copy(alignX)
-    barrel.position.set(CAM_FX + 0.0018, y, 0)
-    link.add(barrel)
+    const ring = mark(new THREE.Mesh(
+      new THREE.RingGeometry(rGlass, rBarrel, 32),
+      new THREE.MeshStandardMaterial({ color: 0x77808a, metalness: 0.72,
+        roughness: 0.28, envMapIntensity: 1.5, side: THREE.DoubleSide })))
+    ring.quaternion.copy(faceX)
+    ring.position.set(CAM_FX + 0.00082, y, 0)
+    link.add(ring)
 
     const glass = mark(new THREE.Mesh(
-      new THREE.CylinderGeometry(rGlass, rGlass, 0.0008, 24),
+      new THREE.CircleGeometry(rGlass, 32),
       new THREE.MeshStandardMaterial({ color: glassColor, metalness: 0.96,
         roughness: 0.055, envMapIntensity: 2.2,
-        emissive: emissive || 0x000000, emissiveIntensity: emissive ? 0.35 : 0 })))
-    glass.quaternion.copy(alignX)
-    glass.position.set(CAM_FX + 0.0037, y, 0)
+        emissive: emissive || 0x000000, emissiveIntensity: emissive ? 0.35 : 0,
+        side: THREE.DoubleSide })))
+    glass.quaternion.copy(faceX)
+    glass.position.set(CAM_FX + 0.00084, y, 0)
     link.add(glass)
   }
 
@@ -959,11 +961,36 @@ function decorateDepthCam() {
 
   // 工作指示灯
   const led = mark(new THREE.Mesh(
-    new THREE.SphereGeometry(0.0014, 10, 10),
+    new THREE.CircleGeometry(0.0014, 16),
     new THREE.MeshStandardMaterial({ color: 0x34d399, emissive: 0x34d399,
-      emissiveIntensity: 0.9, toneMapped: false })))
-  led.position.set(CAM_FX + 0.0012, 0.0405, 0)
+      emissiveIntensity: 0.9, toneMapped: false, side: THREE.DoubleSide })))
+  led.quaternion.copy(faceX)
+  led.position.set(CAM_FX + 0.00084, 0.0405, 0)
   link.add(led)
+}
+
+// ---- 机械臂中间关节电机 ----
+// 原 URDF 在肩部和腕部都有 servo 网格，但 joint3（link2 顶端）漏了实物舵机。
+// 复用腕部同款 STL，并挂在 joint3 的父 link2 上，保证它会跟随上臂运动。
+function decorateMiddleJointMotor() {
+  const link = robot && robot.links && robot.links.link2
+  if (!link || link.userData.middleMotor) return
+  link.userData.middleMotor = true
+  new STLLoader().load('model/jetrover_description/meshes/arm/servo_link2.STL', geometry => {
+    geometry.computeVertexNormals()
+    const material = new THREE.MeshStandardMaterial({
+      color: mat.black.color, metalness: mat.black.metalness,
+      roughness: mat.black.roughness, envMapIntensity: mat.black.env,
+    })
+    ;(matGroups.black || (matGroups.black = [])).push(material)
+    const motor = new THREE.Mesh(geometry, material)
+    motor.name = 'joint3_motor'
+    motor.userData.helperLayer = true
+    motor.castShadow = true
+    motor.receiveShadow = true
+    motor.position.set(0, 0, 0.129416446394797)
+    link.add(motor)
+  })
 }
 
 // ---- 屏蔽罩内部：Jetson 风扇 + 开发板 ----
@@ -1261,7 +1288,8 @@ function decorateChassis() {
   oledTex.anisotropy = 4
   // Plane 的局部 X 映射到竖直 Z，局部 Y 映射到车宽 Y；纹理旋转 90° 后文字横排。
   oledTex.center.set(0.5, 0.5)
-  oledTex.rotation = -Math.PI / 2
+  // 当前安装方向下贴图内容原先倒立；在原有 90° 基础上再翻转 180°。
+  oledTex.rotation = Math.PI / 2
   const oledText = mark(new THREE.Mesh(
     new THREE.PlaneGeometry(0.020, 0.053),
     new THREE.MeshBasicMaterial({ map: oledTex, transparent: true, toneMapped: false })))
@@ -1327,7 +1355,7 @@ function drawOLED() {
     ['BAT', v == null ? '--' : v.toFixed(2) + 'V'],
   ]
   x.textBaseline = 'middle'
-  x.font = '600 13px ui-monospace, Menlo, monospace'
+  x.font = '600 10px ui-monospace, Menlo, monospace'
   // 128×64 纹理最终映射到 53×20mm 屏面；先把文字横向压到 20/53×2，
   // 抵消贴图产生的 2.65:1 横向拉伸，背景仍铺满整个显示区域。
   x.save()
@@ -1335,14 +1363,14 @@ function drawOLED() {
   x.scale(40 / 53, 1)
   x.translate(-64, 0)
   rows.forEach(([k, val], i) => {
-    const y = 13 + i * 19
+    const y = 12 + i * 19
     x.fillStyle = '#3f7fa8'
     x.textAlign = 'left'
     x.fillText(k, 5, y)
     x.fillStyle = '#8fd0f5'
     x.textAlign = 'right'
-    // IP/SSID 可能很长，超了就截断
-    x.fillText(String(val).slice(0, 13), 123, y)
+    // 保留完整内容；超长 SSID 由 Canvas 在限定宽度内压缩，而不是直接截掉。
+    x.fillText(String(val), 123, y, 86)
   })
   x.restore()
   bl.userData.oledTexture.needsUpdate = true
