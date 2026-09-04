@@ -251,6 +251,14 @@ function armHome() {
   actions.setServos([1, 2, 3, 4, 5].map(id => ({ id, position: 500 })), 1.5)
   dragging = Date.now() + 600   // 复位要走 1.5s，把窗口起点往后推一点
 }
+function armPose(action, label) {
+  if (!armControlUnlocked.value) return message.warning('请先解锁机械臂控制')
+  if (manualArmed.value) return message.warning('请先锁定底盘，再切换机械臂位置')
+  if (!state.snack) return message.error('视觉抓取节点未连接，无法执行安全位置组')
+  if (!actions.snackCmd({ action })) return message.error('rosbridge 未连接')
+  dragging = Date.now() + 1800
+  message.success(`机械臂正在前往${label}`)
+}
 const clock = ref(''), date = ref('')
 let clockTimer = null
 function updateClock() {
@@ -388,6 +396,13 @@ onUnmounted(() => {
                 :disabled="!armControlUnlocked" @input="e => onJoint(j.id, e.target.value)" />
               <b class="sa-v">{{ jval[j.id] }}</b>
             </div>
+            <div class="sa-group-label"><span>位置组</span><small>经抓取状态机安全执行</small></div>
+            <div class="sa-btns sa-poses">
+              <button :disabled="!armControlUnlocked" @click="armPose('observe', '高位')">高位</button>
+              <button :disabled="!armControlUnlocked" @click="armPose('home', '行驶位')">行驶位</button>
+              <button :disabled="!armControlUnlocked" @click="armPose('observe', '视觉观察位')">观察位</button>
+            </div>
+            <div class="sa-group-label"><span>快捷操作</span></div>
             <div class="sa-btns">
               <button :disabled="!armControlUnlocked" @click="armHome">复位</button>
               <button :disabled="!armControlUnlocked" @click="gripOpen">张开</button>
@@ -714,6 +729,13 @@ onUnmounted(() => {
   background:transparent; color:#94A3B8; font-size:10px; cursor:pointer; }
 .sa-btns button:hover:not(:disabled) { border-color:rgba(56,189,248,.45); color:#38BDF8; }
 .sa-btns button:disabled { opacity:.4; cursor:not-allowed; }
+.sa-group-label { display:flex; align-items:center; gap:7px; margin-top:5px; color:#64748B;
+  font:9px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.5px; }
+.sa-group-label::after { content:''; height:1px; flex:1; background:rgba(148,163,184,.13); }
+.sa-group-label small { color:#475569; font-size:8px; letter-spacing:0; order:2; }
+.sa-group-label:has(small)::after { order:1; }
+.sa-group-label:has(small) small { order:2; }
+.sa-poses button { border-color:rgba(56,189,248,.26); color:#A5D8F3; background:rgba(12,74,110,.16); }
 
 /* ---- 手动驾驶盘：浮在孪生画面右下角 ---- */
 .drive-pad { position:absolute; z-index:4; right:24px; bottom:24px; width:168px;
