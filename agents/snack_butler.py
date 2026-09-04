@@ -1125,6 +1125,9 @@ class SnackButler(Node):
             if result is not None:
                 self._idle_vision_request = None
                 count = len(self.apply_vision_result(result))
+                # 从“完成”时刻开始计算下一次后台间隔。若一帧本身很慢，避免完成后
+                # 立刻再次满载推理，让控制、安全和状态发布稳定获得 CPU 时间片。
+                self._last_idle_scan = time.time()
                 self.step = f'识别到 {count} 个目标'
                 if count != self._last_idle_count:
                     self.get_logger().info('[idle_detect] count=%d labels=%s' %
@@ -1134,7 +1137,6 @@ class SnackButler(Node):
             return
         if now - self._last_idle_scan < 1.0 / hz:
             return
-        self._last_idle_scan = now
         self._idle_vision_request = self.submit_vision_scan('idle')
 
     def vision_guard(self):
