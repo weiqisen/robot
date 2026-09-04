@@ -1358,7 +1358,8 @@ watch(() => [state.snack?.scene_objects, state.snack?.detections], syncDetection
 
 // 辅助图层的标签。画法照 tagSprite：只画一个圆角框，框外留透明 ——
 // 整块画布铺底色的话，场景里就是一堆跟着透视缩放的灰板子。
-// sizeAttenuation 关掉，标签不随距离缩放，远近都一样大小可读。
+// 标签使用三维世界尺寸：镜头推近目标时，文字卡片也会随透视同步放大。
+// 这比固定屏幕像素更适合检查识别结果，放大物品后坐标和置信度仍清晰可读。
 function layerLabel(text, sub = '', color = '#8b949e') {
   const S = 4, w = 176, h = sub ? 50 : 30
   const c = document.createElement('canvas')
@@ -1384,7 +1385,7 @@ function layerLabel(text, sub = '', color = '#8b949e') {
   tex.minFilter = THREE.LinearFilter
   const sp = new THREE.Sprite(new THREE.SpriteMaterial({
     map: tex, transparent: true, depthTest: false, depthWrite: false }))
-  sp.material.sizeAttenuation = false
+  sp.material.sizeAttenuation = true
   sp.scale.set(0.108, 0.108 * h / w, 1)
   sp.renderOrder = 999
   return sp
