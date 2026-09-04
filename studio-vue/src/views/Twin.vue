@@ -1060,21 +1060,80 @@ function buildJetsonInside() {
   const shieldMat = new THREE.MeshStandardMaterial({ color: 0xa8b0b8, metalness: 0.88,
     roughness: 0.3, envMapIntensity: 1.4 })
   const plasticMat = new THREE.MeshStandardMaterial({ color: 0x14181c, metalness: 0.4, roughness: 0.5 })
-  // [沿 y 的位置, y 向宽度, 高度, 是否金属壳]
-  const ports = [
-    [-0.017, 0.013, 0.011, true],   // RJ45 网口
-    [-0.002, 0.011, 0.009, true],   // USB 3.0 ×2
-    [0.011, 0.009, 0.007, true],    // USB 2.0
-    [0.021, 0.007, 0.007, false],   // 电源口
-  ]
-  for (const [py, pw, ph, metal] of ports) {
-    const port = mark(new THREE.Mesh(
-      new THREE.BoxGeometry(0.010, pw, ph),
-      metal ? shieldMat : plasticMat))
-    // 沿 -X 靠近外缘，接口面朝车身外侧。
-    port.position.set(outerX + 0.003, py, PCB_Z + ph / 2 + 0.001)
-    g.add(port)
+  const cavityMat = new THREE.MeshBasicMaterial({ color: 0x010203 })
+  const usbBlueMat = new THREE.MeshStandardMaterial({ color: 0x1264a3, metalness: .12, roughness: .5 })
+  const contactMat = new THREE.MeshStandardMaterial({ color: 0xd9b76c, metalness: .82, roughness: .26 })
+  const PORT_X = outerX + 0.003, PORT_D = 0.010, WALL = 0.0012
+
+  // 四根有深度的边框围成真正开口，黑色背板退到接口内部，近看不再是实心块。
+  function hollowRectPort(y, w, h, material = shieldMat) {
+    const z = PCB_Z + h / 2 + 0.001
+    const parts = [
+      [PORT_D, w, WALL, PORT_X, y, z - h / 2 + WALL / 2],
+      [PORT_D, w, WALL, PORT_X, y, z + h / 2 - WALL / 2],
+      [PORT_D, WALL, h - WALL * 2, PORT_X, y - w / 2 + WALL / 2, z],
+      [PORT_D, WALL, h - WALL * 2, PORT_X, y + w / 2 - WALL / 2, z],
+    ]
+    for (const [dx, dy, dz, px, py, pz] of parts) {
+      const edge = mark(new THREE.Mesh(new THREE.BoxGeometry(dx, dy, dz), material))
+      edge.position.set(px, py, pz)
+      g.add(edge)
+    }
+    const back = mark(new THREE.Mesh(
+      new THREE.PlaneGeometry(w - WALL * 2, h - WALL * 2), cavityMat))
+    back.rotation.y = -Math.PI / 2
+    back.position.set(PORT_X + PORT_D / 2 - 0.00015, y, z)
+    g.add(back)
+    return { y, z, w, h }
   }
+
+  // RJ45：方形金属口框、深腔和两颗链路灯。
+  const rj = hollowRectPort(-0.0185, 0.014, 0.012)
+  for (const [dy, color] of [[-0.0045, 0x64d36f], [0.0045, 0xe7c84a]]) {
+    const lamp = mark(new THREE.Mesh(new THREE.CircleGeometry(.0010, 12),
+      new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide })))
+    lamp.rotation.y = -Math.PI / 2
+    lamp.position.set(PORT_X - PORT_D / 2 - .00005, rj.y + dy, rj.z - .0042)
+    g.add(lamp)
+  }
+
+  // USB 3.0：两组上下双口，每个开口都有蓝色舌片和四枚金属触点。
+  function usbStack(y) {
+    const usb = hollowRectPort(y, 0.011, 0.014)
+    const divider = mark(new THREE.Mesh(new THREE.BoxGeometry(PORT_D, usb.w, WALL), shieldMat))
+    divider.position.set(PORT_X, y, usb.z)
+    g.add(divider)
+    for (const dz of [-0.0035, 0.0035]) {
+      const tongue = mark(new THREE.Mesh(new THREE.BoxGeometry(.0065, usb.w - .0024, .0009), usbBlueMat))
+      tongue.position.set(PORT_X - .0010, y, usb.z + dz - .0010)
+      g.add(tongue)
+      for (const cy of [-.0030, -.0010, .0010, .0030]) {
+        const pin = mark(new THREE.Mesh(new THREE.BoxGeometry(.0035, .00055, .00025), contactMat))
+        pin.position.set(PORT_X - .0030, y + cy, usb.z + dz - .00042)
+        g.add(pin)
+      }
+    }
+  }
+  usbStack(-0.0025)
+  usbStack(0.0105)
+
+  // DC 电源口：无端盖圆筒 + 后置暗腔 + 中央金属针，正面能看到真实孔深。
+  const alignPortX = new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0), new THREE.Vector3(1, 0, 0))
+  const dcY = 0.0215, dcZ = PCB_Z + 0.0054
+  const dcTube = mark(new THREE.Mesh(
+    new THREE.CylinderGeometry(.0046, .0046, PORT_D, 24, 1, true), plasticMat))
+  dcTube.quaternion.copy(alignPortX)
+  dcTube.position.set(PORT_X, dcY, dcZ)
+  g.add(dcTube)
+  const dcBack = mark(new THREE.Mesh(new THREE.CircleGeometry(.0035, 24), cavityMat))
+  dcBack.rotation.y = -Math.PI / 2
+  dcBack.position.set(PORT_X + PORT_D / 2 - .0001, dcY, dcZ)
+  g.add(dcBack)
+  const dcPin = mark(new THREE.Mesh(new THREE.CylinderGeometry(.00055, .00055, .006, 10), contactMat))
+  dcPin.quaternion.copy(alignPortX)
+  dcPin.position.set(PORT_X + .0015, dcY, dcZ)
+  g.add(dcPin)
   // GPIO 排针换到 +X 内侧边，与外部接口相对。
   const hdr = mark(new THREE.Mesh(new THREE.BoxGeometry(0.005, 0.040, 0.005), plasticMat))
   hdr.position.set(innerX - 0.005, 0, PCB_Z + 0.0035)
