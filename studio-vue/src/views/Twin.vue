@@ -1159,11 +1159,11 @@ function decorateChassis() {
   bl.userData.oledTexture = oledTex
 
   // ---- 雷达前方左右两个拨挡开关 ----
-  // 开关立在雷达前方的水平顶板上：座体底面贴 z≈0.002，位置比雷达前缘略靠前。
+  // 开关立在雷达前方的内收水平顶板上：板前缘约 x=0.1404，6mm 座体须整体留在边缘内。
   for (const ySide of [-1, 1]) {
     const sw = new THREE.Group()
     mark(sw)
-    sw.position.set(0.158, ySide * 0.022, 0.008)
+    sw.position.set(0.136, ySide * 0.022, 0.008)
     bl.add(sw)
     // 开关座：黑色方块
     const base = mark(new THREE.Mesh(
@@ -1214,6 +1214,12 @@ function drawOLED() {
   ]
   x.textBaseline = 'middle'
   x.font = '600 13px ui-monospace, Menlo, monospace'
+  // 128×64 纹理最终映射到 53×20mm 屏面；先把文字横向压到 20/53×2，
+  // 抵消贴图产生的 2.65:1 横向拉伸，背景仍铺满整个显示区域。
+  x.save()
+  x.translate(64, 0)
+  x.scale(40 / 53, 1)
+  x.translate(-64, 0)
   rows.forEach(([k, val], i) => {
     const y = 13 + i * 19
     x.fillStyle = '#3f7fa8'
@@ -1224,6 +1230,7 @@ function drawOLED() {
     // IP/SSID 可能很长，超了就截断
     x.fillText(String(val).slice(0, 13), 123, y)
   })
+  x.restore()
   bl.userData.oledTexture.needsUpdate = true
 }
 
