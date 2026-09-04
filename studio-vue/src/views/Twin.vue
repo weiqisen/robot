@@ -956,7 +956,8 @@ function decorateDepthCam() {
   // 双目红外基线 ~66mm，中间是 RGB，RGB 与左红外之间是投影器
   lens(-0.032, 0.0053, 0.0043, 0x0b1a2e)            // 左红外
   lens(0.001, 0.0059, 0.0048, 0x101418)             // RGB 主摄
-  lens(0.034, 0.0053, 0.0043, 0x0b1a2e)             // 右红外
+  // 指示灯在 y=0.0405；右红外向面板中央收 6mm，给灯与光圈留出明确间隙。
+  lens(0.028, 0.0053, 0.0043, 0x0b1a2e)             // 右红外
   lens(-0.0155, 0.0044, 0.0034, 0x2a0f14, 0x5a1520) // 红外投影器：暗红并微微自发光
 
   // 工作指示灯
@@ -1009,7 +1010,7 @@ function decorateArmJointMotors() {
 const JET = {
   x: -0.125, z: 0.026,        // 板中心（局部系），向机身内收避免后缘穿出外壳
   w: 0.076, d: 0.052,         // 板 x 向长 / y 向宽
-  fanZ: 0.026 + 0.025,        // 风扇悬在板上方
+  fanZ: 0.026 + 0.018,        // 风扇底面紧贴散热鳍片顶面
 }
 let fanBlades = null      // loop() 里转它
 let stm32BlueLed = null   // loop() 里做心跳呼吸
@@ -1025,7 +1026,8 @@ function buildJetsonInside() {
   link.add(g)
 
   const { x: PCB_X, z: PCB_Z, w: PCB_W, d: PCB_D, fanZ: FAN_Z } = JET
-  const frontX = PCB_X + PCB_W / 2      // 板的 +X 边 = 朝机身那一侧
+  const innerX = PCB_X + PCB_W / 2      // +X 边朝机身内部
+  const outerX = PCB_X - PCB_W / 2      // -X 边朝外壳开口
 
   // ---- 载板本体 ----
   // 实物这块板是黑色阻焊，不是常见的绿板；只在边缘留一点点绿意都不该有。
@@ -1053,8 +1055,8 @@ function buildJetsonInside() {
     g.add(fin)
   }
 
-  // ---- 接口区：网口 / USB / 串口，全部朝机身（+X）----
-  // 之前这排是摆在 -Y 侧（车身右侧），实物是朝机身内侧的。
+  // ---- 接口区：网口 / USB / 电源口，全部朝外壳开口（-X）----
+  // 板子的接口方向相对旧模型旋转 180°，插头从车身外侧接入。
   const shieldMat = new THREE.MeshStandardMaterial({ color: 0xa8b0b8, metalness: 0.88,
     roughness: 0.3, envMapIntensity: 1.4 })
   const plasticMat = new THREE.MeshStandardMaterial({ color: 0x14181c, metalness: 0.4, roughness: 0.5 })
@@ -1063,26 +1065,26 @@ function buildJetsonInside() {
     [-0.017, 0.013, 0.011, true],   // RJ45 网口
     [-0.002, 0.011, 0.009, true],   // USB 3.0 ×2
     [0.011, 0.009, 0.007, true],    // USB 2.0
-    [0.021, 0.007, 0.006, false],   // 串口针座
+    [0.021, 0.007, 0.007, false],   // 电源口
   ]
   for (const [py, pw, ph, metal] of ports) {
     const port = mark(new THREE.Mesh(
       new THREE.BoxGeometry(0.010, pw, ph),
       metal ? shieldMat : plasticMat))
-    // 沿 +X 伸出板边一点，做成「插头从这一面进」的样子
-    port.position.set(frontX - 0.003, py, PCB_Z + ph / 2 + 0.001)
+    // 沿 -X 靠近外缘，接口面朝车身外侧。
+    port.position.set(outerX + 0.003, py, PCB_Z + ph / 2 + 0.001)
     g.add(port)
   }
-  // GPIO 排针：放在板的 -X 边（背离机身那侧）
+  // GPIO 排针换到 +X 内侧边，与外部接口相对。
   const hdr = mark(new THREE.Mesh(new THREE.BoxGeometry(0.005, 0.040, 0.005), plasticMat))
-  hdr.position.set(PCB_X - PCB_W / 2 + 0.005, 0, PCB_Z + 0.0035)
+  hdr.position.set(innerX - 0.005, 0, PCB_Z + 0.0035)
   g.add(hdr)
 
   // 电源指示灯
   const led = mark(new THREE.Mesh(new THREE.SphereGeometry(0.0012, 8, 8),
     new THREE.MeshStandardMaterial({ color: 0x34d399, emissive: 0x34d399,
       emissiveIntensity: 1.0, toneMapped: false })))
-  led.position.set(frontX - 0.012, -0.023, PCB_Z + 0.002)
+  led.position.set(outerX + 0.012, -0.023, PCB_Z + 0.002)
   g.add(led)
 
   // ---- 涡轮风扇：外框 + 转子 ----
