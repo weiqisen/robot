@@ -19,7 +19,7 @@ const loading = ref(true), loadErr = ref('')
 // 尺寸标注（dimensions）对调试抓取高度有用，默认开着。
 const tools = reactive({ lidar: true, grid: true, points: false, ik: false, tags: false,
   workspace: false, selfbody: false, dimensions: false, angles: false, cameraFov: false,
-  axes: false, detections: true, intent: true, detectionFeed: false })
+  axes: false, detections: true, intent: true, detectionFeed: true })
 const sceneMenu = ref('')
 function toggleSceneMenu(name) { sceneMenu.value = sceneMenu.value === name ? '' : name }
 

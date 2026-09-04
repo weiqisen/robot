@@ -76,7 +76,7 @@ onUnmounted(() => clearInterval(timer))
 
 function estop() { resetJoy(); for (const k in keys) keys[k] = false; actions.emergencyStop(); lastZero = true }
 function beep() { actions.buzzer(1900, 0.15, 0.05, 1) }
-const armControlUnlocked = ref(false)
+const armControlUnlocked = ref(true)
 // 工作台默认以数字孪生为主；完整旧总览仍可通过顶栏按钮临时展开。
 const focusMode = ref(true)
 const topPanel = ref('')
@@ -398,13 +398,12 @@ onUnmounted(() => {
             </div>
             <div class="sa-group-label"><span>位置组</span><small>经抓取状态机安全执行</small></div>
             <div class="sa-btns sa-poses">
-              <button :disabled="!armControlUnlocked" @click="armPose('observe', '高位')">高位</button>
+              <button :disabled="!armControlUnlocked" @click="armHome">高位</button>
               <button :disabled="!armControlUnlocked" @click="armPose('home', '行驶位')">行驶位</button>
               <button :disabled="!armControlUnlocked" @click="armPose('observe', '视觉观察位')">观察位</button>
             </div>
             <div class="sa-group-label"><span>快捷操作</span></div>
             <div class="sa-btns">
-              <button :disabled="!armControlUnlocked" @click="armHome">复位</button>
               <button :disabled="!armControlUnlocked" @click="gripOpen">张开</button>
               <button :disabled="!armControlUnlocked" @click="gripClose">闭合</button>
             </div>
