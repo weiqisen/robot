@@ -109,6 +109,41 @@ const matOpen = ref(false)
 // 关掉时必须把 src 清空：MJPEG 是永不结束的长连接，挂着会占满浏览器并发额度。
 const detFeedStamp = ref(0)
 const detFeedImg = ref(null)
+const detFeedBox = ref(null)
+const DET_FEED_DEFAULT = { width: 208, height: 202 }
+const detFeedSize = reactive((() => {
+  try {
+    const saved = JSON.parse(localStorage.getItem('twin.detFeedSize.v1') || 'null')
+    return saved?.width && saved?.height ? saved : { ...DET_FEED_DEFAULT }
+  } catch { return { ...DET_FEED_DEFAULT } }
+})())
+const detFeedStyle = computed(() => ({ width:`${detFeedSize.width}px`, height:`${detFeedSize.height}px` }))
+let detResize = null
+function startDetResize(e) {
+  e.preventDefault(); e.stopPropagation()
+  detResize = { x:e.clientX, y:e.clientY, width:detFeedSize.width, height:detFeedSize.height }
+  window.addEventListener('pointermove', moveDetResize)
+  window.addEventListener('pointerup', stopDetResize)
+}
+function moveDetResize(e) {
+  if (!detResize) return
+  const bounds = host.value?.getBoundingClientRect()
+  const maxW = Math.max(180, (bounds?.width || innerWidth) - 28)
+  const maxH = Math.max(150, (bounds?.height || innerHeight) - 72)
+  detFeedSize.width = Math.round(Math.max(160, Math.min(maxW, detResize.width + detResize.x - e.clientX)))
+  detFeedSize.height = Math.round(Math.max(150, Math.min(maxH, detResize.height + e.clientY - detResize.y)))
+}
+function stopDetResize() {
+  if (!detResize) return
+  detResize = null
+  window.removeEventListener('pointermove', moveDetResize)
+  window.removeEventListener('pointerup', stopDetResize)
+  try { localStorage.setItem('twin.detFeedSize.v1', JSON.stringify(detFeedSize)) } catch {}
+}
+function resetDetFeedSize() {
+  Object.assign(detFeedSize, DET_FEED_DEFAULT)
+  try { localStorage.removeItem('twin.detFeedSize.v1') } catch {}
+}
 const detFeedSrc = computed(() => (tools.detectionFeed
   ? videoUrl(HOST, VISION_VIDEO_PORT, '/snack_butler/image_result', detFeedStamp.value) : ''))
 const detFeedStat = computed(() => {
@@ -1823,6 +1858,7 @@ onBeforeUnmount(() => {
   if (detectionSyncRaf != null) cancelAnimationFrame(detectionSyncRaf)
   if (hostRO) hostRO.disconnect()
   window.removeEventListener('resize', fit); window.removeEventListener('pointerup', ptrUp)
+  window.removeEventListener('pointermove', moveDetResize); window.removeEventListener('pointerup', stopDetResize)
   document.removeEventListener('fullscreenchange', onFsChange)
   if (screenTimer) clearInterval(screenTimer)
   if (screenMesh) { screenMesh.geometry.dispose(); screenMesh.material.dispose() }
@@ -1868,13 +1904,14 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- YOLO 识别画面小窗：浮在右上角，工具列左边 -->
-    <div v-if="tools.detectionFeed" class="det-feed">
+    <div v-if="tools.detectionFeed" ref="detFeedBox" class="det-feed" :style="detFeedStyle">
       <div class="df-head">
         <b>实时识别</b>
         <span class="df-close" title="关闭" @click="tools.detectionFeed = false">✕</span>
       </div>
       <img ref="detFeedImg" class="df-img" :src="detFeedSrc" alt="" @error="reloadDetFeed" />
       <div class="df-stat">{{ detFeedStat }}</div>
+      <div class="df-resize" title="拖动缩放 · 双击恢复默认" @pointerdown="startDetResize" @dblclick="resetDetFeedSize" />
     </div>
 
     <!-- 材质面板：拖滑块实时看效果，自动存本机，调好一键导出成代码贴回本文件 -->
@@ -2006,7 +2043,9 @@ onBeforeUnmount(() => {
 /* ---- YOLO 识别画面小窗 ----
    高度按「四个按钮」算：4×40 + 3×8 = 184px。画面 4:3，所以宽 = 画面 184-42(头尾)
    ≈ 142 高 → 190 宽，取整 208px。right 让开工具列（44 + 14 + 14 间距）。 */
-.det-feed { position: absolute; right: 14px; top: 58px; z-index: 9; width: 208px;
+.det-feed { position: absolute; right: 14px; top: 58px; z-index: 9;
+  min-width:160px; min-height:150px; max-width:calc(100% - 28px); max-height:calc(100% - 72px);
+  display:flex; flex-direction:column;
   background: rgba(8,12,18,.88); backdrop-filter: blur(8px); border-radius: 11px;
   border: 1px solid rgba(148,163,184,.22); overflow: hidden; }
 .df-head { display: flex; align-items: center; justify-content: space-between;
@@ -2014,9 +2053,14 @@ onBeforeUnmount(() => {
 .df-head b { color: #E2E8F0; font-size: 11px; letter-spacing: .4px; }
 .df-close { color: #64748B; font-size: 13px; line-height: 1; cursor: pointer; padding: 0 2px; }
 .df-close:hover { color: #CBD5E1; }
-.df-img { display: block; width: 100%; aspect-ratio: 4/3; object-fit: contain; background: #000; }
+.df-img { display:block; width:100%; min-height:0; flex:1; object-fit:contain; background:#000; }
 .df-stat { padding: 4px 9px; font-size: 9px; color: #94A3B8; text-align: right;
   background: rgba(15,23,42,.4); }
+.df-resize { position:absolute; left:0; bottom:0; width:22px; height:22px; cursor:nesw-resize;
+  touch-action:none; z-index:2; }
+.df-resize::after { content:''; position:absolute; left:4px; bottom:4px; width:9px; height:9px;
+  border-left:2px solid rgba(125,211,252,.85); border-bottom:2px solid rgba(125,211,252,.85);
+  filter:drop-shadow(0 0 4px rgba(56,189,248,.55)); }
 .panel { position: absolute; z-index: 10; border-radius: 12px; padding: 14px; }
 .sep { height: 1px; background: rgba(255,255,255,.12); margin: 8px 0; }
 .joints { left: 14px; bottom: 14px; min-width: 210px; }
@@ -2081,7 +2125,7 @@ onBeforeUnmount(() => {
 @media (max-width: 1024px) {
   .scene-menu { top:8px; }.scene-menu button { padding:6px 9px; font-size:10px; }
   .scene-pop { top:46px; width:300px; }
-  .det-feed { right:10px; top:50px; width:180px; }
+  .det-feed { right:10px; top:50px; }
   .df-head { padding:4px 7px; }
   .df-head b { font-size:10px; }
   .df-close { font-size:12px; }
@@ -2092,7 +2136,7 @@ onBeforeUnmount(() => {
   .scene-menu { top:6px; width:calc(100% - 12px); justify-content:center; }
   .scene-menu button { padding:6px 7px; font-size:9px; }
   .scene-pop { top:44px; width:calc(100% - 20px); }
-  .det-feed { right:6px; top:48px; width:150px; border-radius:9px; }
+  .det-feed { right:6px; top:48px; min-width:140px; border-radius:9px; }
   .df-head { padding:3px 6px; }
   .df-head b { font-size:9px; }
   .df-close { font-size:11px; }
