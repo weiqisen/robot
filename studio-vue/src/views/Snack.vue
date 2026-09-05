@@ -281,6 +281,7 @@ const binLabel = k => cfg.value.bins?.[k]?.label || k
 const recordings = ref([])
 const replayOpen = ref(false), replayData = ref(null), replayItem = ref(null)
 const replayVideo = ref(null), replayTime = ref(0), replaySpeed = ref(1)
+const replayLoading = ref(false), replayError = ref('')
 async function loadRecordings() {
   try {
     const r = await fetch(`http://${HOST}:8000/api/recordings`)
@@ -291,11 +292,12 @@ async function loadRecordings() {
 }
 async function openReplay(item) {
   if (!item.replay) return window.open(`http://${HOST}:8000${item.url}`, '_blank')
+  replayLoading.value = true; replayError.value = ''
   try {
     const r = await fetch(`http://${HOST}:8000${item.replay}`, { cache:'no-store' })
     if (!r.ok) throw new Error(`HTTP ${r.status}`)
     replayData.value = await r.json(); replayItem.value = item; replayTime.value = 0; replayOpen.value = true
-  } catch (e) { message.error('加载任务回放失败：' + e.message) }
+  } catch (e) { replayLoading.value = false; replayError.value = e.message; message.error('加载任务回放失败：' + e.message) }
 }
 const replaySnapshot = computed(() => {
   const rows = replayData.value?.timeline || []
@@ -310,6 +312,11 @@ const replayPath = computed(() => {
   return pts.map(p => `${20 + (p[0]-x0)/Math.max(.02,x1-x0)*260},${170-(p[1]-y0)/Math.max(.02,y1-y0)*140}`).join(' ')
 })
 function replayTick(e) { replayTime.value = e.target.currentTime }
+function replayReady() { replayLoading.value = false; replayError.value = '' }
+function replayFailed(e) {
+  replayLoading.value = false
+  replayError.value = `浏览器无法解码或读取录像（媒体错误 ${e?.target?.error?.code || '未知'}）`
+}
 function seekReplay(t) { if (replayVideo.value) { replayVideo.value.currentTime = t; replayTime.value = t } }
 function setReplaySpeed(v) { replaySpeed.value = +v; if (replayVideo.value) replayVideo.value.playbackRate = +v }
 // 录制刚停下时自动刷一次，省得手点
@@ -976,7 +983,11 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
       <div class="replay-stage">
         <video ref="replayVideo" controls autoplay playsinline
           :src="replayItem ? `http://${HOST}:8000${replayItem.url}` : ''"
-          @timeupdate="replayTick" @loadedmetadata="setReplaySpeed(replaySpeed)" />
+          @timeupdate="replayTick" @canplay="replayReady"
+          @loadedmetadata="setReplaySpeed(replaySpeed)" @error="replayFailed" />
+        <div v-if="replayLoading" class="replay-loading"><a-spin /><span>正在读取录像和时间轴…</span></div>
+        <div v-else-if="replayError" class="replay-loading error"><b>回放失败</b><span>{{ replayError }}</span>
+          <a :href="replayItem ? `http://${HOST}:8000${replayItem.url}` : '#'" target="_blank">直接打开录像</a></div>
         <div class="replay-badge"><i /> TASK REPLAY · {{ replayTime.toFixed(1) }}s</div>
       </div>
       <div class="replay-side">
@@ -1147,6 +1158,7 @@ code { font-family: ui-monospace, monospace; font-size: 13px; }
 .status-sources { display: flex; max-width: 100%; }
 .replay-shell{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(300px,.85fr);gap:12px;background:#070b11;padding:12px;border-radius:12px;color:#dbeafe}
 .replay-stage{position:relative;background:#000;border-radius:9px;overflow:hidden;min-height:360px}.replay-stage video{display:block;width:100%;height:100%;max-height:65vh;object-fit:contain}
+.replay-loading{position:absolute;inset:0;z-index:3;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;background:rgba(2,6,12,.88);color:#94a3b8;font-size:12px}.replay-loading.error b{color:#fb7185}.replay-loading a{color:#67e8f9}
 .replay-badge{position:absolute;left:12px;top:12px;padding:6px 9px;border:1px solid rgba(56,189,248,.35);border-radius:6px;background:rgba(2,8,18,.72);font:10px ui-monospace;color:#7dd3fc;letter-spacing:1px}.replay-badge i{display:inline-block;width:6px;height:6px;border-radius:50%;background:#fb3355;margin-right:7px;box-shadow:0 0 9px #fb3355}
 .replay-side{display:flex;flex-direction:column;gap:9px;min-width:0}.replay-head{border-left:2px solid #38bdf8;padding:5px 9px;background:rgba(30,41,59,.5)}.replay-head b{display:block;color:#67e8f9;font:12px ui-monospace}.replay-head span{display:block;margin-top:3px;color:#cbd5e1;font-size:11px;line-height:1.4}
 .replay-twin{position:relative;height:190px;border:1px solid rgba(56,189,248,.18);border-radius:8px;background:radial-gradient(circle at center,rgba(14,116,144,.14),transparent 66%);overflow:hidden}.replay-twin svg{width:100%;height:100%}.rt-title{position:absolute;left:9px;top:7px;font:9px ui-monospace;color:#64748b;letter-spacing:1px}.rt-grid{stroke:#164e63;stroke-width:.45;fill:none;opacity:.55}.rt-path{fill:none;stroke:#22d3ee;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}.rt-phase{position:absolute;right:8px;bottom:6px;color:#fbbf24;font:10px ui-monospace}
