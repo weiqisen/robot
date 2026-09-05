@@ -41,7 +41,7 @@ from geometry_msgs.msg import Twist
 from std_msgs.msg import String, UInt16
 
 from arm_kinematics import (ik_best, fk, fk_wrist, ServoMap, TOOL_LEN,
-                            SERVO_IDS, GRIPPER_ID, JOINT_NAMES, clamp)
+                            SERVO_IDS, GRIPPER_ID, JOINT_NAMES, JOINT_LIMIT, clamp)
 import vision_geometry as vg
 from snack_detector import UniversalDetector, COLOR_BGR, detect_depth_objects, locate as locate_3d
 from service_watchdog import ServiceWatchdog
@@ -1135,11 +1135,49 @@ class SnackButler(Node):
                             tool=cfg['tool_len'])
                 d['reachable'] = q is not None
                 d['pitch_deg'] = 180.0 if q is not None else None
+                d['_grasp_q'] = q
             if p is not None:
                 d['geometry'] = self._object_geometry(d, p, snapshot)
             d['extrinsic'] = src
             out.append(d)
+        self._score_grasp_candidates(out, cfg)
         return out
+
+    @staticmethod
+    def _score_grasp_candidates(dets, cfg):
+        """给每个真实检测生成可解释的 0~100 抓取质量分，不改变安全判定。"""
+        for det in dets:
+            xyz, q = det.get('xyz'), det.get('_grasp_q')
+            confidence = det.get('confidence')
+            # 深度轮廓/HSV 没有可比的分类置信度，给中性基准，避免假装精确。
+            conf_score = max(0.0, min(1.0, float(confidence))) if confidence is not None else .68
+            depth_src = str(det.get('depth_src') or '')
+            depth_score = 1.0 if depth_src == 'depth' else (.72 if depth_src.startswith('plane') else .35)
+            ik_margin = 0.0 if not q else min(JOINT_LIMIT - abs(v) for v in q)
+            ik_score = max(0.0, min(1.0, ik_margin / math.radians(35.0)))
+            nearest = min((math.dist(xyz, other['xyz']) for other in dets
+                           if xyz and other is not det and other.get('xyz')), default=.20)
+            spacing_score = max(0.0, min(1.0, (nearest - .025) / .075))
+            score = round(100.0 * (.28*conf_score + .24*depth_score + .32*ik_score + .16*spacing_score))
+            blockers, cautions = [], []
+            if not xyz: blockers.append('缺少三维坐标')
+            elif not det.get('reachable'): blockers.append('垂直夹爪 IK 无解')
+            if depth_score < .8: cautions.append('深度使用平面估计')
+            if nearest < .045: cautions.append('邻近物体过近')
+            if q and ik_margin < math.radians(12): cautions.append('关节接近限位')
+            if confidence is not None and confidence < .45: cautions.append('检测置信度偏低')
+            det['grasp_quality'] = {
+                'score': 0 if blockers else score,
+                'grade': 'A' if score >= 82 and not blockers else
+                         'B' if score >= 68 and not blockers else
+                         'C' if score >= 50 and not blockers else 'D',
+                'ik_margin_deg': round(math.degrees(ik_margin), 1),
+                'q_deg': [round(math.degrees(v), 1) for v in q] if q else None,
+                'nearest_object_m': round(nearest, 3),
+                'depth_score': round(depth_score, 2),
+                'blockers': blockers, 'cautions': cautions,
+                'summary': blockers[0] if blockers else (cautions[0] if cautions else '抓取条件良好'),
+            }
 
     @staticmethod
     def _object_geometry(det, xyz, snapshot):
@@ -1262,6 +1300,7 @@ class SnackButler(Node):
             'detector': det.get('detector'), 'bbox': list(bbox), 'u': det.get('u'), 'v': det.get('v'),
             'xyz': det.get('xyz'), 'reachable': bool(det.get('reachable')),
             'depth_src': det.get('depth_src'), 'geometry': det.get('geometry'),
+            'grasp_quality': det.get('grasp_quality'),
             'captured_at': self.last_detection_at, 'created_at': time.time(),
             'crop': 'data:image/jpeg;base64,' + base64.b64encode(encoded.tobytes()).decode('ascii'),
         }
@@ -1328,13 +1367,15 @@ class SnackButler(Node):
                     geom['footprint'] = [[round(p[0]+dx, 4), round(p[1]+dy, 4)] for p in geom['footprint']]
                 tr.update(label=det.get('label'), raw_xyz=list(xyz), scene_xyz=scene_xyz,
                           geometry=geom, confidence=det.get('confidence'), reachable=bool(det.get('reachable')),
+                          grasp_quality=det.get('grasp_quality'),
                           last_seen=now, missed=0)
             else:
                 track_id = self._next_track_id; self._next_track_id += 1
                 self._scene_tracks[track_id] = {
                     'track_id': track_id, 'label': det.get('label'), 'raw_xyz': list(xyz),
                     'scene_xyz': list(xyz), 'geometry': geom, 'confidence': det.get('confidence'),
-                    'reachable': bool(det.get('reachable')), 'last_seen': now, 'missed': 0,
+                    'reachable': bool(det.get('reachable')), 'grasp_quality': det.get('grasp_quality'),
+                    'last_seen': now, 'missed': 0,
                 }
             det['track_id'] = track_id
         for track_id in unmatched:
@@ -1580,8 +1621,10 @@ class SnackButler(Node):
             cands = [d for d in cands if d['label'] == label]
             if not cands:
                 return None
-        # 默认挑离机器人最近的（先近后远，手臂更稳）
-        return min(cands, key=lambda d: d['xyz'][0] ** 2 + d['xyz'][1] ** 2)
+        # 默认先选抓取质量最高的；同分才选近处。评分只排序，不绕过 reachable 硬门槛。
+        return max(cands, key=lambda d: (
+            (d.get('grasp_quality') or {}).get('score', 0),
+            -(d['xyz'][0] ** 2 + d['xyz'][1] ** 2)))
 
     def target_from_uv(self, u, v):
         """「点哪抓哪」：不依赖颜色识别，直接把点击处那一小块反投影成 3D 点。
@@ -2049,7 +2092,7 @@ class SnackButler(Node):
 
     def seq_auto(self):
         """自动循环：一直抓到桌面上没有可抓目标为止"""
-        self.begin_decision_task('auto', '自动清台新一轮：识别并选择最近的可抓目标')
+        self.begin_decision_task('auto', '自动清台新一轮：识别并选择质量最高的可抓目标')
         yield from self.seq_detect()
         tgt = self.pick_target()
         if not tgt:
@@ -2061,8 +2104,11 @@ class SnackButler(Node):
             return
         self.target = tgt
         xyz = tgt.get('xyz') or []
+        quality = tgt.get('grasp_quality') or {}
         self.decision('select', '自动选择 %s' % tgt.get('label', '目标'),
-                      '坐标 (%s)，按水平距离 x²+y² 最小选择' % ', '.join('%.3f' % v for v in xyz),
+                      '坐标 (%s)，抓取评分 %s/100（%s）；%s' %
+                      (', '.join('%.3f' % v for v in xyz), quality.get('score', '—'),
+                       quality.get('grade', '—'), quality.get('summary', '无补充说明')),
                       'success')
         success = yield from self.seq_grasp(tgt)
         if success:
@@ -2331,6 +2377,28 @@ class SnackButler(Node):
             self.get_logger().error(traceback.format_exc())
 
     # ---------------- 输出 ----------------
+    def safety_permits(self):
+        """统一输出抓取前置许可；前端只展示真实传感器/控制状态。"""
+        calibrated = self.pub_cm is not None or not self.cfg.get('require_calibration') or bool(
+            self.cfg.get('servo_map_calibrated'))
+        checks = [
+            {'id': 'vision', 'label': '视觉输入',
+             'ok': self.rgb is not None and self.K is not None,
+             'detail': 'RGB 与相机内参在线' if self.rgb is not None and self.K is not None else '缺少 RGB 或相机内参'},
+            {'id': 'depth', 'label': '深度输入', 'ok': self.depth is not None,
+             'detail': '深度在线' if self.depth is not None else '无深度，将使用平面估计'},
+            {'id': 'power', 'label': '供电状态', 'ok': not self.low_volt,
+             'detail': ('%.2f V' % self.batt_v) if self.batt_v is not None else '未取得电压'},
+            {'id': 'calibration', 'label': '舵机映射', 'ok': calibrated,
+             'detail': '驱动角度控制可用' if self.pub_cm is not None else ('已标定' if calibrated else '尚未标定')},
+            {'id': 'recovery', 'label': '动作恢复', 'ok': self.recovery_journal is None,
+             'detail': '无中断动作' if self.recovery_journal is None else '存在待恢复的中断动作'},
+        ]
+        # 深度缺失会降低定位质量但已有受控平面兜底，因此它是警告而非总许可硬阻断。
+        blocking = [c for c in checks if c['id'] != 'depth' and not c['ok']]
+        return {'allowed': not blocking, 'checks': checks,
+                'summary': '抓取基础许可通过' if not blocking else '；'.join(c['detail'] for c in blocking)}
+
     def publish_state(self):
         if not rclpy.ok():
             return
@@ -2359,6 +2427,7 @@ class SnackButler(Node):
                            for d in self.detections],
             'scene_objects': self.scene_objects,
             'inspection': inspection,
+            'safety_permits': self.safety_permits(),
             'ee': {'x': round(ee[0], 4), 'y': round(ee[1], 4), 'z': round(ee[2], 4),
                    'pitch_deg': round(math.degrees(ee[3]), 1)},
             'q_deg': [round(math.degrees(v), 1) for v in q],

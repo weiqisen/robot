@@ -187,6 +187,7 @@ let workspaceGroup = null, selfbodyGroup = null, dimensionsGroup = null
 let anglesGroup = null, cameraFovGroup = null, axesGroup = null
 let detectGroup = null      // YOLO 检测结果的 3D 投影
 let intentGroup = null      // 后端真实 IK 求解出的动作意图
+let previewGroup = null     // 点选目标后、执行前的全臂 IK 幽灵预演
 const detectionLabels = []  // 当前识别标签；loop() 按镜头距离做可读性限幅
 const selectedTrackId = ref(null)
 const selectedTarget = ref(null)
@@ -204,6 +205,11 @@ const fmtTargetXYZ = computed(() => inspectionXYZ.value
   ? inspectionXYZ.value.map(v => Number(v).toFixed(3)).join(' / ') : '—')
 const detectorName = computed(() => ({ yolov5:'YOLOv5', depth:'深度轮廓', hsv:'HSV' }
   [targetInspection.value?.detector] || targetInspection.value?.detector || '—'))
+const targetQuality = computed(() => targetInspection.value?.grasp_quality ||
+  selectedTarget.value?.grasp_quality || null)
+const safetyPermits = computed(() => state.snack?.safety_permits || { allowed:false, checks:[] })
+const targetAllowed = computed(() => inspectionFresh.value && !!targetInspection.value?.reachable &&
+  !!safetyPermits.value.allowed)
 
 function requestTargetInspection(target, confirm = false) {
   if (!target?.track_id && target?.track_id !== 0) return
@@ -236,6 +242,7 @@ function closeTargetInspection() {
   targetInspection.value = null
   graspConfirmOpen.value = false
   scheduleDetections()
+  syncTargetPreview()
 }
 
 function analyzeInspectedTarget() {
@@ -250,6 +257,7 @@ function confirmTrackGrasp() {
   if (id == null) return
   if (!inspectionFresh.value) return message.warning('目标信息已过期，请先重新扫描')
   if (!targetInspection.value?.reachable) return message.warning('当前目标垂直夹爪 IK 不可达')
+  if (!safetyPermits.value.allowed) return message.warning(safetyPermits.value.summary || '抓取安全许可未通过')
   if (!actions.snackCmd({ action:'pick_track', track_id:id, outcome:'inspect' }))
     return message.error('ROS 未连接，无法发出抓取命令')
   graspConfirmOpen.value = false
@@ -411,8 +419,9 @@ function init() {
     axesGroup = new THREE.Group()
     detectGroup = new THREE.Group()
     intentGroup = new THREE.Group()
+    previewGroup = new THREE.Group()
     for (const g of [workspaceGroup, selfbodyGroup, dimensionsGroup,
-                     anglesGroup, cameraFovGroup, axesGroup, detectGroup, intentGroup]) anchor.add(g)
+                     anglesGroup, cameraFovGroup, axesGroup, detectGroup, intentGroup, previewGroup]) anchor.add(g)
 
     // 构建辅助图层（单位：米，base_link 坐标系）
     buildWorkspace(workspaceGroup)
@@ -420,7 +429,7 @@ function init() {
     buildDimensions(dimensionsGroup)
     buildAxes(axesGroup)
     // 给所有辅助图层的 mesh 打标记，skinRobot 会跳过它们
-    for (const g of [workspaceGroup, selfbodyGroup, dimensionsGroup, axesGroup, detectGroup, intentGroup]) {
+    for (const g of [workspaceGroup, selfbodyGroup, dimensionsGroup, axesGroup, detectGroup, intentGroup, previewGroup]) {
       g.traverse(o => { if (o.isMesh) o.userData.helperLayer = true })
     }
     for (const [k, g] of [['workspace', workspaceGroup], ['selfbody', selfbodyGroup],
@@ -429,6 +438,7 @@ function init() {
                           ['detections', detectGroup], ['intent', intentGroup]]) g.visible = tools[k]
     syncDetections()      // 首帧就把已有的检测结果画出来
     syncMotionIntent()
+    syncTargetPreview()
 
     // 兜底：万一这台车的 URDF 没有任何外部网格，onLoad 可能已经先触发过了
     if (mgr.itemsLoaded >= mgr.itemsTotal) onRobotReady()
@@ -1851,6 +1861,40 @@ function syncMotionIntent() {
 }
 watch(() => state.snack?.motion_intent, syncMotionIntent, { deep:true, flush:'post' })
 
+function syncTargetPreview() {
+  if (!previewGroup) return
+  clearGroup(previewGroup)
+  const qd = targetQuality.value?.q_deg
+  if (!Array.isArray(qd) || qd.length < 4 || !selectedTarget.value) return
+  const [q1,q2,q3,q4] = qd.map(THREE.MathUtils.degToRad)
+  const psi = -q1, baseX=.0251328, shoulderZ=.1112675, l1=.1294164, l2=.1294446, l3=.1712833
+  const point = (r,z) => new THREE.Vector3(baseX+r*Math.cos(psi), r*Math.sin(psi), z)
+  let r=0, z=shoulderZ
+  const pts=[point(r,z)]
+  r += l1*Math.sin(q2); z += l1*Math.cos(q2); pts.push(point(r,z))
+  r += l2*Math.sin(q2+q3); z += l2*Math.cos(q2+q3); pts.push(point(r,z))
+  r += l3*Math.sin(q2+q3+q4); z += l3*Math.cos(q2+q3+q4); pts.push(point(r,z))
+  const mat = new THREE.MeshBasicMaterial({ color:0x67e8f9, transparent:true, opacity:.34,
+    depthWrite:false, toneMapped:false })
+  for (let i=0; i<pts.length-1; i++) {
+    const delta=pts[i+1].clone().sub(pts[i]), mid=pts[i].clone().add(pts[i+1]).multiplyScalar(.5)
+    const link=new THREE.Mesh(new THREE.CylinderGeometry(.008,.008,delta.length(),10),mat)
+    link.position.copy(mid); link.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),delta.normalize())
+    link.userData.helperLayer=true; previewGroup.add(link)
+  }
+  for (const p of pts.slice(0,-1)) {
+    const joint=new THREE.Mesh(new THREE.SphereGeometry(.012,14,10),mat)
+    joint.position.copy(p); joint.userData.helperLayer=true; previewGroup.add(joint)
+  }
+  const tip=pts.at(-1), ring=new THREE.Mesh(new THREE.RingGeometry(.014,.018,28),
+    new THREE.MeshBasicMaterial({ color:0x67e8f9, transparent:true, opacity:.85,
+      side:THREE.DoubleSide, depthWrite:false, toneMapped:false }))
+  ring.position.copy(tip); ring.userData.helperLayer=true; previewGroup.add(ring)
+  const tag=layerLabel('抓取姿态预演', `IK 余量 ${targetQuality.value?.ik_margin_deg ?? '—'}° · 尚未执行`, '#67e8f9')
+  tag.position.copy(tip).add(new THREE.Vector3(0,0,.038)); previewGroup.add(tag); detectionLabels.push(tag)
+}
+watch([targetQuality, selectedTarget], syncTargetPreview, { deep:true, flush:'post' })
+
 // 辅助图层的标签。画法照 tagSprite：只画一个圆角框，框外留透明 ——
 // 整块画布铺底色的话，场景里就是一堆跟着透视缩放的灰板子。
 // 标签使用三维世界尺寸：镜头推近目标时，文字卡片也会随透视同步放大。
@@ -2259,6 +2303,9 @@ onBeforeUnmount(() => {
           <div><span>深度来源</span><b>{{ targetInspection?.depth_src || '—' }}</b></div>
           <div><span>抓取判断</span><b :class="targetInspection?.reachable ? 'tc-ok' : 'tc-bad'">
             {{ targetInspection?.reachable ? '垂直 IK 可达' : '当前不可达' }}</b></div>
+          <div><span>抓取评分</span><b :class="targetQuality?.score >= 68 ? 'tc-ok' : 'tc-warn'">
+            {{ targetQuality ? `${targetQuality.score}/100 · ${targetQuality.grade}级` : '—' }}</b></div>
+          <div><span>判断说明</span><b :title="targetQuality?.summary">{{ targetQuality?.summary || '—' }}</b></div>
           <div><span>画面年龄</span><b :class="inspectionFresh ? '' : 'tc-bad'">
             {{ inspectedAge == null ? '—' : inspectedAge.toFixed(1) + ' 秒' }}</b></div>
         </div>
@@ -2284,15 +2331,25 @@ onBeforeUnmount(() => {
           <p>识别：{{ detectorName }} · {{ targetInspection?.confidence == null ? '无置信度' : (targetInspection.confidence * 100).toFixed(1) + '%' }}</p>
           <p>坐标：{{ fmtTargetXYZ }} m</p>
           <p>状态：{{ targetInspection?.reachable ? '垂直夹爪 IK 可达' : '当前不可达' }}</p>
+          <div class="quality-line"><b>{{ targetQuality?.score ?? '—' }}</b><span>抓取评分</span>
+            <small>{{ targetQuality?.summary || '等待评估' }}</small></div>
+          <div class="permit-grid">
+            <div v-for="check in safetyPermits.checks" :key="check.id" :class="{ ok:check.ok, warn:check.id === 'depth' && !check.ok }">
+              <i>{{ check.ok ? '✓' : check.id === 'depth' ? '!' : '×' }}</i><span>{{ check.label }}</span><small>{{ check.detail }}</small>
+            </div>
+            <div :class="{ ok:targetInspection?.reachable }"><i>{{ targetInspection?.reachable ? '✓' : '×' }}</i>
+              <span>目标 IK</span><small>{{ targetInspection?.reachable ? `余量 ${targetQuality?.ik_margin_deg ?? '—'}°` : '不可达' }}</small></div>
+          </div>
           <a-alert v-if="!inspectionFresh" type="warning" show-icon message="目标信息已过期，请重新扫描后再抓取" />
-          <a-alert v-else type="info" show-icon message="确认后机器人会再次识别并匹配目标；匹配失败不会动作。" />
+          <a-alert v-else-if="!safetyPermits.allowed" type="error" show-icon :message="safetyPermits.summary || '安全许可未通过'" />
+          <a-alert v-else type="info" show-icon message="青色幽灵机械臂是 IK 预演；确认后仍会重新识别，匹配失败不会动作。" />
         </div>
       </div>
       <div class="confirm-actions">
         <a-button @click="graspConfirmOpen = false">取消</a-button>
         <a-button @click="requestTargetInspection(selectedTarget, true)">重新扫描</a-button>
         <a-button @click="analyzeInspectedTarget">空跑分析</a-button>
-        <a-button type="primary" danger :disabled="!inspectionFresh || !targetInspection?.reachable"
+        <a-button type="primary" danger :disabled="!targetAllowed"
           @click="confirmTrackGrasp">确认抓起并保持</a-button>
       </div>
     </a-modal>
@@ -2459,7 +2516,7 @@ onBeforeUnmount(() => {
 .tc-info div { min-width:0; }.tc-info span { display:block; color:#64748b; font-size:9px; }
 .tc-info b { display:block; margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
   color:#cbd5e1; font:600 10px/1.25 ui-monospace,monospace; }
-.tc-ok { color:#34d399!important; }.tc-bad { color:#fb7185!important; }
+.tc-ok { color:#34d399!important; }.tc-bad { color:#fb7185!important; }.tc-warn { color:#fbbf24!important; }
 .tc-actions { display:flex; gap:6px; padding:8px 10px; border-top:1px solid rgba(148,163,184,.12); }
 .tc-actions button { flex:1; height:27px; border:1px solid rgba(148,163,184,.18); border-radius:6px;
   background:rgba(15,23,42,.62); color:#94a3b8; font-size:10px; cursor:pointer; }
@@ -2476,6 +2533,20 @@ onBeforeUnmount(() => {
 :global(.target-confirm-modal .confirm-meta h3) { color:#e2e8f0; margin:4px 0 12px; }
 :global(.target-confirm-modal .confirm-meta h3 small) { color:#38bdf8; font-family:ui-monospace,monospace; }
 :global(.target-confirm-modal .confirm-meta p) { color:#94a3b8; margin:7px 0; font-size:12px; }
+:global(.target-confirm-modal .quality-line) { display:grid; grid-template-columns:52px 1fr; align-items:center;
+  margin:10px 0; padding:8px 10px; border:1px solid rgba(56,189,248,.2); border-radius:8px; background:rgba(2,132,199,.08); }
+:global(.target-confirm-modal .quality-line b) { grid-row:1/3; color:#67e8f9; font:700 23px/1 ui-monospace,monospace; }
+:global(.target-confirm-modal .quality-line span) { color:#cbd5e1; font-size:10px; }
+:global(.target-confirm-modal .quality-line small) { color:#64748b; font-size:9px; }
+:global(.target-confirm-modal .permit-grid) { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:5px; margin:9px 0; }
+:global(.target-confirm-modal .permit-grid > div) { display:grid; grid-template-columns:18px 1fr; padding:6px 7px;
+  border:1px solid rgba(251,113,133,.22); border-radius:6px; background:rgba(127,29,29,.08); }
+:global(.target-confirm-modal .permit-grid i) { grid-row:1/3; color:#fb7185; font-style:normal; }
+:global(.target-confirm-modal .permit-grid span) { color:#cbd5e1; font-size:9px; }
+:global(.target-confirm-modal .permit-grid small) { color:#64748b; font-size:8px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+:global(.target-confirm-modal .permit-grid > div.ok) { border-color:rgba(52,211,153,.18); background:rgba(6,78,59,.08); }
+:global(.target-confirm-modal .permit-grid > div.ok i) { color:#34d399; }
+:global(.target-confirm-modal .permit-grid > div.warn i) { color:#fbbf24; }
 :global(.target-confirm-modal .confirm-meta .ant-alert) { margin-top:14px; }
 :global(.target-confirm-modal .confirm-actions) { display:flex; justify-content:flex-end; gap:8px;
   margin-top:18px; padding-top:14px; border-top:1px solid rgba(148,163,184,.15); }
