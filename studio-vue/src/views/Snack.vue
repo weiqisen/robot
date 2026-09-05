@@ -16,6 +16,8 @@ const cfg = computed(() => sb.value?.cfg || {})
 const stats = computed(() => sb.value?.stats || {})
 const lastFailure = computed(() => sb.value?.last_failure || null)
 const selectedQuality = computed(() => selectedDet.value?.grasp_quality || null)
+const candidateRanking = computed(() => sb.value?.candidate_ranking || [])
+const visionTiming = computed(() => sb.value?.analysis?.timing || {})
 
 const STATE_COLOR = {
   INIT: 'default', IDLE: 'default', OBSERVE: 'processing', DETECT: 'processing',
@@ -310,6 +312,8 @@ const replaySnapshot = computed(() => {
   return rows.reduce((best, row) => row.t <= replayTime.value ? row : best, rows[0] || null)
 })
 const replayEvents = computed(() => (replayData.value?.events || []).filter(e => e.t <= replayTime.value).slice(-7).reverse())
+const replayCandidates = computed(() => (replaySnapshot.value?.detections || []).slice()
+  .sort((a,b) => (b.grasp_quality?.score || 0) - (a.grasp_quality?.score || 0)).slice(0,4))
 const replayPath = computed(() => {
   const pts = replaySnapshot.value?.intent?.samples || []
   if (!pts.length) return ''
@@ -746,6 +750,18 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
       <a-card size="small" title="抓取决策轨迹" class="inference-panel">
         <template #extra><a-tag :color="online ? 'processing' : 'default'">节点原始决策 · 最新在上</a-tag></template>
         <div class="infer-summary">{{ inferenceSummary }}</div>
+        <div class="vision-timing">
+          <span>排队 <b>{{ visionTiming.queue_ms ?? '—' }}ms</b></span>
+          <span>检测 <b>{{ visionTiming.detect_ms ?? '—' }}ms</b></span>
+          <span>定位+IK <b>{{ visionTiming.geometry_ik_ms ?? '—' }}ms</b></span>
+          <span>总计 <b>{{ visionTiming.total_ms ?? '—' }}ms</b></span>
+        </div>
+        <div v-if="candidateRanking.length" class="candidate-rank">
+          <div v-for="c in candidateRanking.slice(0,5)" :key="c.track_id" :class="{ top:c.rank===1, rejected:!c.reachable }">
+            <i>#{{ c.rank }}</i><b>{{ CN[c.label] || c.label }} · {{ c.score }}</b>
+            <span>{{ c.decision }} · {{ c.summary }}</span>
+          </div>
+        </div>
         <div class="infer-terminal">
           <div v-if="!decisionLines.length" class="infer-empty">{{ online ? '等待下一条抓取决策' : '等待视觉抓取节点连接' }}</div>
           <div v-for="line in decisionLines" :key="line.seq" :class="['infer-line', line.level]">
@@ -1030,6 +1046,14 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
           </svg>
           <div class="rt-phase">{{ replaySnapshot?.intent?.phase || '尚未生成 IK 意图' }}</div>
         </div>
+        <div v-if="replayCandidates.length" class="replay-candidates">
+          <div v-for="(c,i) in replayCandidates" :key="c.track_id || i">
+            <b>#{{ i+1 }} {{ CN[c.label] || c.label }}</b><span>{{ c.grasp_quality?.score ?? '—' }}/100</span>
+            <small>{{ c.grasp_quality?.summary || (c.reachable ? '可达' : '不可达') }}</small>
+          </div>
+        </div>
+        <a-alert v-if="replaySnapshot?.failure" type="error" show-icon
+          :message="`失败：${replaySnapshot.failure.summary}`" />
         <div class="replay-log">
           <div v-for="e in replayEvents" :key="e.seq" :class="['re', e.level]" @click="seekReplay(e.t)">
             <time>{{ e.t.toFixed(1) }}s</time><b>{{ e.phase }}</b><span>{{ e.summary }}</span>
@@ -1121,6 +1145,7 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
 
 .inference-panel { overflow:hidden; }
 .infer-summary { padding:8px 10px; border:1px solid var(--border); border-radius:7px; background:var(--surface-2); font-size:12px; line-height:1.55; color:var(--text-2); }
+.vision-timing{display:grid;grid-template-columns:repeat(4,1fr);gap:5px;margin-top:7px}.vision-timing span{padding:5px;border:1px solid var(--border);border-radius:5px;color:var(--text-3);font-size:9px;text-align:center}.vision-timing b{display:block;margin-top:2px;color:#38bdf8;font:10px ui-monospace}.candidate-rank{display:grid;gap:3px;margin-top:7px}.candidate-rank>div{display:grid;grid-template-columns:28px 105px 1fr;gap:5px;align-items:center;padding:5px 7px;border-left:2px solid #64748b;background:rgba(100,116,139,.07);font-size:9px}.candidate-rank i{color:#64748b;font-style:normal}.candidate-rank b{color:#cbd5e1}.candidate-rank span{color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.candidate-rank .top{border-color:#34d399;background:rgba(6,78,59,.12)}.candidate-rank .top i,.candidate-rank .top b{color:#34d399}.candidate-rank .rejected{opacity:.58;border-color:#fb7185}
 .infer-terminal { margin-top:9px; padding:8px 0; min-height:260px; max-height:520px; overflow:auto; border-radius:7px; background:#101821; font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; }
 .infer-empty { padding:18px; text-align:center; color:#6f8295; }
 .infer-line { display:grid; grid-template-columns:72px 38px minmax(0,1fr); gap:6px; padding:5px 9px; color:#c5d1df; border-bottom:1px solid rgba(255,255,255,.035); }
@@ -1190,6 +1215,7 @@ code { font-family: ui-monospace, monospace; font-size: 13px; }
 .replay-badge{position:absolute;left:12px;top:12px;padding:6px 9px;border:1px solid rgba(56,189,248,.35);border-radius:6px;background:rgba(2,8,18,.72);font:10px ui-monospace;color:#7dd3fc;letter-spacing:1px}.replay-badge i{display:inline-block;width:6px;height:6px;border-radius:50%;background:#fb3355;margin-right:7px;box-shadow:0 0 9px #fb3355}
 .replay-side{display:flex;flex-direction:column;gap:9px;min-width:0}.replay-head{border-left:2px solid #38bdf8;padding:5px 9px;background:rgba(30,41,59,.5)}.replay-head b{display:block;color:#67e8f9;font:12px ui-monospace}.replay-head span{display:block;margin-top:3px;color:#cbd5e1;font-size:11px;line-height:1.4}
 .replay-twin{position:relative;height:190px;border:1px solid rgba(56,189,248,.18);border-radius:8px;background:radial-gradient(circle at center,rgba(14,116,144,.14),transparent 66%);overflow:hidden}.replay-twin svg{width:100%;height:100%}.rt-title{position:absolute;left:9px;top:7px;font:9px ui-monospace;color:#64748b;letter-spacing:1px}.rt-grid{stroke:#164e63;stroke-width:.45;fill:none;opacity:.55}.rt-path{fill:none;stroke:#22d3ee;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}.rt-phase{position:absolute;right:8px;bottom:6px;color:#fbbf24;font:10px ui-monospace}
+.replay-candidates{display:grid;grid-template-columns:repeat(2,1fr);gap:4px}.replay-candidates>div{display:grid;grid-template-columns:1fr auto;padding:5px 7px;border:1px solid rgba(56,189,248,.14);border-radius:5px;background:rgba(15,23,42,.45)}.replay-candidates b{color:#cbd5e1;font-size:9px}.replay-candidates span{color:#34d399;font:9px ui-monospace}.replay-candidates small{grid-column:1/3;color:#64748b;font-size:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .replay-log{flex:1;min-height:130px;max-height:220px;overflow:auto;background:rgba(15,23,42,.48);border-radius:8px}.re{display:grid;grid-template-columns:42px 66px 1fr;gap:5px;padding:7px 8px;border-bottom:1px solid rgba(148,163,184,.08);font-size:10px;cursor:pointer}.re:hover{background:rgba(56,189,248,.08)}.re time{color:#64748b;font-family:ui-monospace}.re b{color:#38bdf8}.re span{color:#cbd5e1}.re.error b,.re.error span{color:#fb7185}.re.warn b{color:#fbbf24}.re-empty{padding:22px;text-align:center;color:#64748b;font-size:11px}
 .replay-timeline{position:relative;height:24px;margin:14px 8px 5px;border-top:2px solid var(--border)}.replay-timeline button{position:absolute;top:-6px;width:10px;height:10px;margin-left:-5px;padding:0;border:2px solid #64748b;border-radius:50%;background:var(--surface-1);cursor:pointer}.replay-timeline button.passed{border-color:#22d3ee;background:#0891b2}.replay-timeline button.error{border-color:#fb3355}.replay-controls{display:flex;align-items:center;gap:5px;color:var(--text-3);font-size:11px}.replay-controls button{border:1px solid var(--border);background:var(--surface-2);color:var(--text-2);border-radius:5px;padding:3px 7px;cursor:pointer}.replay-controls button.on{border-color:#22d3ee;color:#0891b2}.replay-controls span{margin-left:auto}
 @media(max-width:780px){.replay-shell{grid-template-columns:1fr}.replay-stage{min-height:240px}.replay-side{max-height:390px}.replay-twin{height:150px}}

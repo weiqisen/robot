@@ -1693,7 +1693,8 @@ function syncDetections() {
   const dets = state.snack?.detections || []
   const tracked = state.snack?.scene_objects || []
   const objects = tracked.length ? tracked : dets.map((d, i) => ({ track_id:i, label:d.label,
-    scene_xyz:d.xyz, geometry:d.geometry, confidence:d.confidence, reachable:d.reachable }))
+    scene_xyz:d.xyz, geometry:d.geometry, confidence:d.confidence, reachable:d.reachable,
+    grasp_quality:d.grasp_quality }))
   const activeTarget = state.snack?.target || state.snack?.held_target || null
   const activeXYZ = activeTarget?.scene_xyz || activeTarget?.xyz
   const isActiveTarget = d => {
@@ -1711,7 +1712,8 @@ function syncDetections() {
     const g = d.geometry || {}
     return [d.track_id ?? i, d.label, (d.scene_xyz || []).map(q3),
       Number.isFinite(+d.confidence) ? Math.round(+d.confidence * 100) : null,
-      !!d.reachable, !!d.occluded, g.kind, (g.size || []).map(q3), q3(g.yaw_deg),
+      !!d.reachable, !!d.occluded, d.grasp_quality?.score ?? null,
+      d.grasp_quality?.summary ?? null, g.kind, (g.size || []).map(q3), q3(g.yaw_deg),
       (g.footprint || []).map(p => p.map(q3))]
   })])
   if (signature === lastDetectionSignature) return
@@ -1778,9 +1780,11 @@ function syncDetections() {
     // 标签：类别 + 坐标 + 可达性
     const name = `${DET_CN[d.label] || d.label || '目标'} #${d.track_id ?? '—'}`
     const conf = d.confidence != null ? ` ${(d.confidence * 100).toFixed(0)}%` : ''
+    const quality = d.grasp_quality
     const tag = layerLabel(name + conf, active
-      ? `${CM(x)} ${CM(y)} · ${occluded ? '暂时遮挡' : reachable ? '已锁定 · 可夹' : '已锁定 · 够不着'}`
-      : selected ? `${CM(x)} ${CM(y)} · 已选中${reachable ? ' · 可夹' : ' · 够不着'}` : '',
+      ? `${CM(x)} ${CM(y)} · ${occluded ? '暂时遮挡' : reachable ? `已锁定 · 评分 ${quality?.score ?? '—'}` : '已锁定 · 够不着'}`
+      : selected ? `${CM(x)} ${CM(y)} · 已选中 · ${quality?.summary || (reachable ? '可夹' : '够不着')}` :
+        quality ? `评分 ${quality.score} · ${quality.summary}` : '',
       '#' + col.toString(16).padStart(6, '0'))
     // 相邻目标错开少量高度和横向位置，避免标签完全重叠；细线仍指回目标本体。
     const lane = objectIndex % 3

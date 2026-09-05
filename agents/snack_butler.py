@@ -75,7 +75,7 @@ class GraspRecorder:
         self.last_snapshot_at = -1.0
 
     def add_frame(self, img, state, step, q_deg=None, ee=None, decision_log=None,
-                  motion_intent=None, detections=None):
+                  motion_intent=None, detections=None, failure=None):
         """添加一帧：img 是 BGR 图像，叠加状态信息和执行日志"""
         if not self.recording:
             return
@@ -146,6 +146,7 @@ class GraspRecorder:
                 'q_deg': q_deg or [], 'ee': ee or {},
                 'intent': copy.deepcopy(motion_intent),
                 'detections': copy.deepcopy(detections or []),
+                'failure': copy.deepcopy(failure),
             })
             self.last_snapshot_at = elapsed
         timestamp_text = f'REC {int(elapsed//60):02d}:{int(elapsed%60):02d}'
@@ -435,6 +436,7 @@ class SnackButler(Node):
         self._last_idle_decision_at = 0.0
         self.live_analysis = False  # 页面显式开启时才提高到实时分析频率，不写入抓取方案
         self.last_detection_at = 0.0
+        self.vision_metrics = {}
         self._idle_vision_request = None
         # 视觉只在这个单一 worker 中运行。ROS executor 不再执行 YOLO/HSV/深度分割，
         # 因此舵机发送、安全回调和状态机 tick 不会被一次推理卡住。
@@ -604,11 +606,13 @@ class SnackButler(Node):
                     return
                 job = self._vision_jobs.popleft()
                 self._vision_active = job['purpose']
+            worker_started = time.time()
             try:
-                result = self._scan_snapshot(job['snapshot'])
+                result, metrics = self._scan_snapshot(job['snapshot'])
                 error = ''
             except Exception as e:
                 result = []
+                metrics = {}
                 error = '%s: %s' % (type(e).__name__, e)
                 self.get_logger().error('[vision_worker] %s\n%s' % (error, traceback.format_exc()))
             with self._vision_cv:
@@ -616,6 +620,8 @@ class SnackButler(Node):
                 self._vision_results[job['id']] = {
                     'detections': result, 'error': error, 'finished_at': time.time(),
                     'purpose': job['purpose'], 'captured_at': job['snapshot']['captured_at'],
+                    'metrics': dict(metrics, queue_ms=round(max(
+                        0.0, worker_started - job['snapshot']['captured_at']) * 1000.0, 1)),
                     'rgb': job['snapshot']['rgb'],
                 }
                 # 已取消/停止的请求可能没人消费；限制结果缓存，避免常驻进程缓慢增长。
@@ -1129,10 +1135,13 @@ class SnackButler(Node):
 
     def _scan_snapshot(self, snapshot):
         """worker 内执行一次识别与定位；不读写 ROS 主线程的实时状态。"""
+        scan_t0 = time.perf_counter()
         rgb, depth, K = snapshot['rgb'], snapshot['depth'], snapshot['K']
         cfg, T_bo, src = snapshot['cfg'], snapshot['T_bo'], snapshot['extrinsic']
         self.detector.cfg = cfg
         dets = self.detector.detect(rgb)
+        detect_ms = (time.perf_counter() - scan_t0) * 1000.0
+        geometry_t0 = time.perf_counter()
         if cfg.get('depth_object_enabled', True):
             generic = detect_depth_objects(depth, rgb.shape, K, T_bo, cfg['table_z'], cfg)
             # YOLO/HSV 已经给出更具体标签时不重复显示同一个物体。
@@ -1156,7 +1165,12 @@ class SnackButler(Node):
             d['extrinsic'] = src
             out.append(d)
         self._score_grasp_candidates(out, cfg)
-        return out
+        return out, {
+            'detect_ms': round(detect_ms, 1),
+            'geometry_ik_ms': round((time.perf_counter() - geometry_t0) * 1000.0, 1),
+            'total_ms': round((time.perf_counter() - scan_t0) * 1000.0, 1),
+            'input_width': int(rgb.shape[1]), 'input_height': int(rgb.shape[0]),
+        }
 
     @staticmethod
     def _score_grasp_candidates(dets, cfg):
@@ -1265,6 +1279,7 @@ class SnackButler(Node):
             return []
         self.detections = result['detections']
         self.last_detection_rgb = result.get('rgb')
+        self.vision_metrics = result.get('metrics') or {}
         self.last_detection_at = result['finished_at']
         self.update_scene_tracks(self.detections, self.last_detection_at)
         return self.detections
@@ -2471,6 +2486,25 @@ class SnackButler(Node):
         return {'allowed': not blocking, 'checks': checks,
                 'summary': '抓取基础许可通过' if not blocking else '；'.join(c['detail'] for c in blocking)}
 
+    def candidate_ranking(self):
+        rows = []
+        for d in self.detections:
+            q = d.get('grasp_quality') or {}
+            rows.append({
+                'track_id': d.get('track_id'), 'label': d.get('label'),
+                'score': q.get('score', 0), 'grade': q.get('grade', 'D'),
+                'reachable': bool(d.get('reachable')), 'summary': q.get('summary', '尚未评分'),
+                'xyz': d.get('xyz'), 'confidence': d.get('confidence'),
+            })
+        rows.sort(key=lambda d: (d['reachable'], d['score'],
+                                 -((d.get('xyz') or [99, 99])[0] ** 2 +
+                                   (d.get('xyz') or [99, 99])[1] ** 2)), reverse=True)
+        for rank, row in enumerate(rows, 1):
+            row['rank'] = rank
+            row['decision'] = ('推荐抓取' if rank == 1 and row['reachable'] else
+                               ('候选' if row['reachable'] else '淘汰'))
+        return rows[:12]
+
     def publish_state(self):
         if not rclpy.ok():
             return
@@ -2487,7 +2521,8 @@ class SnackButler(Node):
                          'last_at': round(self.last_detection_at, 3) if self.last_detection_at else None,
                          'detections': len(self.detections),
                          'worker_active': self._vision_active,
-                         'worker_queue': len(self._vision_jobs)},
+                         'worker_queue': len(self._vision_jobs),
+                         'timing': self.vision_metrics},
             'error': self.last_error,
             'decision_log': self.decision_log,
             'motion_intent': self.motion_intent,
@@ -2502,6 +2537,7 @@ class SnackButler(Node):
             'safety_permits': self.safety_permits(),
             'last_failure': self.last_failure,
             'failure_history': list(self.failure_history),
+            'candidate_ranking': self.candidate_ranking(),
             'ee': {'x': round(ee[0], 4), 'y': round(ee[1], 4), 'z': round(ee[2], 4),
                    'pitch_deg': round(math.degrees(ee[3]), 1)},
             'q_deg': [round(math.degrees(v), 1) for v in q],
@@ -2590,7 +2626,7 @@ class SnackButler(Node):
                     img, self.state, self.step,
                     [round(math.degrees(v), 1) for v in q],
                     {'x': round(p[0], 4), 'y': round(p[1], 4), 'z': round(p[2], 4)},
-                    self.decision_log, self.motion_intent, self.scene_objects)
+                    self.decision_log, self.motion_intent, self.scene_objects, self.last_failure)
             except Exception as e:
                 self.get_logger().warn('录像写帧失败，已停止录制：%s' % e)
                 self.recorder.stop(self.decision_log)
