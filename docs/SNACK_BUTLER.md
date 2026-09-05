@@ -120,6 +120,7 @@ pip3 install anthropic websocket-client
 {"action":"pick_at","u":320,"v":240}      // 抓画面上这一点的（网页点击就是这个）
 {"action":"inspect_target","track_id":7,"request_id":"ui-1"} // 按轨迹取对应检测帧的裁剪图
 {"action":"pick_track","track_id":7,"outcome":"inspect"}     // 复检并抓取 3D 场景中选中的轨迹
+{"action":"retry_last_grasp","failure_id":"失败记录 id"}       // 人工确认的一次性空抓重试
 {"action":"auto","on":true}               // 自动循环整理
 {"action":"stop"}
 {"action":"gripper","open":true}
@@ -141,6 +142,11 @@ pip3 install anthropic websocket-client
 输出 0–100 分、等级、警告和硬阻断原因。它只负责在已经 `reachable` 的候选中排序，不能绕过 IK
 或其他安全门槛。目标确认框同时展示机器人端发布的视觉、深度、供电、舵机映射、动作恢复和目标
 IK 许可；三维场景中的青色幽灵臂是候选 IK 姿态预演，不代表动作已下发。
+
+抓取失败会写入结构化 `last_failure` / `failure_history`，包含失败阶段、目标证据和可选重试策略。
+目前只有“复核发现目标仍在原位”的疑似空抓会提供重试：必须由用户确认，系统重新识别并只接受原位置
+6 cm 内的同类别可达目标，然后在桌面净空硬下限保护下把合爪点最多加深 3 mm。失败记录只能消费一次，
+机器人不空闲、目标无法重新匹配或任何安全检查失败时均不会动作。
 
 ### 服务重启后的抓取恢复
 

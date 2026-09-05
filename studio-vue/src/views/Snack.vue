@@ -14,6 +14,8 @@ const online = computed(() => !!sb.value)
 const dets = computed(() => sb.value?.detections || [])
 const cfg = computed(() => sb.value?.cfg || {})
 const stats = computed(() => sb.value?.stats || {})
+const lastFailure = computed(() => sb.value?.last_failure || null)
+const selectedQuality = computed(() => selectedDet.value?.grasp_quality || null)
 
 const STATE_COLOR = {
   INIT: 'default', IDLE: 'default', OBSERVE: 'processing', DETECT: 'processing',
@@ -60,12 +62,16 @@ async function restartService(unit) {
 }
 // 展开面板时如果还没查过，自动跑一次
 watch(() => healthCheck.show, v => { if (v && !healthCheck.data) runHealthCheck() })
-const decisionLines = computed(() => (sb.value?.decision_log || []).slice().reverse())
+const decisionLines = computed(() => {
+  const rows = (sb.value?.decision_log || []).map((row, i, all) => ({ ...row,
+    elapsed_ms: i && row.at && all[i-1].at ? Math.max(0, Math.round((row.at-all[i-1].at)*1000)) : null }))
+  return rows.reverse()
+})
 function decisionTime(epoch) {
   return epoch ? new Date(epoch * 1000).toLocaleTimeString('zh-CN', { hour12: false }) : '--:--:--'
 }
 const PHASE_CN = { command: '命令', detect: '视觉', select: '筛选', safety: '安全', geometry: '坐标',
-  ik: 'IK', motion: '动作', orientation: '方向', gripper: '夹爪', verify: '复核', holding: '等待', place: '投放' }
+  ik: 'IK', motion: '动作', orientation: '方向', gripper: '夹爪', verify: '复核', retry: '重试', holding: '等待', place: '投放' }
 const inferenceSummary = computed(() => {
   const t = selectedDet.value || sb.value?.target
   if (!t?.xyz) return '等待选择目标；系统仅展示真实视觉、IK 与安全状态。'
@@ -363,6 +369,15 @@ function analyzeSelected() {
   if (!d) return message.warning('请先选择一个目标，再做只算不动的抓取诊断')
   send({ action: 'analyze_grasp_at', u: Math.round(d.u), v: Math.round(d.v) }, '正在分析候选下探姿态，不会驱动机械臂')
 }
+function retryLastGrasp() {
+  const f = lastFailure.value
+  if (!f?.retry?.available) return message.warning('当前失败没有可执行的安全重试策略')
+  Modal.confirm({
+    title: '执行一次受限重试？', okText: '重新识别并重试', okType: 'danger', cancelText: '取消',
+    content: `${f.summary}。策略：${f.retry.label}。机器人会先重新识别，并只匹配原位置 6cm 内的同类别目标；匹配失败不会动作。`,
+    onOk: () => send({ action:'retry_last_grasp', failure_id:f.id }, '已请求一次受限重试'),
+  })
+}
 function placeHeld(bin) {
   confirmModalVisible.value = false
   send({ action: 'place_held', bin }, `已下发投放到 ${bin} 区`)
@@ -599,6 +614,10 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
             <a-tag :color="selectedDet.reachable ? 'blue' : 'default'">已选目标</a-tag>
             <b>{{ CN[selectedDet.label] || selectedDet.label }}</b>
             <code v-if="selectedDet.xyz">{{ selectedDet.xyz.map(v => v.toFixed(3)).join(', ') }}</code>
+            <a-tag v-if="selectedQuality" :color="selectedQuality.score >= 68 ? 'success' : 'warning'">
+              抓取评分 {{ selectedQuality.score }}/100 · {{ selectedQuality.grade }}级
+            </a-tag>
+            <span v-if="selectedQuality" class="quality-note">{{ selectedQuality.summary }}</span>
             <a-tag v-if="!selectedDet.reachable" color="default">当前够不着</a-tag>
             <a-space v-if="selectedDet.reachable" wrap>
               <a-button type="primary" @click="runSelected('inspect')">抓起后观察</a-button>
@@ -730,7 +749,7 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
         <div class="infer-terminal">
           <div v-if="!decisionLines.length" class="infer-empty">{{ online ? '等待下一条抓取决策' : '等待视觉抓取节点连接' }}</div>
           <div v-for="line in decisionLines" :key="line.seq" :class="['infer-line', line.level]">
-            <time>{{ decisionTime(line.at) }}</time>
+            <time>{{ decisionTime(line.at) }}<em v-if="line.elapsed_ms != null">+{{ line.elapsed_ms }}ms</em></time>
             <b>{{ PHASE_CN[line.phase] || line.phase }}</b>
             <span><strong>{{ line.summary }}</strong><small v-if="line.detail">{{ line.detail }}</small></span>
           </div>
@@ -740,6 +759,14 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
         <div v-if="sb?.grasp_analysis" class="infer-detail">
           IK 邻域 {{ sb.grasp_analysis.reachable_samples }}/9 · 关节余量 {{ sb.grasp_analysis.best.limit_margin_deg }}° ·
           Roll/夹爪垂直 {{ sb.grasp_analysis.best.pitch_deg }}°
+        </div>
+        <div v-if="lastFailure" class="failure-card">
+          <div><b>最近失败 · {{ lastFailure.code }}</b><time>{{ decisionTime(lastFailure.at) }}</time></div>
+          <p>{{ lastFailure.summary }}</p>
+          <small v-if="lastFailure.retry">建议：{{ lastFailure.retry.label }} · {{ lastFailure.retry.safety }}</small>
+          <a-button v-if="lastFailure.retry?.available" block danger size="small" @click="retryLastGrasp">
+            人工确认后仅重试一次
+          </a-button>
         </div>
       </a-card>
       <CudaInferenceCard style="margin:10px 0" />
@@ -1096,8 +1123,9 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
 .infer-summary { padding:8px 10px; border:1px solid var(--border); border-radius:7px; background:var(--surface-2); font-size:12px; line-height:1.55; color:var(--text-2); }
 .infer-terminal { margin-top:9px; padding:8px 0; min-height:260px; max-height:520px; overflow:auto; border-radius:7px; background:#101821; font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; }
 .infer-empty { padding:18px; text-align:center; color:#6f8295; }
-.infer-line { display:grid; grid-template-columns:58px 38px minmax(0,1fr); gap:6px; padding:5px 9px; color:#c5d1df; border-bottom:1px solid rgba(255,255,255,.035); }
-.infer-line time { color:#6f8295; }.infer-line b { color:#5dc3ff; font-weight:600; }.infer-line.warn b { color:#ffbc5b; }.infer-line.error b,.infer-line.error span { color:#ff8e8e; }.infer-line.success b { color:#6bd89b; }
+.infer-line { display:grid; grid-template-columns:72px 38px minmax(0,1fr); gap:6px; padding:5px 9px; color:#c5d1df; border-bottom:1px solid rgba(255,255,255,.035); }
+.infer-line time { color:#6f8295; }.infer-line time em{display:block;color:#3f9dbd;font:8px ui-monospace;font-style:normal}.infer-line b { color:#5dc3ff; font-weight:600; }.infer-line.warn b { color:#ffbc5b; }.infer-line.error b,.infer-line.error span { color:#ff8e8e; }.infer-line.success b { color:#6bd89b; }
+.quality-note{color:var(--text-3);font-size:11px}.failure-card{margin-top:9px;padding:9px;border:1px solid rgba(251,113,133,.28);border-radius:8px;background:rgba(127,29,29,.08)}.failure-card>div{display:flex;justify-content:space-between;gap:8px}.failure-card b{color:#fb7185;font-size:11px}.failure-card time{color:var(--text-3);font:10px ui-monospace}.failure-card p{margin:6px 0;color:var(--text-2);font-size:11px}.failure-card small{display:block;margin-bottom:8px;color:#fbbf24;font-size:10px;line-height:1.5}
 .infer-line span,.infer-line strong,.infer-line small { overflow-wrap:anywhere; }.infer-line strong { display:block; color:inherit; font-weight:600; }.infer-line small { display:block; margin-top:1px; color:#8fa2b5; font:11px/1.45 system-ui,sans-serif; }
 .infer-line.error small { color:#d98989; }.infer-detail { margin-top:8px; font-size:12px; line-height:1.6; color:var(--text-3); }
 .advanced-panels :deep(.ant-collapse-item) { border:1px solid var(--border); border-radius:8px!important; margin-bottom:8px; overflow:hidden; }

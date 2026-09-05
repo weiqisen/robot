@@ -424,6 +424,8 @@ class SnackButler(Node):
         self.motion_intent = None
         self.auto = False
         self.stats = {'picked': 0, 'failed': 0, 'started': time.time()}
+        self.failure_history = deque(maxlen=12)
+        self.last_failure = None
         self.calib_samples = []
         self.cam_w = 0              # 相机原始宽度（用来算降采样比例）
         self._last_dec = 0.0        # 上次解码时刻，用于限速
@@ -530,6 +532,19 @@ class SnackButler(Node):
             item['data'] = data
         self.decision_log.append(item)
         del self.decision_log[:-80]
+
+    def record_failure(self, code, phase, summary, target=None, retry=None):
+        """保留结构化失败证据；retry 只是建议，绝不在这里自动启动动作。"""
+        item = {
+            'id': uuid.uuid4().hex[:8], 'at': round(time.time(), 3), 'code': code,
+            'phase': phase, 'summary': summary,
+            'target': None if not target else {k: copy.deepcopy(v) for k, v in target.items()
+                                               if not k.startswith('_')},
+            'retry': retry,
+        }
+        self.last_failure = item
+        self.failure_history.append(item)
+        return item
 
     def begin_decision_task(self, action, detail=''):
         self.decision_task_id = uuid.uuid4().hex[:8]
@@ -1322,6 +1337,7 @@ class SnackButler(Node):
             self.state, self.step = 'IDLE', '目标已移动、消失或当前不可抓'
             self.last_error = '重新识别后无法安全匹配 3D 目标 #%s，未执行机械臂动作' % track_id
             self.decision('select', '目标复核失败', self.last_error, 'error')
+            self.record_failure('target_mismatch', 'select', self.last_error, old)
             return
         self.target = tgt
         self.decision('select', '目标复核通过：%s #%s' % (tgt.get('label'), tgt.get('track_id')),
@@ -1329,6 +1345,40 @@ class SnackButler(Node):
                       ', '.join('%.3f' % v for v in tgt['xyz']), 'success')
         success = yield from self.seq_grasp(tgt, outcome=outcome)
         if success and not self.auto and not self.held_target:
+            yield from self.seq_goto_observe()
+            self.clear_action_journal()
+
+    def seq_retry_last_grasp(self, failure_id):
+        """人工确认后执行一次受限重试：重新识别、近邻匹配、最多多下探 3 mm。"""
+        failure = self.last_failure
+        retry = (failure or {}).get('retry') or {}
+        if (not failure or failure.get('id') != failure_id or failure.get('code') != 'empty_grasp'
+                or not retry.get('available')):
+            self.state, self.step = 'IDLE', '没有可安全重试的空抓记录'
+            self.last_error = '重试记录已过期、已处理或目标不可达'
+            return
+        old = failure.get('target') or {}
+        old_xyz, old_label = old.get('xyz'), old.get('label')
+        self.begin_decision_task('retry_last_grasp', '失败=%s；策略=%s' %
+                                 (failure_id, retry.get('strategy')))
+        yield from self.seq_detect()
+        nearby = [d for d in self.detections if d.get('reachable') and d.get('xyz') and
+                  d.get('label') == old_label and old_xyz and math.dist(d['xyz'], old_xyz) <= .06]
+        if not nearby:
+            self.state, self.step = 'IDLE', '重试已取消：目标无法重新匹配'
+            self.last_error = '重新识别后 6 cm 内没有同类别可达目标，机械臂未动作'
+            self.decision('retry', '安全取消重试', self.last_error, 'error')
+            self.record_failure('retry_target_mismatch', 'retry', self.last_error, old)
+            return
+        tgt = max(nearby, key=lambda d: ((d.get('grasp_quality') or {}).get('score', 0),
+                                         -math.dist(d['xyz'], old_xyz)))
+        self.last_failure = None  # 同一失败记录只允许消费一次
+        self.target = tgt
+        self.decision('retry', '人工确认的受限重试开始',
+                      '已重新匹配 %s #%s；合爪点额外下探最多 3 mm，仍受桌面净空限制' %
+                      (tgt.get('label'), tgt.get('track_id')), 'warn')
+        success = yield from self.seq_grasp(tgt, outcome='inspect', retry_z_adjust=-.003)
+        if success and not self.held_target:
             yield from self.seq_goto_observe()
             self.clear_action_journal()
 
@@ -1523,6 +1573,13 @@ class SnackButler(Node):
             self.decision('verify', '复核失败：原位置仍有目标',
                           '半径 %.0f mm 内发现 %s，停止投放并松爪' %
                           (radius * 1000, ', '.join(str(d.get('label')) for d in remains)), 'error')
+            retry_target = min(remains, key=lambda d: math.hypot(d['xyz'][0]-tx, d['xyz'][1]-ty))
+            self.record_failure('empty_grasp', 'verify', self.last_error, retry_target, {
+                'available': bool(retry_target.get('reachable')),
+                'action': 'retry_last_grasp', 'strategy': 'deeper_3mm',
+                'label': '重新识别后下探增加 3 mm',
+                'safety': '仍受桌面净空、IK、低压与标定硬限制',
+            })
             return 'remains'
         self.get_logger().info('[grasp_verify] target absent from original position')
         self.decision('verify', '复核通过：原位置目标消失',
@@ -1723,7 +1780,7 @@ class SnackButler(Node):
             return
         self.target = tgt
         xyz = tgt.get('xyz') or []
-        select_rule = ('按点击像素最近且命中吸附半径选择' if uv else '按水平距离 x²+y² 最小选择')
+        select_rule = ('按点击像素最近且命中吸附半径选择' if uv else '按抓取质量最高、同分距离最近选择')
         self.decision('select', '选中 %s' % tgt.get('label', '目标'),
                       '坐标 (%s)，%s' % (', '.join('%.3f' % v for v in xyz), select_rule), 'success',
                       {'label': tgt.get('label'), 'xyz': xyz, 'depth_src': tgt.get('depth_src')})
@@ -1879,7 +1936,7 @@ class SnackButler(Node):
             return old_roll, '预抓方向与初次识别差异过大，保持初始角度'
         return roll, '预抓方向复核 %.0f°' % math.degrees(roll)
 
-    def seq_grasp(self, tgt, outcome='route'):
+    def seq_grasp(self, tgt, outcome='route', retry_z_adjust=0.0):
         if self._blocked_lowvolt() or self._blocked_uncalibrated():
             self.decision('safety', '安全检查拒绝抓取', self.last_error or self.step, 'error')
             return False
@@ -1889,7 +1946,10 @@ class SnackButler(Node):
         x += cfg.get('x_offset_hack', 0.0)
         y += cfg.get('y_offset_hack', 0.0)
         zs += cfg.get('z_offset_hack', 0.0)
-        gz = self.grasp_z(zs)
+        # 仅人工确认的空抓重试允许最多额外下探 3 mm，仍受桌面净空硬下限保护。
+        retry_z_adjust = max(-.003, min(0.0, float(retry_z_adjust)))
+        gz = max(self.grasp_z(zs) + retry_z_adjust,
+                 cfg['table_z'] + cfg['grasp_clearance'])
         self.decision('geometry', '计算抓取坐标',
                       '视觉顶面 z=%.3f，补偿后=(%.3f, %.3f, %.3f)，合爪 z=%.3f（桌面保护下限 %.3f）' %
                       (tgt['xyz'][2], x, y, zs, gz, cfg['table_z'] + cfg['grasp_clearance']))
@@ -1907,6 +1967,7 @@ class SnackButler(Node):
             self.stats['failed'] += 1
             self.auto = False
             self.decision('ik', '抓取 IK 无解', self.last_error, 'error')
+            self.record_failure('ik_unreachable', 'ik', self.last_error, tgt)
             return False
         q_pre = (ik_best(x, y, gz + cfg['approach_h'], pitch, seed=q_grasp,
                          wrist_roll=roll, tool=tool)
@@ -2004,8 +2065,13 @@ class SnackButler(Node):
         if verify == 'remains':
             self.gripper(True)  # 疑似空抓：目标还在原位，松爪避免带着物品穿越桌面上方
             self.target = None
+            self.state = 'IDLE'
             self.clear_action_journal()  # 已回观察位、已松爪，属于受控失败而不是中断恢复
             return False
+
+        if verify == 'absent':
+            self.stats['picked'] += 1
+            self.last_failure = None
 
         # manual_confirm_before_place 开着时，抓起后必须人工确认才能投放——
         # 即使复核显示「目标不在了」也不能证明夹住（可能掉了/飞了），即使用户点了 A/B
@@ -2265,6 +2331,12 @@ class SnackButler(Node):
                 self.auto = False
                 outcome = c.get('outcome', 'inspect')
                 self.start(self.seq_pick_track(int(c['track_id']), outcome=outcome))
+            elif a == 'retry_last_grasp':
+                self.auto = False
+                if self._task is not None or self.state != 'IDLE':
+                    self.last_error = '机器人当前不空闲，拒绝覆盖正在执行的动作'
+                else:
+                    self.start(self.seq_retry_last_grasp(str(c.get('failure_id') or '')))
             elif a == 'auto_drive_pick_at':
                 self.auto = False
                 outcome = c.get('outcome', 'inspect')
@@ -2428,6 +2500,8 @@ class SnackButler(Node):
             'scene_objects': self.scene_objects,
             'inspection': inspection,
             'safety_permits': self.safety_permits(),
+            'last_failure': self.last_failure,
+            'failure_history': list(self.failure_history),
             'ee': {'x': round(ee[0], 4), 'y': round(ee[1], 4), 'z': round(ee[2], 4),
                    'pitch_deg': round(math.degrees(ee[3]), 1)},
             'q_deg': [round(math.degrees(v), 1) for v in q],
