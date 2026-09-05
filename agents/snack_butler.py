@@ -25,7 +25,7 @@ JetRover「视觉抓取」——识别目标 -> 算坐标 -> 机械臂抓到指�
     {"action":"set_config","patch":{...}}    改参数并落盘
 状态输出： /snack_butler/state (std_msgs/String, JSON)，标注图 /snack_butler/image_result
 """
-import os, sys, json, math, time, threading, traceback, uuid, copy, subprocess
+import os, sys, json, math, time, threading, traceback, uuid, copy, subprocess, base64
 from collections import deque
 from datetime import datetime
 
@@ -410,6 +410,8 @@ class SnackButler(Node):
         self.scene_objects = []       # 带 track_id/滤波姿态的数字孪生物体
         self._scene_tracks = {}
         self._next_track_id = 1
+        self.last_detection_rgb = None  # 与 detections 同一时刻的画面，供按需目标切图
+        self.inspection = None           # 单击 3D 目标后短时发布，避免持续传输 base64
         # 给网页的结构化决策轨迹。它记录“为什么这样做”，而不只是当前 state/step；
         # 环形上限避免 5Hz 状态消息无限膨胀。
         self.decision_log = []
@@ -599,6 +601,7 @@ class SnackButler(Node):
                 self._vision_results[job['id']] = {
                     'detections': result, 'error': error, 'finished_at': time.time(),
                     'purpose': job['purpose'], 'captured_at': job['snapshot']['captured_at'],
+                    'rgb': job['snapshot']['rgb'],
                 }
                 # 已取消/停止的请求可能没人消费；限制结果缓存，避免常驻进程缓慢增长。
                 if len(self._vision_results) > 32:
@@ -1208,9 +1211,87 @@ class SnackButler(Node):
             self.detections = []
             return []
         self.detections = result['detections']
+        self.last_detection_rgb = result.get('rgb')
         self.last_detection_at = result['finished_at']
         self.update_scene_tracks(self.detections, self.last_detection_at)
         return self.detections
+
+    def inspect_target(self, track_id, request_id=None):
+        """返回与检测结果同帧的按需 JPEG 切图；只在用户点选目标时编码一次。"""
+        try:
+            track_id = int(track_id)
+        except (TypeError, ValueError):
+            self.inspection = {'track_id': track_id, 'request_id': request_id,
+                               'error': '无效的目标编号', 'created_at': time.time()}
+            return
+        det = next((d for d in self.detections if d.get('track_id') == track_id), None)
+        age = time.time() - self.last_detection_at if self.last_detection_at else float('inf')
+        if det is None or self.last_detection_rgb is None or age > 2.0:
+            self.inspection = {'track_id': track_id, 'request_id': request_id,
+                               'error': '目标画面已过期，请等待重新识别',
+                               'created_at': time.time()}
+            return
+        bbox = det.get('bbox') or []
+        if len(bbox) != 4:
+            self.inspection = {'track_id': track_id, 'request_id': request_id,
+                               'error': '该目标没有可用的图像框',
+                               'created_at': time.time()}
+            return
+        x, y, w, h = [int(round(v)) for v in bbox]
+        frame = self.last_detection_rgb
+        pad = max(8, int(max(w, h) * .12))
+        x1, y1 = max(0, x-pad), max(0, y-pad)
+        x2, y2 = min(frame.shape[1], x+w+pad), min(frame.shape[0], y+h+pad)
+        crop = frame[y1:y2, x1:x2]
+        if not crop.size:
+            self.inspection = {'track_id': track_id, 'request_id': request_id,
+                               'error': '目标切图为空', 'created_at': time.time()}
+            return
+        max_side = max(crop.shape[:2])
+        if max_side > 360:
+            scale = 360.0 / max_side
+            crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        ok, encoded = cv2.imencode('.jpg', crop, [cv2.IMWRITE_JPEG_QUALITY, 82])
+        if not ok:
+            self.inspection = {'track_id': track_id, 'request_id': request_id,
+                               'error': 'JPEG 编码失败', 'created_at': time.time()}
+            return
+        self.inspection = {
+            'track_id': track_id, 'request_id': request_id,
+            'label': det.get('label'), 'confidence': det.get('confidence'),
+            'detector': det.get('detector'), 'bbox': list(bbox), 'u': det.get('u'), 'v': det.get('v'),
+            'xyz': det.get('xyz'), 'reachable': bool(det.get('reachable')),
+            'depth_src': det.get('depth_src'), 'geometry': det.get('geometry'),
+            'captured_at': self.last_detection_at, 'created_at': time.time(),
+            'crop': 'data:image/jpeg;base64,' + base64.b64encode(encoded.tobytes()).decode('ascii'),
+        }
+
+    def seq_pick_track(self, track_id, outcome='inspect'):
+        """重新识别后用稳定 track_id 锁定；ID 丢失时只允许近距离同标签匹配。"""
+        old = next((d for d in self.detections if d.get('track_id') == track_id), None)
+        old_xyz = list(old.get('xyz') or []) if old else []
+        old_label = old.get('label') if old else None
+        self.begin_decision_task('pick_track', '3D 目标 #%s；结果=%s' % (track_id, outcome))
+        yield from self.seq_detect()
+        tgt = next((d for d in self.detections
+                    if d.get('track_id') == track_id and d.get('reachable')), None)
+        if tgt is None and len(old_xyz) == 3:
+            nearby = [d for d in self.detections if d.get('reachable') and d.get('xyz') and
+                      d.get('label') == old_label and math.dist(d['xyz'], old_xyz) <= .06]
+            tgt = min(nearby, key=lambda d: math.dist(d['xyz'], old_xyz)) if nearby else None
+        if tgt is None:
+            self.state, self.step = 'IDLE', '目标已移动、消失或当前不可抓'
+            self.last_error = '重新识别后无法安全匹配 3D 目标 #%s，未执行机械臂动作' % track_id
+            self.decision('select', '目标复核失败', self.last_error, 'error')
+            return
+        self.target = tgt
+        self.decision('select', '目标复核通过：%s #%s' % (tgt.get('label'), tgt.get('track_id')),
+                      '重新识别坐标 (%s)，垂直夹爪 IK 可达' %
+                      ', '.join('%.3f' % v for v in tgt['xyz']), 'success')
+        success = yield from self.seq_grasp(tgt, outcome=outcome)
+        if success and not self.auto and not self.held_target:
+            yield from self.seq_goto_observe()
+            self.clear_action_journal()
 
     @staticmethod
     def _angle_blend(old, new, alpha):
@@ -2125,6 +2206,8 @@ class SnackButler(Node):
                 self.step = ('实时视觉分析已开启（最高 %.1f Hz）' %
                              min(float(self.cfg.get('proc_fps') or 3), 3.0)
                              if self.live_analysis else '实时视觉分析已关闭，恢复低频留档')
+            elif a == 'inspect_target':
+                self.inspect_target(c.get('track_id'), c.get('request_id'))
             elif a == 'pick':
                 self.auto = False
                 self.start(self.seq_pick(label=c.get('label'), outcome='route'))
@@ -2132,6 +2215,10 @@ class SnackButler(Node):
                 self.auto = False
                 outcome = c.get('outcome', 'inspect')
                 self.start(self.seq_pick(uv=(float(c['u']), float(c['v'])), outcome=outcome))
+            elif a == 'pick_track':
+                self.auto = False
+                outcome = c.get('outcome', 'inspect')
+                self.start(self.seq_pick_track(int(c['track_id']), outcome=outcome))
             elif a == 'auto_drive_pick_at':
                 self.auto = False
                 outcome = c.get('outcome', 'inspect')
@@ -2251,6 +2338,8 @@ class SnackButler(Node):
         q = self.current_q()
         ee = fk(q, tool=self.cfg['tool_len'])   # 报指尖，和抓取目标同一口径
         vision_guard_m, vision_guard_reason = self.vision_guard()
+        inspection = (self.inspection if self.inspection and
+                      time.time() - self.inspection.get('created_at', 0) <= 5.0 else None)
         m = String()
         m.data = json.dumps({
             'state': self.state, 'step': self.step, 'auto': self.auto,
@@ -2269,6 +2358,7 @@ class SnackButler(Node):
             'detections': [{k: v for k, v in d.items() if not k.startswith('_')}
                            for d in self.detections],
             'scene_objects': self.scene_objects,
+            'inspection': inspection,
             'ee': {'x': round(ee[0], 4), 'y': round(ee[1], 4), 'z': round(ee[2], 4),
                    'pitch_deg': round(math.degrees(ee[3]), 1)},
             'q_deg': [round(math.degrees(v), 1) for v in q],

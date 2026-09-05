@@ -188,6 +188,73 @@ let anglesGroup = null, cameraFovGroup = null, axesGroup = null
 let detectGroup = null      // YOLO 检测结果的 3D 投影
 let intentGroup = null      // 后端真实 IK 求解出的动作意图
 const detectionLabels = []  // 当前识别标签；loop() 按镜头距离做可读性限幅
+const selectedTrackId = ref(null)
+const selectedTarget = ref(null)
+const targetInspection = ref(null)
+const inspectLoading = ref(false)
+const graspConfirmOpen = ref(false)
+let inspectionRequestId = ''
+
+const inspectedAge = computed(() => targetInspection.value?.captured_at
+  ? Math.max(0, state.now / 1000 - targetInspection.value.captured_at) : null)
+const inspectionFresh = computed(() => inspectedAge.value != null && inspectedAge.value <= 4)
+const inspectionXYZ = computed(() => targetInspection.value?.xyz || selectedTarget.value?.raw_xyz ||
+  selectedTarget.value?.scene_xyz || null)
+const fmtTargetXYZ = computed(() => inspectionXYZ.value
+  ? inspectionXYZ.value.map(v => Number(v).toFixed(3)).join(' / ') : '—')
+const detectorName = computed(() => ({ yolov5:'YOLOv5', depth:'深度轮廓', hsv:'HSV' }
+  [targetInspection.value?.detector] || targetInspection.value?.detector || '—'))
+
+function requestTargetInspection(target, confirm = false) {
+  if (!target?.track_id && target?.track_id !== 0) return
+  selectedTrackId.value = target.track_id
+  selectedTarget.value = target
+  inspectLoading.value = true
+  targetInspection.value = null
+  inspectionRequestId = `${Date.now()}-${target.track_id}`
+  if (!actions.snackCmd({ action:'inspect_target', track_id:target.track_id,
+    request_id:inspectionRequestId })) {
+    inspectLoading.value = false
+    message.error('ROS 未连接，无法读取目标切图')
+  }
+  if (confirm) graspConfirmOpen.value = true
+  scheduleDetections()
+}
+
+watch(() => state.snack?.inspection, value => {
+  if (!value || value.request_id !== inspectionRequestId) return
+  inspectLoading.value = false
+  targetInspection.value = { ...value }
+  if (value.error) message.warning(value.error)
+})
+
+watch(selectedTrackId, scheduleDetections)
+
+function closeTargetInspection() {
+  selectedTrackId.value = null
+  selectedTarget.value = null
+  targetInspection.value = null
+  graspConfirmOpen.value = false
+  scheduleDetections()
+}
+
+function analyzeInspectedTarget() {
+  const d = targetInspection.value
+  if (d?.u == null || d?.v == null) return message.warning('目标没有可用的图像坐标')
+  actions.snackCmd({ action:'analyze_grasp_at', u:d.u, v:d.v })
+  message.success('正在做 IK 空跑分析，机械臂不会动作')
+}
+
+function confirmTrackGrasp() {
+  const id = targetInspection.value?.track_id ?? selectedTrackId.value
+  if (id == null) return
+  if (!inspectionFresh.value) return message.warning('目标信息已过期，请先重新扫描')
+  if (!targetInspection.value?.reachable) return message.warning('当前目标垂直夹爪 IK 不可达')
+  if (!actions.snackCmd({ action:'pick_track', track_id:id, outcome:'inspect' }))
+    return message.error('ROS 未连接，无法发出抓取命令')
+  graspConfirmOpen.value = false
+  message.success('已请求重新识别并复核目标；匹配通过后才会抓取')
+}
 let detectionSyncRaf = null, lastDetectionSignature = ''
 const SERVO_MAP = [{ id: 1, joint: 'joint1' }, { id: 2, joint: 'joint2' }, { id: 3, joint: 'joint3' }, { id: 4, joint: 'joint4' }, { id: 5, joint: 'joint5' }, { id: 10, joint: 'r_joint' }]
 
@@ -1629,6 +1696,7 @@ function syncDetections() {
   // 过滤小于 1mm / 1% 置信度的视觉抖动；相同快照不销毁并重建 GPU 资源。
   const q3 = v => Number.isFinite(+v) ? Math.round(+v * 1000) : null
   const signature = JSON.stringify([activeTarget?.track_id ?? null, activeTarget?.label ?? null,
+    selectedTrackId.value,
     (activeXYZ || []).map(q3), objects.map((d, i) => {
     const g = d.geometry || {}
     return [d.track_id ?? i, d.label, (d.scene_xyz || []).map(q3),
@@ -1646,7 +1714,8 @@ function syncDetections() {
     const [x, y, z] = xyz, geom = d.geometry || {}
     const reachable = !!d.reachable, occluded = !!d.occluded
     const active = isActiveTarget(d)
-    const col = DET_COLOR[d.label] ?? (reachable ? 0x43a047 : 0x8b949e)
+    const selected = selectedTrackId.value === d.track_id
+    const col = selected ? 0x38bdf8 : DET_COLOR[d.label] ?? (reachable ? 0x43a047 : 0x8b949e)
     const opacity = occluded ? .18 : reachable ? .62 : .32
     const size = Array.isArray(geom.size) ? geom.size : [.028,.028,.028]
     const bottom = Number.isFinite(geom.bottom_z) ? geom.bottom_z : z-size[2]/2
@@ -1657,6 +1726,7 @@ function syncDetections() {
       model = markDetectionObject(new THREE.Mesh(new THREE.BoxGeometry(...size), detMaterial(col, opacity)))
       model.position.z = size[2]/2
     }
+    model.traverse(n => { n.userData.detectTarget = d })
     model.position.x = x; model.position.y = y; model.position.z += bottom
     detectGroup.add(model)
 
@@ -1699,7 +1769,8 @@ function syncDetections() {
     const name = `${DET_CN[d.label] || d.label || '目标'} #${d.track_id ?? '—'}`
     const conf = d.confidence != null ? ` ${(d.confidence * 100).toFixed(0)}%` : ''
     const tag = layerLabel(name + conf, active
-      ? `${CM(x)} ${CM(y)} · ${occluded ? '暂时遮挡' : reachable ? '已锁定 · 可夹' : '已锁定 · 够不着'}` : '',
+      ? `${CM(x)} ${CM(y)} · ${occluded ? '暂时遮挡' : reachable ? '已锁定 · 可夹' : '已锁定 · 够不着'}`
+      : selected ? `${CM(x)} ${CM(y)} · 已选中${reachable ? ' · 可夹' : ' · 够不着'}` : '',
       '#' + col.toString(16).padStart(6, '0'))
     // 相邻目标错开少量高度和横向位置，避免标签完全重叠；细线仍指回目标本体。
     const lane = objectIndex % 3
@@ -1836,6 +1907,31 @@ function updateDetectionLabelScale() {
 
 let ikTarget = null, dragging = false
 const raycaster = new THREE.Raycaster(), ndc = new THREE.Vector2()
+let scenePointerStart = null, targetClickTimer = null
+
+function detectionAtPointer(e) {
+  if (!detectGroup || !tools.detections) return null
+  const r = renderer.domElement.getBoundingClientRect()
+  ndc.x = (e.clientX - r.left) / r.width * 2 - 1
+  ndc.y = -((e.clientY - r.top) / r.height) * 2 + 1
+  raycaster.setFromCamera(ndc, camera)
+  for (const hit of raycaster.intersectObject(detectGroup, true)) {
+    let node = hit.object
+    while (node && node !== detectGroup) {
+      if (node.userData?.detectTarget) return node.userData.detectTarget
+      node = node.parent
+    }
+  }
+  return null
+}
+
+function onSceneDoubleClick(e) {
+  const target = detectionAtPointer(e)
+  if (!target) return
+  e.preventDefault(); e.stopPropagation()
+  if (targetClickTimer) { clearTimeout(targetClickTimer); targetClickTimer = null }
+  requestTargetInspection(target, true)
+}
 // ---- 关节标注：J1..J5 + 夹爪，直接挂在对应关节上，跟着一起动 ----
 const TAGS = [
   { joint: 'joint1', t: 'J1', sub: '底座回转' },
@@ -1943,9 +2039,20 @@ function solveCCD(target) {
   if (!ikSend) ikSend = setTimeout(() => { ikSend = null; actions.setServosCtl(position, 0.3) }, 120)
 }
 let ikSend = null
-function ptrDown(e) { if (!tools.ik || !ikTarget) return; const r = renderer.domElement.getBoundingClientRect(); ndc.x = (e.clientX - r.left) / r.width * 2 - 1; ndc.y = -((e.clientY - r.top) / r.height) * 2 + 1; raycaster.setFromCamera(ndc, camera); if (raycaster.intersectObject(ikTarget, true).length) { dragging = true; controls.enabled = false } }
+function ptrDown(e) { scenePointerStart = { x:e.clientX, y:e.clientY }; if (!tools.ik || !ikTarget) return; const r = renderer.domElement.getBoundingClientRect(); ndc.x = (e.clientX - r.left) / r.width * 2 - 1; ndc.y = -((e.clientY - r.top) / r.height) * 2 + 1; raycaster.setFromCamera(ndc, camera); if (raycaster.intersectObject(ikTarget, true).length) { dragging = true; controls.enabled = false } }
 function ptrMove(e) { if (!dragging) return; const r = renderer.domElement.getBoundingClientRect(); ndc.x = (e.clientX - r.left) / r.width * 2 - 1; ndc.y = -((e.clientY - r.top) / r.height) * 2 + 1; raycaster.setFromCamera(ndc, camera); const n = camera.getWorldDirection(new THREE.Vector3()).negate(); const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(n, ikTarget.position); const hit = new THREE.Vector3(); if (raycaster.ray.intersectPlane(plane, hit)) { ikTarget.position.copy(hit); solveCCD(hit) } }
-function ptrUp() { if (dragging) { dragging = false; controls.enabled = true } }
+function ptrUp(e) {
+  if (dragging) { dragging = false; controls.enabled = true; scenePointerStart = null; return }
+  const start = scenePointerStart; scenePointerStart = null
+  if (!start || Math.hypot(e.clientX-start.x, e.clientY-start.y) > 5) return
+  const target = detectionAtPointer(e)
+  if (!target) return
+  if (targetClickTimer) clearTimeout(targetClickTimer)
+  targetClickTimer = setTimeout(() => {
+    targetClickTimer = null
+    requestTargetInspection(target, false)
+  }, 280)
+}
 
 function toggleTool(k) {
   tools[k] = !tools[k]
@@ -2056,6 +2163,7 @@ onMounted(() => {
   document.addEventListener('fullscreenchange', onFsChange)
   renderer.domElement.addEventListener('pointerdown', ptrDown)
   renderer.domElement.addEventListener('pointermove', ptrMove)
+  renderer.domElement.addEventListener('dblclick', onSceneDoubleClick)
   window.addEventListener('pointerup', ptrUp)
 })
 onDeactivated(() => {
@@ -2076,9 +2184,11 @@ onBeforeUnmount(() => {
   if (detectionSyncRaf != null) cancelAnimationFrame(detectionSyncRaf)
   if (hostRO) hostRO.disconnect()
   window.removeEventListener('resize', fit); window.removeEventListener('pointerup', ptrUp)
+  renderer?.domElement?.removeEventListener('dblclick', onSceneDoubleClick)
   window.removeEventListener('pointermove', moveDetResize); window.removeEventListener('pointerup', stopDetResize)
   document.removeEventListener('fullscreenchange', onFsChange)
   if (screenTimer) clearInterval(screenTimer)
+  if (targetClickTimer) clearTimeout(targetClickTimer)
   if (screenMesh) { screenMesh.geometry.dispose(); screenMesh.material.dispose() }
   if (screenTex) screenTex.dispose()
   renderer && renderer.dispose()
@@ -2131,6 +2241,61 @@ onBeforeUnmount(() => {
       <div class="df-stat">{{ detFeedStat }}</div>
       <div class="df-resize" title="拖动缩放 · 双击恢复默认" @pointerdown="startDetResize" @dblclick="resetDetFeedSize" />
     </div>
+
+    <div v-if="selectedTarget" class="target-card glass" @pointerdown.stop @pointerup.stop>
+      <div class="tc-head"><span class="tc-lock">TARGET LOCK</span>
+        <b>{{ targetInspection?.label || selectedTarget.label || '目标' }} #{{ selectedTrackId }}</b>
+        <button @click="closeTargetInspection">×</button></div>
+      <div class="tc-body">
+        <div class="tc-crop">
+          <img v-if="targetInspection?.crop" :src="targetInspection.crop" alt="目标识别切图" />
+          <a-spin v-else-if="inspectLoading" size="small" />
+          <span v-else>{{ targetInspection?.error || '等待目标切图' }}</span>
+        </div>
+        <div class="tc-info">
+          <div><span>检测</span><b>{{ detectorName }}</b></div>
+          <div><span>置信度</span><b>{{ targetInspection?.confidence == null ? '—' : (targetInspection.confidence * 100).toFixed(1) + '%' }}</b></div>
+          <div><span>坐标 XYZ</span><b>{{ fmtTargetXYZ }} m</b></div>
+          <div><span>深度来源</span><b>{{ targetInspection?.depth_src || '—' }}</b></div>
+          <div><span>抓取判断</span><b :class="targetInspection?.reachable ? 'tc-ok' : 'tc-bad'">
+            {{ targetInspection?.reachable ? '垂直 IK 可达' : '当前不可达' }}</b></div>
+          <div><span>画面年龄</span><b :class="inspectionFresh ? '' : 'tc-bad'">
+            {{ inspectedAge == null ? '—' : inspectedAge.toFixed(1) + ' 秒' }}</b></div>
+        </div>
+      </div>
+      <div class="tc-actions">
+        <button @click="requestTargetInspection(selectedTarget)">重新扫描切图</button>
+        <button @click="analyzeInspectedTarget">空跑分析</button>
+        <button class="primary" @click="requestTargetInspection(selectedTarget, true)">抓取…</button>
+      </div>
+      <div class="tc-tip">单击查看 · 双击进入抓取确认</div>
+    </div>
+
+    <a-modal v-model:open="graspConfirmOpen" title="确认抓取这个目标？" :footer="null"
+      width="620px" wrap-class-name="target-confirm-modal">
+      <div class="confirm-target">
+        <div class="confirm-crop">
+          <img v-if="targetInspection?.crop" :src="targetInspection.crop" alt="抓取目标切图" />
+          <a-spin v-else-if="inspectLoading" />
+          <span v-else>{{ targetInspection?.error || '正在读取最新切图…' }}</span>
+        </div>
+        <div class="confirm-meta">
+          <h3>{{ targetInspection?.label || selectedTarget?.label || '目标' }} <small>#{{ selectedTrackId }}</small></h3>
+          <p>识别：{{ detectorName }} · {{ targetInspection?.confidence == null ? '无置信度' : (targetInspection.confidence * 100).toFixed(1) + '%' }}</p>
+          <p>坐标：{{ fmtTargetXYZ }} m</p>
+          <p>状态：{{ targetInspection?.reachable ? '垂直夹爪 IK 可达' : '当前不可达' }}</p>
+          <a-alert v-if="!inspectionFresh" type="warning" show-icon message="目标信息已过期，请重新扫描后再抓取" />
+          <a-alert v-else type="info" show-icon message="确认后机器人会再次识别并匹配目标；匹配失败不会动作。" />
+        </div>
+      </div>
+      <div class="confirm-actions">
+        <a-button @click="graspConfirmOpen = false">取消</a-button>
+        <a-button @click="requestTargetInspection(selectedTarget, true)">重新扫描</a-button>
+        <a-button @click="analyzeInspectedTarget">空跑分析</a-button>
+        <a-button type="primary" danger :disabled="!inspectionFresh || !targetInspection?.reachable"
+          @click="confirmTrackGrasp">确认抓起并保持</a-button>
+      </div>
+    </a-modal>
 
     <!-- 材质面板：拖滑块实时看效果，自动存本机，调好一键导出成代码贴回本文件 -->
     <div v-if="matOpen" class="glass panel look">
@@ -2279,6 +2444,46 @@ onBeforeUnmount(() => {
 .df-resize::after { content:''; position:absolute; left:4px; bottom:4px; width:9px; height:9px;
   border-left:2px solid rgba(125,211,252,.85); border-bottom:2px solid rgba(125,211,252,.85);
   filter:drop-shadow(0 0 4px rgba(56,189,248,.55)); }
+.target-card { position:absolute; z-index:15; left:50%; bottom:18px; width:min(540px,calc(100% - 32px));
+  transform:translateX(-50%); border-radius:12px; overflow:hidden; box-shadow:0 18px 52px rgba(0,0,0,.5); }
+.tc-head { height:38px; display:flex; align-items:center; gap:9px; padding:0 11px;
+  border-bottom:1px solid rgba(148,163,184,.14); background:rgba(15,23,42,.66); }
+.tc-head b { color:#e2e8f0; font-size:12px; }.tc-head button { margin-left:auto; border:0;
+  background:transparent; color:#64748b; font-size:19px; cursor:pointer; }.tc-lock { color:#38bdf8;
+  font:700 9px/1 ui-monospace,monospace; letter-spacing:1.2px; }
+.tc-body { display:grid; grid-template-columns:154px 1fr; min-height:112px; }
+.tc-crop { display:flex; align-items:center; justify-content:center; min-height:112px; overflow:hidden;
+  background:#03070b; color:#64748b; font-size:10px; text-align:center; padding:6px; }
+.tc-crop img { width:100%; height:100%; max-height:132px; object-fit:contain; border-radius:5px; }
+.tc-info { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 12px; padding:11px 13px; }
+.tc-info div { min-width:0; }.tc-info span { display:block; color:#64748b; font-size:9px; }
+.tc-info b { display:block; margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  color:#cbd5e1; font:600 10px/1.25 ui-monospace,monospace; }
+.tc-ok { color:#34d399!important; }.tc-bad { color:#fb7185!important; }
+.tc-actions { display:flex; gap:6px; padding:8px 10px; border-top:1px solid rgba(148,163,184,.12); }
+.tc-actions button { flex:1; height:27px; border:1px solid rgba(148,163,184,.18); border-radius:6px;
+  background:rgba(15,23,42,.62); color:#94a3b8; font-size:10px; cursor:pointer; }
+.tc-actions button:hover { color:#e2e8f0; border-color:rgba(56,189,248,.45); }
+.tc-actions button.primary { background:rgba(2,132,199,.24); border-color:rgba(56,189,248,.5); color:#7dd3fc; }
+.tc-tip { padding:0 10px 7px; color:#475569; text-align:right; font-size:8px; }
+:global(.target-confirm-modal .ant-modal-content) { background:#101820; border:1px solid rgba(56,189,248,.25); }
+:global(.target-confirm-modal .ant-modal-title) { color:#e2e8f0; }
+:global(.target-confirm-modal .ant-modal-close) { color:#94a3b8; }
+:global(.target-confirm-modal .confirm-target) { display:grid; grid-template-columns:240px 1fr; gap:16px; }
+:global(.target-confirm-modal .confirm-crop) { min-height:190px; display:flex; align-items:center;
+  justify-content:center; overflow:hidden; border-radius:9px; background:#020609; color:#64748b; }
+:global(.target-confirm-modal .confirm-crop img) { width:100%; height:210px; object-fit:contain; }
+:global(.target-confirm-modal .confirm-meta h3) { color:#e2e8f0; margin:4px 0 12px; }
+:global(.target-confirm-modal .confirm-meta h3 small) { color:#38bdf8; font-family:ui-monospace,monospace; }
+:global(.target-confirm-modal .confirm-meta p) { color:#94a3b8; margin:7px 0; font-size:12px; }
+:global(.target-confirm-modal .confirm-meta .ant-alert) { margin-top:14px; }
+:global(.target-confirm-modal .confirm-actions) { display:flex; justify-content:flex-end; gap:8px;
+  margin-top:18px; padding-top:14px; border-top:1px solid rgba(148,163,184,.15); }
+@media(max-width:640px) { .target-card { bottom:10px; }.tc-body { grid-template-columns:112px 1fr; }
+  .tc-info { gap:6px; padding:8px; }.tc-actions { flex-wrap:wrap; }.tc-actions button { min-width:30%; }
+  :global(.target-confirm-modal .confirm-target) { grid-template-columns:1fr; }
+  :global(.target-confirm-modal .confirm-crop) { min-height:130px; }
+  :global(.target-confirm-modal .confirm-crop img) { height:150px; } }
 .panel { position: absolute; z-index: 10; border-radius: 12px; padding: 14px; }
 .sep { height: 1px; background: rgba(255,255,255,.12); margin: 8px 0; }
 .joints { left: 14px; bottom: 14px; min-width: 210px; }

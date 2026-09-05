@@ -118,6 +118,8 @@ pip3 install anthropic websocket-client
 {"action":"detect"}                       // 只识别
 {"action":"pick","label":"red"}           // 抓某个颜色
 {"action":"pick_at","u":320,"v":240}      // 抓画面上这一点的（网页点击就是这个）
+{"action":"inspect_target","track_id":7,"request_id":"ui-1"} // 按轨迹取对应检测帧的裁剪图
+{"action":"pick_track","track_id":7,"outcome":"inspect"}     // 复检并抓取 3D 场景中选中的轨迹
 {"action":"auto","on":true}               // 自动循环整理
 {"action":"stop"}
 {"action":"gripper","open":true}
@@ -129,6 +131,11 @@ pip3 install anthropic websocket-client
 
 状态在 `/snack_butler/state`（JSON），标注图在 `/snack_butler/image_result`
 （web_video_server: `http://IP:8080/stream?topic=/snack_butler/image_result&type=mjpeg`）。
+
+数字孪生里的投影物品支持单击查看 YOLO/HSV 检测切图、置信度、三维坐标、深度来源、IK
+可达性和结果新鲜度，双击后才显示抓取确认框。确认抓取时不会沿用界面缓存的三维坐标：机器人先回
+观察位重新识别，优先按 `track_id` 匹配；轨迹编号变化时，只允许匹配 6 cm 内的同类别可达目标，
+否则安全中止。切图只来自该次检测对应的原始帧，并且不会触发机械臂运动。
 
 ### 服务重启后的抓取恢复
 
