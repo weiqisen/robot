@@ -15,6 +15,8 @@ const { state, actions, HOST, VISION_VIDEO_PORT } = useRos()
 
 const host = ref(null)
 const loading = ref(true), loadErr = ref('')
+const bootVisible = ref(true), bootStage = ref(0)
+const BOOT_STEPS = ['载入数字车体','连接激光雷达','同步深度视觉','校验机械臂关节','确认 GPU 推理','态势中心就绪']
 // 默认开的只留「看车」必需的几层：示意盒子和坐标轴平时是干扰，识别流才是常看的。
 // 尺寸标注（dimensions）对调试抓取高度有用，默认开着。
 const tools = reactive({ lidar: true, grid: true, points: false, ik: false, tags: false,
@@ -188,6 +190,9 @@ let anglesGroup = null, cameraFovGroup = null, axesGroup = null
 let detectGroup = null      // YOLO 检测结果的 3D 投影
 let intentGroup = null      // 后端真实 IK 求解出的动作意图
 let previewGroup = null     // 点选目标后、执行前的全臂 IK 幽灵预演
+let fxGroup = null, safetyGroup = null, holoScan = null, safetyEnvelope = null, brakeProjection = null
+let flowingPath = null, lockFx = null, previewLinks = [], previewJoints = [], previewPoses = []
+let bootStartedAt = performance.now()
 const detectionLabels = []  // 当前识别标签；loop() 按镜头距离做可读性限幅
 const selectedTrackId = ref(null)
 const selectedTarget = ref(null)
@@ -210,6 +215,11 @@ const targetQuality = computed(() => targetInspection.value?.grasp_quality ||
 const safetyPermits = computed(() => state.snack?.safety_permits || { allowed:false, checks:[] })
 const targetAllowed = computed(() => inspectionFresh.value && !!targetInspection.value?.reachable &&
   !!safetyPermits.value.allowed)
+const safetyHud = computed(() => {
+  const ns=state.navSafety, fresh=state.now-state.navSafetyAt<2000, vx=Math.abs(state.cmd?.linear?.x||0)
+  const projected=Math.max(.16,Math.min(1.2,(ns?.limits?.stop_m||.22)+vx*vx/(2*.32)+vx*.22))
+  return { fresh, armed:fresh&&!!ns?.armed, front:ns?.front_m, projected }
+})
 
 function requestTargetInspection(target, confirm = false) {
   if (!target?.track_id && target?.track_id !== 0) return
@@ -392,6 +402,7 @@ function init() {
     makeJointTags()
     makeScreen()
     loading.value = false
+    bootStartedAt = performance.now(); bootStage.value = 0; bootVisible.value = true
     // 给 scripts/shot.mjs 的场景探针用：改完能直接查对象在不在、位姿对不对
     window.__twin = { scene, robot, camera, renderer, world, THREE, matGroups,
                       get screenMesh() { return screenMesh },
@@ -420,14 +431,18 @@ function init() {
     detectGroup = new THREE.Group()
     intentGroup = new THREE.Group()
     previewGroup = new THREE.Group()
+    fxGroup = new THREE.Group()
+    safetyGroup = new THREE.Group()
     for (const g of [workspaceGroup, selfbodyGroup, dimensionsGroup,
-                     anglesGroup, cameraFovGroup, axesGroup, detectGroup, intentGroup, previewGroup]) anchor.add(g)
+                     anglesGroup, cameraFovGroup, axesGroup, detectGroup, intentGroup, previewGroup,
+                     fxGroup, safetyGroup]) anchor.add(g)
 
     // 构建辅助图层（单位：米，base_link 坐标系）
     buildWorkspace(workspaceGroup)
     buildSelfBody(selfbodyGroup)
     buildDimensions(dimensionsGroup)
     buildAxes(axesGroup)
+    buildSceneFx()
     // 给所有辅助图层的 mesh 打标记，skinRobot 会跳过它们
     for (const g of [workspaceGroup, selfbodyGroup, dimensionsGroup, axesGroup, detectGroup, intentGroup, previewGroup]) {
       g.traverse(o => { if (o.isMesh) o.userData.helperLayer = true })
@@ -733,6 +748,23 @@ function copyCode() {
   else done()
 }
 
+function buildSceneFx() {
+  holoScan = new THREE.Mesh(new THREE.PlaneGeometry(.62,.48), new THREE.MeshBasicMaterial({
+    color:0x22d3ee, transparent:true, opacity:.0, side:THREE.DoubleSide, depthWrite:false,
+    blending:THREE.AdditiveBlending, toneMapped:false }))
+  holoScan.userData.helperLayer=true; fxGroup.add(holoScan)
+  const envGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(.54,.42,.20))
+  safetyEnvelope = new THREE.LineSegments(envGeo, new THREE.LineDashedMaterial({
+    color:0x34d399, transparent:true, opacity:.22, dashSize:.025, gapSize:.015, toneMapped:false }))
+  safetyEnvelope.computeLineDistances(); safetyEnvelope.position.z=.10
+  safetyEnvelope.userData.helperLayer=true; safetyGroup.add(safetyEnvelope)
+  brakeProjection = new THREE.Mesh(new THREE.PlaneGeometry(1,1), new THREE.MeshBasicMaterial({
+    color:0x38bdf8, transparent:true, opacity:.13, side:THREE.DoubleSide, depthWrite:false,
+    blending:THREE.AdditiveBlending, toneMapped:false }))
+  brakeProjection.position.set(.35,0,.002); brakeProjection.userData.helperLayer=true
+  safetyGroup.add(brakeProjection)
+}
+
 function fit() {
   const el = host.value
   if (!el || !renderer) return
@@ -746,6 +778,35 @@ let oledTick = 0
 function loop() {
   if (!pageActive || !renderer) { raf = null; return }
   raf = requestAnimationFrame(loop)
+  const now=performance.now()
+  if (bootVisible.value) {
+    bootStage.value=Math.min(BOOT_STEPS.length-1,Math.floor((now-bootStartedAt)/520))
+    if (now-bootStartedAt>BOOT_STEPS.length*520+450) bootVisible.value=false
+  }
+  if (holoScan) {
+    const active=bootVisible.value || state.snack?.state === 'DETECT'
+    holoScan.visible=active; holoScan.position.z=.01+((now*.00035)%1)*.48
+    holoScan.material.opacity=active ? .10+.10*Math.sin(now*.01)**2 : 0
+  }
+  if (lockFx) { lockFx.rotation.z+=.008; const p=1+.06*Math.sin(now*.008); lockFx.scale.setScalar(p) }
+  if (flowingPath?.material) flowingPath.material.dashOffset-=.0025
+  updatePreviewAnimation(now)
+  if (rimL) {
+    const st=state.snack?.state || 'IDLE', error=st==='ERROR'||st==='RECOVERY', moving=['GRASP','PLACE'].includes(st)
+    rimL.color.set(error ? 0xff315d : moving ? 0xf59e0b : st==='DETECT' ? 0x8b5cf6 : 0x38bdf8)
+    rimL.intensity=lit.rim*(error ? 1.8 : moving ? 1.35 : 1+.12*Math.sin(now*.003))
+  }
+  if (safetyEnvelope && brakeProjection) {
+    const ns=state.navSafety, fresh=state.now-state.navSafetyAt<2000
+    const armed=fresh&&ns?.armed, danger=fresh&&ns?.front_m!=null&&ns.front_m<(ns.limits?.slow_m||.55)
+    const color=!fresh||danger ? 0xfb3158 : armed ? 0xf59e0b : 0x34d399
+    safetyEnvelope.material.color.set(color); safetyEnvelope.material.opacity=danger ? .5 : armed ? .34 : .20
+    safetyEnvelope.material.dashOffset-=.0015
+    const vx=Math.abs(state.cmd?.linear?.x||0), stop=ns?.limits?.stop_m||.22
+    const length=Math.max(.16,Math.min(1.2,stop+vx*vx/(2*.32)+vx*.22))
+    brakeProjection.scale.set(length,.34,1); brakeProjection.position.x=(state.cmd?.linear?.x||0)<0 ? -length/2-.24 : length/2+.24
+    brakeProjection.material.color.set(color); brakeProjection.material.opacity=armed?.16:.07
+  }
   // 风扇转速跟 Jetson 实际温度挂钩：越热转越快，没遥测就按基础转速空转
   if (fanBlades) {
     const t = state.jetson?.temps ? Math.max(...Object.values(state.jetson.temps)) : null
@@ -1696,6 +1757,7 @@ function syncDetections() {
     scene_xyz:d.xyz, geometry:d.geometry, confidence:d.confidence, reachable:d.reachable,
     grasp_quality:d.grasp_quality }))
   const activeTarget = state.snack?.target || state.snack?.held_target || null
+  const recommendedId = state.snack?.candidate_ranking?.[0]?.track_id
   const activeXYZ = activeTarget?.scene_xyz || activeTarget?.xyz
   const isActiveTarget = d => {
     if (!activeTarget) return false
@@ -1706,7 +1768,7 @@ function syncDetections() {
   }
   // 过滤小于 1mm / 1% 置信度的视觉抖动；相同快照不销毁并重建 GPU 资源。
   const q3 = v => Number.isFinite(+v) ? Math.round(+v * 1000) : null
-  const signature = JSON.stringify([activeTarget?.track_id ?? null, activeTarget?.label ?? null,
+  const signature = JSON.stringify([activeTarget?.track_id ?? null, activeTarget?.label ?? null, recommendedId ?? null,
     selectedTrackId.value,
     (activeXYZ || []).map(q3), objects.map((d, i) => {
     const g = d.geometry || {}
@@ -1719,6 +1781,7 @@ function syncDetections() {
   if (signature === lastDetectionSignature) return
   lastDetectionSignature = signature
   clearGroup(detectGroup)
+  lockFx = null
   detectionLabels.length = 0
   for (const [objectIndex, d] of objects.entries()) {
     const xyz = d.scene_xyz
@@ -1728,7 +1791,8 @@ function syncDetections() {
     const active = isActiveTarget(d)
     const selected = selectedTrackId.value === d.track_id
     const col = selected ? 0x38bdf8 : DET_COLOR[d.label] ?? (reachable ? 0x43a047 : 0x8b949e)
-    const opacity = occluded ? .18 : reachable ? .62 : .32
+    const secondary = recommendedId != null && d.track_id !== recommendedId && !selected && !active
+    const opacity = occluded ? .14 : secondary ? (reachable ? .34 : .18) : reachable ? .68 : .28
     const size = Array.isArray(geom.size) ? geom.size : [.028,.028,.028]
     const bottom = Number.isFinite(geom.bottom_z) ? geom.bottom_z : z-size[2]/2
     let model = semanticDetection(geom.kind, size, col, opacity)
@@ -1750,6 +1814,22 @@ function syncDetections() {
     objShadow.position.set(x, y, bottom + .0004)
     objShadow.userData.helperLayer = true
     detectGroup.add(objShadow)
+
+    if (selected || active) {
+      const lock = new THREE.Group(), rr = Math.max(.024, Math.max(size[0],size[1])*.72)
+      const lm = new THREE.MeshBasicMaterial({ color:selected ? 0x67e8f9 : 0xfbbf24,
+        transparent:true, opacity:.9, depthWrite:false, toneMapped:false })
+      const torus = new THREE.Mesh(new THREE.TorusGeometry(rr,.0018,6,40),lm)
+      lock.add(torus)
+      for (let k=0;k<4;k++) {
+        const corner=new THREE.Mesh(new THREE.BoxGeometry(.012,.0025,.0025),lm)
+        const a=Math.PI/4+k*Math.PI/2
+        corner.position.set(Math.cos(a)*rr*1.16,Math.sin(a)*rr*1.16,.003)
+        corner.rotation.z=a; lock.add(corner)
+      }
+      lock.position.set(x,y,bottom+.003); lock.userData.helperLayer=true
+      lock.userData.lockFx=true; detectGroup.add(lock); lockFx=lock
+    }
 
     const hasContour = Array.isArray(geom.footprint) && geom.footprint.length >= 3 && geom.kind === 'contour'
     const edgeGeo = hasContour ? model.geometry.clone() : new THREE.BoxGeometry(...size)
@@ -1821,7 +1901,7 @@ const INTENT_PHASE = { planned:0, safe_move:0, pre_grasp:1, descending:2,
   closing_gripper:2, lifting:3, verify_grasp:3, place_over:0, place_down:1, release:1 }
 function syncMotionIntent() {
   if (!intentGroup) return
-  clearGroup(intentGroup); intentMarker = null
+  clearGroup(intentGroup); intentMarker = null; flowingPath = null
   const intent = state.snack?.motion_intent
   const samples = intent?.samples || [], waypoints = intent?.waypoints || []
   if (samples.length < 2) return
@@ -1835,6 +1915,7 @@ function syncMotionIntent() {
     new THREE.LineDashedMaterial({ color:0x67e8f9, dashSize:.012, gapSize:.006,
       transparent:true, opacity:.92, toneMapped:false }))
   path.computeLineDistances(); path.userData.helperLayer = true; intentGroup.add(path)
+  flowingPath = path
   const active = INTENT_PHASE[intent.phase] ?? 0
   waypoints.forEach((w, i) => {
     if (!Array.isArray(w.xyz)) return
@@ -1868,6 +1949,9 @@ watch(() => state.snack?.motion_intent, syncMotionIntent, { deep:true, flush:'po
 function syncTargetPreview() {
   if (!previewGroup) return
   clearGroup(previewGroup)
+  previewLinks=[]; previewJoints=[]
+  previewPoses=(targetQuality.value?.preview || []).map(p => ({ name:p.name,
+    q:p.q_deg.map(THREE.MathUtils.degToRad) }))
   const qd = targetQuality.value?.q_deg
   if (!Array.isArray(qd) || qd.length < 4 || !selectedTarget.value) return
   const [q1,q2,q3,q4] = qd.map(THREE.MathUtils.degToRad)
@@ -1884,11 +1968,11 @@ function syncTargetPreview() {
     const delta=pts[i+1].clone().sub(pts[i]), mid=pts[i].clone().add(pts[i+1]).multiplyScalar(.5)
     const link=new THREE.Mesh(new THREE.CylinderGeometry(.008,.008,delta.length(),10),mat)
     link.position.copy(mid); link.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),delta.normalize())
-    link.userData.helperLayer=true; previewGroup.add(link)
+    link.userData.helperLayer=true; previewGroup.add(link); previewLinks.push(link)
   }
   for (const p of pts.slice(0,-1)) {
     const joint=new THREE.Mesh(new THREE.SphereGeometry(.012,14,10),mat)
-    joint.position.copy(p); joint.userData.helperLayer=true; previewGroup.add(joint)
+    joint.position.copy(p); joint.userData.helperLayer=true; previewGroup.add(joint); previewJoints.push(joint)
   }
   const tip=pts.at(-1), ring=new THREE.Mesh(new THREE.RingGeometry(.014,.018,28),
     new THREE.MeshBasicMaterial({ color:0x67e8f9, transparent:true, opacity:.85,
@@ -1898,6 +1982,23 @@ function syncTargetPreview() {
   tag.position.copy(tip).add(new THREE.Vector3(0,0,.038)); previewGroup.add(tag); detectionLabels.push(tag)
 }
 watch([targetQuality, selectedTarget], syncTargetPreview, { deep:true, flush:'post' })
+
+function updatePreviewAnimation(now) {
+  if (!previewPoses.length || previewLinks.length < 3) return
+  const phase=(now*.00055)%previewPoses.length, i=Math.floor(phase), f=phase-i
+  const smooth=f*f*(3-2*f), a=previewPoses[i].q, b=previewPoses[(i+1)%previewPoses.length].q
+  const q=a.map((v,k)=>v+(b[k]-v)*smooth), [q1,q2,q3,q4]=q
+  const psi=-q1, baseX=.0251328, shoulderZ=.1112675, lens=[.1294164,.1294446,.1712833]
+  let r=0,z=shoulderZ, angle=q2
+  const pts=[new THREE.Vector3(baseX,0,z)]
+  for(let k=0;k<3;k++){r+=lens[k]*Math.sin(angle);z+=lens[k]*Math.cos(angle)
+    pts.push(new THREE.Vector3(baseX+r*Math.cos(psi),r*Math.sin(psi),z));angle+=q[k+2]||0}
+  previewLinks.forEach((link,k)=>{const d=pts[k+1].clone().sub(pts[k]);link.position.copy(pts[k]).add(pts[k+1]).multiplyScalar(.5)
+    link.scale.y=d.length()/lens[k];link.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),d.normalize())})
+  previewJoints.forEach((j,k)=>j.position.copy(pts[k]))
+  previewGroup.children.at(-2)?.position.copy(pts.at(-1))
+  previewGroup.children.at(-1)?.position.copy(pts.at(-1)).add(new THREE.Vector3(0,0,.038))
+}
 
 // 辅助图层的标签。画法照 tagSprite：只画一个圆角框，框外留透明 ——
 // 整块画布铺底色的话，场景里就是一堆跟着透视缩放的灰板子。
@@ -2248,6 +2349,12 @@ onBeforeUnmount(() => {
     <div ref="host" class="scene" />
     <div v-if="loading" class="loading"><a-spin size="large" /><div style="margin-top:12px">加载模型…</div></div>
     <div v-if="loadErr" class="loading">模型加载失败：{{ loadErr }}</div>
+    <transition name="bootfade"><div v-if="bootVisible && !loading" class="boot-hud">
+      <div class="boot-ring"><i /><span>JETROVER</span><b>{{ Math.round((bootStage+1)/BOOT_STEPS.length*100) }}%</b></div>
+      <div class="boot-list"><div v-for="(s,i) in BOOT_STEPS" :key="s" :class="{ done:i<bootStage, active:i===bootStage }">
+        <i>{{ i<bootStage ? '✓' : i===bootStage ? '◈' : '·' }}</i><span>{{ s }}</span></div></div>
+      <small>HOLOGRAPHIC SYSTEM CHECK</small>
+    </div></transition>
 
     <div class="scene-menu glass">
       <button :class="{ on: sceneMenu === 'layers' }" @click="toggleSceneMenu('layers')">图层</button>
@@ -2277,6 +2384,11 @@ onBeforeUnmount(() => {
         <button :class="{ on: tools.detections }" @click="toggleTool('detections')">3D 识别目标</button>
         <button :class="{ on: tools.detectionFeed }" @click="tools.detectionFeed = !tools.detectionFeed">实时识别画面</button>
       </div>
+    </div>
+    <div class="safety-hud glass" :class="{ armed:safetyHud.armed, offline:!safetyHud.fresh }">
+      <i /> <span>SAFETY ENVELOPE</span>
+      <b>{{ safetyHud.fresh ? `${safetyHud.projected.toFixed(2)}m` : 'OFFLINE' }}</b>
+      <small>前向 {{ safetyHud.front == null ? '—' : safetyHud.front.toFixed(2)+'m' }}</small>
     </div>
 
     <!-- YOLO 识别画面小窗：浮在右上角，工具列左边 -->
@@ -2467,6 +2579,8 @@ onBeforeUnmount(() => {
 .scene { position: absolute; inset: 0; }
 .scene :deep(canvas) { display: block; }
 .loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; color: rgba(255,255,255,.6); font-family: ui-monospace, monospace; }
+.boot-hud{position:absolute;inset:0;z-index:30;display:flex;align-items:center;justify-content:center;gap:28px;pointer-events:none;background:radial-gradient(circle,rgba(8,47,73,.28),rgba(3,7,12,.78));backdrop-filter:blur(2px);font-family:ui-monospace,monospace}.boot-ring{position:relative;width:126px;height:126px;border:1px solid rgba(34,211,238,.5);border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#67e8f9;box-shadow:0 0 35px rgba(34,211,238,.14),inset 0 0 25px rgba(34,211,238,.08)}.boot-ring:before,.boot-ring i{content:'';position:absolute;inset:8px;border:2px dashed rgba(56,189,248,.36);border-radius:50%;animation:bootspin 5s linear infinite}.boot-ring i{inset:-8px;border-style:solid;border-color:#22d3ee transparent transparent;animation-duration:1.5s}.boot-ring span{font-size:12px;letter-spacing:2px}.boot-ring b{font-size:24px;margin-top:5px}.boot-list{min-width:210px}.boot-list div{display:flex;gap:9px;padding:5px;color:#475569;font-size:10px}.boot-list div.active{color:#67e8f9;text-shadow:0 0 9px #0891b2}.boot-list div.done{color:#34d399}.boot-hud>small{position:absolute;bottom:18%;color:#28546b;letter-spacing:3px;font-size:8px}.bootfade-leave-active{transition:opacity .45s}.bootfade-leave-to{opacity:0}@keyframes bootspin{to{transform:rotate(360deg)}}
+.safety-hud{position:absolute;z-index:8;left:14px;top:14px;display:grid;grid-template-columns:10px auto auto;align-items:center;gap:5px 8px;padding:7px 10px;pointer-events:none}.safety-hud i{width:7px;height:7px;border-radius:50%;background:#34d399;box-shadow:0 0 9px #34d399}.safety-hud span{color:#6ee7b7;font:700 8px ui-monospace;letter-spacing:1px}.safety-hud b{color:#34d399;font:700 10px ui-monospace}.safety-hud small{grid-column:2/4;color:#64748b;font:8px ui-monospace}.safety-hud.armed i{background:#f59e0b;box-shadow:0 0 9px #f59e0b}.safety-hud.armed span,.safety-hud.armed b{color:#fbbf24}.safety-hud.offline i{background:#fb3158;box-shadow:0 0 9px #fb3158}.safety-hud.offline span,.safety-hud.offline b{color:#fb7185}
 .glass { background: rgba(14,17,22,.55); backdrop-filter: blur(16px); border: 1px solid rgba(255,255,255,.12); color: #eef2f6; }
 .scene-menu { position:absolute; z-index:12; top:12px; left:50%; transform:translateX(-50%);
   display:flex; gap:3px; padding:4px; border-radius:9px; white-space:nowrap; }

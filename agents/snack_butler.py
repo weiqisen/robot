@@ -1195,6 +1195,18 @@ class SnackButler(Node):
             if nearest < .045: cautions.append('邻近物体过近')
             if q and ik_margin < math.radians(12): cautions.append('关节接近限位')
             if confidence is not None and confidence < .45: cautions.append('检测置信度偏低')
+            preview = None
+            if q and xyz:
+                gz = SnackButler._grasp_z_cfg(xyz[2], cfg)
+                q_pre = ik_best(xyz[0], xyz[1], gz + cfg['approach_h'], GRASP_PITCH,
+                                seed=q, tool=cfg['tool_len']) or q
+                q_lift = ik_best(xyz[0], xyz[1], gz + cfg['lift_h'], GRASP_PITCH,
+                                 seed=q, tool=cfg['tool_len']) or q_pre
+                q_safe = ik_best(xyz[0], xyz[1], cfg.get('safe_z', .08), GRASP_PITCH,
+                                 seed=q_pre, tool=cfg['tool_len']) or q_pre
+                preview = [{'name': name, 'q_deg': [round(math.degrees(v), 1) for v in pose]}
+                           for name, pose in [('安全点', q_safe), ('预抓', q_pre),
+                                              ('下探', q), ('抬升', q_lift)]]
             det['grasp_quality'] = {
                 'score': 0 if blockers else score,
                 'grade': 'A' if score >= 82 and not blockers else
@@ -1202,6 +1214,7 @@ class SnackButler(Node):
                          'C' if score >= 50 and not blockers else 'D',
                 'ik_margin_deg': round(math.degrees(ik_margin), 1),
                 'q_deg': [round(math.degrees(v), 1) for v in q] if q else None,
+                'preview': preview,
                 'nearest_object_m': round(nearest, 3),
                 'depth_score': round(depth_score, 2),
                 'blockers': blockers, 'cautions': cautions,
