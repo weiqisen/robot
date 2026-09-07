@@ -1506,6 +1506,8 @@ class SnackButler(Node):
 
     def at_observe(self):
         """只有机械臂确实在观察位时才做后台识别，避免 eye-in-hand 位姿不一致。"""
+        if any(name not in self.joint_rad for name in JOINT_NAMES):
+            return False
         want = [math.radians(a) for a in self.cfg['observe_deg']]
         return max(abs(a - b) for a, b in zip(self.current_q(), want)) <= math.radians(5.0)
 
@@ -1553,6 +1555,14 @@ class SnackButler(Node):
                     self._last_idle_signature = signature
                     self._last_idle_decision_at = now_done
         if hz <= 0 or self.state != 'IDLE' or self.rgb is None or self._idle_vision_request:
+            return
+        # eye-in-hand 视觉只有在观察位才有稳定、已标定的覆盖范围。尤其 controller
+        # 重启后 joint_states 会回到全零而实体舵机保持原位；此时继续跑检测会把正确
+        # 深度点套进错误 TF，表现成“有画面但永远 0 个目标”。明确暂停并提示归位。
+        if not self.at_observe():
+            self.step = '等待观察位：实时识别暂停'
+            self.detections = []
+            self.scene_objects = []
             return
         if now - self._last_idle_scan < 1.0 / hz:
             return
@@ -2544,7 +2554,7 @@ class SnackButler(Node):
         m = String()
         m.data = json.dumps({
             'state': self.state, 'step': self.step, 'auto': self.auto,
-            'analysis': {'live': self.live_analysis,
+            'analysis': {'live': self.live_analysis, 'pose_ready': self.at_observe(),
                          'last_at': round(self.last_detection_at, 3) if self.last_detection_at else None,
                          'detections': len(self.detections),
                          'worker_active': self._vision_active,

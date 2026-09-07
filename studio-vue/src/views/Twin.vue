@@ -160,6 +160,7 @@ const detFeedSrc = computed(() => (tools.detectionFeed
 const detFeedStat = computed(() => {
   const sb = state.snack
   if (!sb) return '视觉节点未运行'
+  if (sb.analysis?.pose_ready === false) return '机械臂不在观察位 · 识别已暂停'
   const n = (sb.detections || []).length
   const yolo = sb.detector
   if (yolo?.yolo_error) return 'YOLO 加载失败'

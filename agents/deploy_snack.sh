@@ -301,7 +301,7 @@ EOF
 sudo chmod 440 /etc/sudoers.d/jetrover-webctl
 sudo visudo -cf /etc/sudoers.d/jetrover-webctl >/dev/null"
 
-$SSH "$USER_@$ROBOT" 'sudo systemctl daemon-reload && sudo systemctl enable start_app_node snack-butler lidar-watchdog nav-safety exploration-nav explorer-agent vision-video vision-video-guard x11vnc && sudo systemctl restart start_app_node && sudo systemctl restart snack-butler lidar-watchdog nav-safety exploration-nav explorer-agent vision-video vision-video-guard x11vnc'
+$SSH "$USER_@$ROBOT" 'sudo systemctl daemon-reload && sudo systemctl enable start_app_node snack-butler lidar-watchdog nav-safety exploration-nav explorer-agent vision-video vision-video-guard x11vnc && if ! systemctl is-active --quiet start_app_node; then sudo systemctl start start_app_node; fi && sudo systemctl restart snack-butler lidar-watchdog nav-safety exploration-nav explorer-agent vision-video vision-video-guard x11vnc'
 echo "== 精简 bringup / snack-butler / lidar-watchdog / nav-safety / exploration-nav / explorer-agent / x11vnc 已启动"
 $SSH "$USER_@$ROBOT" 'systemctl is-active snack-butler || sudo journalctl -u snack-butler -n 30 --no-pager'
 
