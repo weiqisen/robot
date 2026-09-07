@@ -2165,6 +2165,12 @@ class SnackButler(Node):
     def seq_place_held(self, binname):
         if not self.held_target:
             self.state = 'IDLE'; self.step = '没有已夹起的物体'; return
+        if binname not in self.cfg.get('bins', {}):
+            self.state = 'HOLDING'
+            self.step = '投放策略无效，继续保持目标'
+            self.last_error = '后台不存在投放点 %s，请刷新策略或先示教该点位' % binname
+            self.decision('command', '拒绝未知投放点', self.last_error, 'error')
+            return
         self.decision('command', '收到人工投放确认', '投放区=%s' % binname)
         yield from self.seq_place(binname)
         self.held_target = None
@@ -2172,7 +2178,7 @@ class SnackButler(Node):
 
     def seq_place(self, binname):
         cfg = self.cfg
-        b = cfg['bins'].get(binname) or list(cfg['bins'].values())[0]
+        b = cfg['bins'][binname]
         bx, by, bz = b['xyz']
         self.state = 'PLACE'
         self.step = f'搬运到 {b.get("label", binname)}'

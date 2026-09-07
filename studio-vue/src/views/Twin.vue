@@ -235,6 +235,7 @@ const selectedTarget = ref(null)
 const targetInspection = ref(null)
 const inspectLoading = ref(false)
 const graspConfirmOpen = ref(false)
+const holdingPlaceOpen = ref(false)
 let inspectionRequestId = ''
 
 const inspectedAge = computed(() => targetInspection.value?.captured_at
@@ -251,6 +252,9 @@ const targetQuality = computed(() => targetInspection.value?.grasp_quality ||
 const safetyPermits = computed(() => state.snack?.safety_permits || { allowed:false, checks:[] })
 const targetAllowed = computed(() => inspectionFresh.value && !!targetInspection.value?.reachable &&
   !!safetyPermits.value.allowed)
+const holdingBins = computed(() => Object.entries(state.snack?.cfg?.bins || {}).map(([key, bin]) => ({
+  key, label: bin?.label || key, xyz: Array.isArray(bin?.xyz) ? bin.xyz : null,
+})))
 const safetyHud = computed(() => {
   const ns=state.navSafety, fresh=state.now-state.navSafetyAt<2000, vx=Math.abs(state.cmd?.linear?.x||0)
   const projected=Math.max(.16,Math.min(1.2,(ns?.limits?.stop_m||.22)+vx*vx/(2*.32)+vx*.22))
@@ -289,14 +293,28 @@ function requestTargetInspection(target, confirm = false) {
 
 watch(() => state.snack?.inspection, value => {
   if (!value || value.request_id !== inspectionRequestId) return
+  // 状态会高频广播，同一个 inspection 也会随之重复出现；同一请求只消费一次。
+  inspectionRequestId = ''
   inspectLoading.value = false
   targetInspection.value = { ...value }
   if (value.error) message.warning(value.error)
 })
 
+// 每次真正进入 HOLDING 只展示一次；关闭后不会被高频状态广播重新拉起。
+watch(() => state.snack?.state, (next, previous) => {
+  if (next === 'HOLDING' && previous !== 'HOLDING') {
+    closeTargetInspection()
+    holdingPlaceOpen.value = true
+  } else if (next !== 'HOLDING') {
+    holdingPlaceOpen.value = false
+  }
+}, { immediate:true })
+
 watch(selectedTrackId, scheduleDetections)
 
 function closeTargetInspection() {
+  inspectionRequestId = ''
+  inspectLoading.value = false
   selectedTrackId.value = null
   selectedTarget.value = null
   targetInspection.value = null
@@ -320,8 +338,22 @@ function confirmTrackGrasp() {
   if (!safetyPermits.value.allowed) return message.warning(safetyPermits.value.summary || '抓取安全许可未通过')
   if (!actions.snackCmd({ action:'pick_track', track_id:id, outcome:'inspect' }))
     return message.error('ROS 未连接，无法发出抓取命令')
-  graspConfirmOpen.value = false
+  closeTargetInspection()
   message.success('已提交复核；将按补偿后的实际抓取点重新计算 IK，通过后才执行')
+}
+
+function placeHeldAt(bin) {
+  if (!actions.snackCmd({ action:'place_held', bin }))
+    return message.error('ROS 未连接，无法下发投放策略')
+  holdingPlaceOpen.value = false
+  message.success(`已选择投放策略：${holdingBins.value.find(x => x.key === bin)?.label || bin}`)
+}
+
+function releaseHeldTarget() {
+  if (!actions.snackCmd({ action:'gripper', open:true }))
+    return message.error('ROS 未连接，无法松开夹爪')
+  holdingPlaceOpen.value = false
+  message.warning('已下发原地松爪')
 }
 let detectionSyncRaf = null, lastDetectionSignature = ''
 const SERVO_MAP = [{ id: 1, joint: 'joint1' }, { id: 2, joint: 'joint2' }, { id: 3, joint: 'joint3' }, { id: 4, joint: 'joint4' }, { id: 5, joint: 'joint5' }, { id: 10, joint: 'r_joint' }]
@@ -2601,6 +2633,26 @@ onBeforeUnmount(() => {
       </div>
     </a-modal>
 
+    <a-modal v-model:open="holdingPlaceOpen" title="已夹起 · 选择后续策略" :footer="null"
+      width="520px" :maskClosable="false">
+      <div class="holding-strategy">
+        <a-alert type="warning" show-icon
+          :message="state.snack?.step || '机械臂正在保持目标，请选择后台预制投放点'" />
+        <div v-if="holdingBins.length" class="holding-bin-list">
+          <a-button v-for="bin in holdingBins" :key="bin.key" size="large" block
+            type="primary" @click="placeHeldAt(bin.key)">
+            投放到 {{ bin.label }}（{{ bin.key }}）
+            <small v-if="bin.xyz">{{ bin.xyz.map(v => Number(v).toFixed(3)).join(' / ') }} m</small>
+          </a-button>
+        </div>
+        <a-alert v-else type="error" show-icon message="后台尚未保存投放点，请先在视觉抓取页示教点位" />
+        <div class="holding-secondary">
+          <a-button @click="holdingPlaceOpen = false">继续保持</a-button>
+          <a-button danger @click="releaseHeldTarget">未夹住 / 原地松爪</a-button>
+        </div>
+      </div>
+    </a-modal>
+
     <!-- 材质面板：拖滑块实时看效果，自动存本机，调好一键导出成代码贴回本文件 -->
     <div v-if="matOpen" class="glass panel look">
       <h4>材质与光照
@@ -2700,6 +2752,11 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.holding-strategy { display:grid; gap:16px; }
+.holding-bin-list { display:grid; gap:10px; }
+.holding-bin-list button { height:auto; min-height:50px; display:flex; align-items:center; justify-content:space-between; }
+.holding-bin-list small { margin-left:14px; opacity:.72; font-size:11px; font-family:monospace; }
+.holding-secondary { display:flex; justify-content:flex-end; gap:10px; }
 .twin { position: absolute; inset: 0; overflow: hidden;
   background:
     radial-gradient(ellipse at 52% 46%, rgba(31,58,75,.52) 0%, rgba(13,24,34,.38) 32%, transparent 63%),

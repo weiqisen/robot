@@ -391,13 +391,13 @@ function releaseHeld() {
   send({ action: 'gripper', open: true }, '已松爪')
 }
 
-// 人工确认弹窗：held_target 变为 unconfirmed 时自动弹出
+// 每次进入 HOLDING 只弹一次。不能深度监听 held_target：节点会高频发布新对象，
+// 那会让用户关闭或选择后又被同一份数据反复拉起。
 const confirmModalVisible = ref(false)
-watch(() => sb.value?.held_target, (newVal, oldVal) => {
-  if (newVal?.verification === 'unconfirmed' && !oldVal?.verification) {
-    confirmModalVisible.value = true
-  }
-}, { deep: true })
+watch(() => sb.value?.state, (next, previous) => {
+  if (next === 'HOLDING' && previous !== 'HOLDING') confirmModalVisible.value = true
+  else if (next !== 'HOLDING') confirmModalVisible.value = false
+}, { immediate:true })
 
 
 function toggleRecording() {
@@ -1091,12 +1091,12 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
         请目视确认机械臂是否真的夹起了目标
       </div>
       <a-space direction="vertical" style="width:100%" :size="12">
-        <a-button type="primary" size="large" block @click="placeHeld('A')">
-          ✓ 确认夹起，投放到左侧
+        <a-button v-for="(bin, key) in (cfg.bins || {})" :key="key"
+          type="primary" size="large" block @click="placeHeld(key)">
+          ✓ 确认夹起，投放到 {{ bin.label || key }}（{{ key }}）
         </a-button>
-        <a-button size="large" block @click="placeHeld('B')">
-          ✓ 确认夹起，投放到右侧
-        </a-button>
+        <a-alert v-if="!Object.keys(cfg.bins || {}).length" type="error" show-icon
+          message="后台尚未保存投放点，请先完成点位示教" />
         <a-button danger size="large" block @click="releaseHeld">
           ✗ 没夹起，原地松爪
         </a-button>
