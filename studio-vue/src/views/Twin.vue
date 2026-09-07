@@ -2527,7 +2527,8 @@ onBeforeUnmount(() => {
           </g>
         </svg>
       </div>
-      <div class="df-stat">{{ detFeedStat }}</div>
+      <div class="df-stat"><span>{{ detFeedStat }}</span><button v-if="state.snack?.analysis?.pose_ready === false"
+        @click="actions.snackCmd({ action:'observe' })">回观察位并识别</button></div>
       <div class="df-resize" title="拖动缩放 · 双击恢复默认" @pointerdown="startDetResize" @dblclick="resetDetFeedSize" />
     </div>
 
@@ -2744,8 +2745,10 @@ onBeforeUnmount(() => {
 .df-close { color: #64748B; font-size: 13px; line-height: 1; cursor: pointer; padding: 0 2px; }
 .df-close:hover { color: #CBD5E1; }
 .df-stage{position:relative;min-height:0;flex:1;background:#000;overflow:hidden}.df-img{display:block;width:100%;height:100%;object-fit:contain;background:#000}.df-boxes{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}.df-boxes g{pointer-events:all;cursor:crosshair}.df-boxes rect{fill:transparent;stroke:transparent;stroke-width:3;vector-effect:non-scaling-stroke;transition:.14s}.df-boxes text{fill:transparent;font:700 12px ui-monospace;paint-order:stroke;stroke:#031018;stroke-width:3;transition:.14s}.df-boxes g.hot rect{fill:rgba(34,211,238,.08);stroke:#67e8f9;filter:drop-shadow(0 0 5px #22d3ee)}.df-boxes g.hot text{fill:#a5f3fc}
-.df-stat { padding: 4px 9px; font-size: 9px; color: #94A3B8; text-align: right;
-  background: rgba(15,23,42,.4); }
+.df-stat { min-height:22px; padding: 4px 9px; font-size: 9px; color: #94A3B8; text-align: right;
+  background: rgba(15,23,42,.4); display:flex; align-items:center; justify-content:flex-end; gap:7px; }
+.df-stat button { border:1px solid rgba(56,189,248,.35); border-radius:4px; padding:2px 6px;
+  background:rgba(14,116,144,.18); color:#67e8f9; font:600 8px/1.3 inherit; cursor:pointer; }
 .df-resize { position:absolute; left:0; bottom:0; width:22px; height:22px; cursor:nesw-resize;
   touch-action:none; z-index:2; }
 .df-resize::after { content:''; position:absolute; left:4px; bottom:4px; width:9px; height:9px;
