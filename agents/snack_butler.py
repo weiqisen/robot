@@ -1028,6 +1028,11 @@ class SnackButler(Node):
                            self.cfg['gripper_open'] if opened else self.cfg['gripper_close'])], d)
         return d + 0.15
 
+    def arm_move_duration(self, q, min_s=.65, max_s=1.8, speed_deg_s=55.0):
+        """按最大关节跨度给运动分配时间，避免固定时长造成忽快忽慢。"""
+        span = max((abs(a - b) for a, b in zip(q, self.q_cmd)), default=0.0)
+        return clamp(math.degrees(span) / max(1.0, speed_deg_s), min_s, max_s)
+
     def beep(self, ms=80):
         try:
             b = BuzzerState()
@@ -1694,6 +1699,19 @@ class SnackButler(Node):
         self.send_arm([math.radians(a) for a in self.cfg['home_deg']], self.cfg['move_time'])
         yield self.cfg['move_time'] + self.cfg['settle']
 
+    def seq_reset_arm(self):
+        """空闲时执行可恢复的张爪、收臂复位；不会中断正在运行的轨迹。"""
+        self.auto = False
+        self.state = 'HOME'
+        self.step = '安全复位：张爪并收臂'
+        self.held_target = None
+        self.target = None
+        self.motion_intent = None
+        yield self.gripper(True)
+        yield from self.seq_home()
+        self.clear_action_journal()
+        self.step = '复位完成'
+
     def seq_detect(self):
         # 新一轮抓取前确保空手、张爪；抓取后的复核不会走这条路径。
         yield from self.seq_goto_observe(open_gripper=True)
@@ -2175,6 +2193,8 @@ class SnackButler(Node):
         yield from self.seq_place(binname)
         self.held_target = None
         yield from self.seq_goto_observe(open_gripper=True)
+        self.motion_intent = None
+        self.step = '投放完成，已回观察位'
 
     def seq_place(self, binname):
         cfg = self.cfg
@@ -2198,20 +2218,23 @@ class SnackButler(Node):
             self.decision('place', '投放区 IK 无解', self.last_error, 'error')
         else:
             self.decision('place', '投放姿态可达', '先到投放区上方，再垂直下降', 'success')
-        self.send_arm(q_over, cfg['move_time'])
-        yield cfg['move_time'] + cfg['settle']
+        over_time = self.arm_move_duration(q_over, min_s=.9, max_s=2.0, speed_deg_s=48.0)
+        self.send_arm(q_over, over_time)
+        yield over_time + .10
         if q_drop:
             self.motion_phase('place_down')
             self.journal_phase('place_down')
-            self.send_arm(q_drop, 0.7)
-            yield 0.7 + 0.2
+            down_time = self.arm_move_duration(q_drop, min_s=.75, max_s=1.25, speed_deg_s=38.0)
+            self.send_arm(q_drop, down_time)
+            yield down_time + .08
         self.step = '松爪'
         self.motion_phase('release')
         self.journal_phase('release')
         self.decision('place', '到达投放位，松爪', '投放到 %s' % b.get('label', binname), 'success')
         yield self.gripper(True)
-        self.send_arm(q_over, 0.7)
-        yield 0.8
+        up_time = self.arm_move_duration(q_over, min_s=.75, max_s=1.25, speed_deg_s=38.0)
+        self.send_arm(q_over, up_time)
+        yield up_time + .08
         self.journal_phase('post_place')
 
     def seq_auto(self):
@@ -2366,6 +2389,11 @@ class SnackButler(Node):
             elif a == 'home':
                 self.auto = False
                 self.start(self.seq_home())
+            elif a == 'reset_arm':
+                if self._task is not None:
+                    self.last_error = '机械臂动作仍在执行，请先停止，确认安全后再复位'
+                else:
+                    self.start(self.seq_reset_arm())
             elif a == 'detect':
                 self.auto = False
                 self.start(self.seq_detect())
@@ -2413,6 +2441,11 @@ class SnackButler(Node):
                 self.gripper(opened)
                 if opened:
                     self.held_target = None
+                    if self._task is None and self.state == 'HOLDING':
+                        self.clear_action_journal()
+                        self.motion_intent = None
+                        self.state = 'IDLE'
+                        self.step = '已松爪，等待下一条指令'
             elif a == 'start_recording':
                 if self.recorder.recording:
                     self.step = '已经在录制中'
@@ -2560,6 +2593,7 @@ class SnackButler(Node):
         m = String()
         m.data = json.dumps({
             'state': self.state, 'step': self.step, 'auto': self.auto,
+            'busy': self._task is not None,
             'analysis': {'live': self.live_analysis, 'pose_ready': self.at_observe(),
                          'last_at': round(self.last_detection_at, 3) if self.last_detection_at else None,
                          'detections': len(self.detections),

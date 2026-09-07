@@ -355,6 +355,13 @@ function releaseHeldTarget() {
   holdingPlaceOpen.value = false
   message.warning('已下发原地松爪')
 }
+
+function resetArm() {
+  if (state.snack?.busy) return message.warning('动作仍在执行；请先停止并确认机械臂安全')
+  if (!actions.snackCmd({ action:'reset_arm' })) return message.error('ROS 未连接，无法复位')
+  holdingPlaceOpen.value = false
+  message.success('已开始安全复位：张爪并收臂')
+}
 let detectionSyncRaf = null, lastDetectionSignature = ''
 const SERVO_MAP = [{ id: 1, joint: 'joint1' }, { id: 2, joint: 'joint2' }, { id: 3, joint: 'joint3' }, { id: 4, joint: 'joint4' }, { id: 5, joint: 'joint5' }, { id: 10, joint: 'r_joint' }]
 
@@ -2648,10 +2655,16 @@ onBeforeUnmount(() => {
         <a-alert v-else type="error" show-icon message="后台尚未保存投放点，请先在视觉抓取页示教点位" />
         <div class="holding-secondary">
           <a-button @click="holdingPlaceOpen = false">继续保持</a-button>
+          <a-button :disabled="state.snack?.busy" @click="resetArm">安全复位</a-button>
           <a-button danger @click="releaseHeldTarget">未夹住 / 原地松爪</a-button>
         </div>
       </div>
     </a-modal>
+
+    <a-button v-if="['HOLDING','PLACE','ERROR'].includes(state.snack?.state)"
+      class="arm-reset-float" danger ghost :disabled="state.snack?.busy" @click="resetArm">
+      {{ state.snack?.busy ? '动作执行中' : '机械臂安全复位' }}
+    </a-button>
 
     <!-- 材质面板：拖滑块实时看效果，自动存本机，调好一键导出成代码贴回本文件 -->
     <div v-if="matOpen" class="glass panel look">
@@ -2757,6 +2770,8 @@ onBeforeUnmount(() => {
 .holding-bin-list button { height:auto; min-height:50px; display:flex; align-items:center; justify-content:space-between; }
 .holding-bin-list small { margin-left:14px; opacity:.72; font-size:11px; font-family:monospace; }
 .holding-secondary { display:flex; justify-content:flex-end; gap:10px; }
+.arm-reset-float { position:absolute; z-index:16; left:50%; bottom:56px; transform:translateX(-50%);
+  background:rgba(25,8,12,.82); box-shadow:0 0 18px rgba(248,113,113,.18); }
 .twin { position: absolute; inset: 0; overflow: hidden;
   background:
     radial-gradient(ellipse at 52% 46%, rgba(31,58,75,.52) 0%, rgba(13,24,34,.38) 32%, transparent 63%),

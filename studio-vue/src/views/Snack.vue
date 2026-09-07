@@ -651,6 +651,8 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
             <span class="label">机械臂</span>
             <a-button size="small" :disabled="!online" @click="send({ action: 'observe' }, '回观察位')">观察位</a-button>
             <a-button size="small" :disabled="!online" @click="send({ action: 'home' }, '收臂')">收臂</a-button>
+            <a-button size="small" danger :disabled="!online || sb?.busy"
+              @click="send({ action: 'reset_arm' }, '安全复位：张爪并收臂')">复位</a-button>
             <a-button size="small" :disabled="!online" @click="send({ action: 'gripper', open: true })">张爪</a-button>
             <a-button size="small" :disabled="!online" @click="send({ action: 'gripper', open: false })">合爪</a-button>
             <a-button size="small" @click="reloadVideo">刷新</a-button>
