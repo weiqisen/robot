@@ -9,7 +9,10 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import URDFLoader from 'urdf-loader'
 import { useRos, quatToEuler, deg, videoUrl } from '../composables/useRos'
 import { useStreamWatch } from '../composables/useStreamWatch'
-const props = defineProps({ bare: { type: Boolean, default: false } })
+const props = defineProps({
+  bare: { type: Boolean, default: false },
+  focus: { type: Boolean, default: false },
+})
 const emit = defineEmits(['focus'])
 const { state, actions, HOST, VISION_VIDEO_PORT } = useRos()
 
@@ -182,6 +185,29 @@ const jointRows = computed(() => {
 })
 const jetson = computed(() => state.jetson)
 const battV = computed(() => (state.batt != null ? (state.batt / 1000).toFixed(2) : '—'))
+const cpuAvg = computed(() => state.jetson?.cpu?.length
+  ? Math.round(state.jetson.cpu.reduce((n,c) => n+(+c.load||0),0)/state.jetson.cpu.length) : null)
+const hudGpu = computed(() => state.jetson?.gpu == null ? null : Math.round(state.jetson.gpu))
+const hudVx = computed(() => state.odom?.twist?.twist?.linear?.x || state.cmd?.linear?.x || 0)
+const hudVy = computed(() => state.odom?.twist?.twist?.linear?.y || state.cmd?.linear?.y || 0)
+const hudWz = computed(() => state.odom?.twist?.twist?.angular?.z || state.cmd?.angular?.z || 0)
+const hudSource = computed(() => state.navSafety?.source === 'nav' ? 'NAV2 自动驾驶'
+  : state.navSafety?.source === 'manual' ? '人工接管' : '安全锁定')
+const hudTask = computed(() => state.explorer?.mode && state.explorer.mode !== 'idle'
+  ? ({exploring:'自主探索',returning:'自动返航',paused:'探索暂停'}[state.explorer.mode] || state.explorer.mode)
+  : (state.snack?.state && state.snack.state !== 'IDLE' ? '视觉抓取' : '态势监控'))
+const gripperText = computed(() => {
+  const p=(state.servos||[]).find(s=>s.id===10)?.position
+  return p == null ? '—' : p < 400 ? '张开' : p > 650 ? '闭合' : '半开'
+})
+const hudAlert = computed(() => {
+  if (!state.connected) return 'ROS 通信中断'
+  if (state.snack?.state === 'ERROR' || state.snack?.state === 'RECOVERY') return state.snack.last_error || '抓取状态机需要恢复'
+  if (state.navSafetyAt && state.now-state.navSafetyAt>2000) return '安全闸门数据超时'
+  if (state.snack?.low_volt) return '底盘低电压保护'
+  if (state.navSafety?.reason && state.navSafety?.armed && state.navSafety.reason !== 'ok') return state.navSafety.reason
+  return ''
+})
 
 let renderer, scene, camera, controls, world, grid, groundGlow, robotShadow, robot, raf
 let lidarPoints = null
@@ -192,6 +218,9 @@ let intentGroup = null      // 后端真实 IK 求解出的动作意图
 let previewGroup = null     // 点选目标后、执行前的全臂 IK 幽灵预演
 let fxGroup = null, safetyGroup = null, holoScan = null, safetyEnvelope = null, brakeProjection = null
 let flowingPath = null, lockFx = null, previewLinks = [], previewJoints = [], previewPoses = []
+let detectionNodes = new Map(), previousTracks = new Map(), particleBursts = []
+const visionLink = ref(null)
+let lastSnackState = 'INIT', successPulseUntil = 0
 let bootStartedAt = performance.now()
 const detectionLabels = []  // 当前识别标签；loop() 按镜头距离做可读性限幅
 const selectedTrackId = ref(null)
@@ -220,6 +249,20 @@ const safetyHud = computed(() => {
   const projected=Math.max(.16,Math.min(1.2,(ns?.limits?.stop_m||.22)+vx*vx/(2*.32)+vx*.22))
   return { fresh, armed:fresh&&!!ns?.armed, front:ns?.front_m, projected }
 })
+const hoveredTrackId = ref(null)
+const visionSize = computed(() => {
+  const t=state.snack?.analysis?.timing || {}
+  return { w:+t.input_width||640, h:+t.input_height||480 }
+})
+const visionBoxes = computed(() => (state.snack?.detections || []).filter(d =>
+  d.track_id != null && Array.isArray(d.bbox) && d.bbox.length === 4).map(d => ({
+    id:d.track_id, label:d.label || 'object', bbox:d.bbox,
+  })))
+function hoverVisionTrack(id) {
+  const next=id == null ? null : +id
+  if (hoveredTrackId.value === next) return
+  hoveredTrackId.value=next; scheduleDetections()
+}
 
 function requestTargetInspection(target, confirm = false) {
   if (!target?.track_id && target?.track_id !== 0) return
@@ -765,6 +808,45 @@ function buildSceneFx() {
   safetyGroup.add(brakeProjection)
 }
 
+function spawnTrackDissolve(track) {
+  if (!fxGroup || !track?.xyz) return
+  const count=32, positions=new Float32Array(count*3), velocities=[]
+  for (let i=0;i<count;i++) {
+    positions[i*3]=track.xyz[0]+(Math.random()-.5)*.045
+    positions[i*3+1]=track.xyz[1]+(Math.random()-.5)*.045
+    positions[i*3+2]=track.xyz[2]+(Math.random()-.35)*.035
+    velocities.push(new THREE.Vector3((Math.random()-.5)*.018,(Math.random()-.5)*.018,.018+Math.random()*.035))
+  }
+  const geometry=new THREE.BufferGeometry(); geometry.setAttribute('position',new THREE.BufferAttribute(positions,3))
+  const material=new THREE.PointsMaterial({color:track.color||0x38bdf8,size:.006,transparent:true,
+    opacity:.85,depthWrite:false,blending:THREE.AdditiveBlending,toneMapped:false})
+  const points=new THREE.Points(geometry,material); points.userData.helperLayer=true; fxGroup.add(points)
+  particleBursts.push({points,velocities,born:performance.now(),life:850})
+}
+
+function updateTrackDissolves(now) {
+  particleBursts=particleBursts.filter(b => {
+    const age=now-b.born, t=age/b.life
+    if (t>=1) { fxGroup.remove(b.points); b.points.geometry.dispose(); b.points.material.dispose(); return false }
+    const a=b.points.geometry.attributes.position
+    for(let i=0;i<a.count;i++){a.array[i*3]+=b.velocities[i].x*.016;a.array[i*3+1]+=b.velocities[i].y*.016;a.array[i*3+2]+=b.velocities[i].z*.016}
+    a.needsUpdate=true; b.points.material.opacity=(1-t)*.8; b.points.material.size=.006+t*.009
+    return true
+  })
+}
+
+function updateVisionLink() {
+  const line=visionLink.value, id=hoveredTrackId.value, node=detectionNodes.get(id)
+  const box=detFeedBox.value?.querySelector(`[data-track="${id}"]`)
+  if (!line || id==null || !node || !box || !renderer) { if(line) line.style.opacity=0; return }
+  const root=host.value?.parentElement?.getBoundingClientRect(), br=box.getBoundingClientRect()
+  const p=new THREE.Vector3(); node.getWorldPosition(p); p.project(camera)
+  const cr=renderer.domElement.getBoundingClientRect()
+  line.setAttribute('x1',br.left+br.width/2-root.left); line.setAttribute('y1',br.top+br.height/2-root.top)
+  line.setAttribute('x2',cr.left+(p.x+1)*cr.width/2-root.left); line.setAttribute('y2',cr.top+(1-p.y)*cr.height/2-root.top)
+  line.style.opacity=1
+}
+
 function fit() {
   const el = host.value
   if (!el || !renderer) return
@@ -791,10 +873,19 @@ function loop() {
   if (lockFx) { lockFx.rotation.z+=.008; const p=1+.06*Math.sin(now*.008); lockFx.scale.setScalar(p) }
   if (flowingPath?.material) flowingPath.material.dashOffset-=.0025
   updatePreviewAnimation(now)
+  updateTrackDissolves(now); updateVisionLink()
   if (rimL) {
-    const st=state.snack?.state || 'IDLE', error=st==='ERROR'||st==='RECOVERY', moving=['GRASP','PLACE'].includes(st)
-    rimL.color.set(error ? 0xff315d : moving ? 0xf59e0b : st==='DETECT' ? 0x8b5cf6 : 0x38bdf8)
-    rimL.intensity=lit.rim*(error ? 1.8 : moving ? 1.35 : 1+.12*Math.sin(now*.003))
+    const st=state.snack?.state || 'IDLE', manual=state.navSafety?.armed&&state.navSafety?.source==='manual'
+    if (st==='HOLDING' && lastSnackState!=='HOLDING') successPulseUntil=now+1250
+    lastSnackState=st
+    const success=now<successPulseUntil, error=st==='ERROR'||st==='RECOVERY', moving=['GRASP','PLACE','OBSERVE','HOME'].includes(st)
+    const planning=['CALIB'].includes(st)||!!state.snack?.motion_intent&&!moving
+    const color=success?0x34d399:error?0xff315d:manual?0xfb923c:moving?0xf59e0b:planning?0xa855f7:st==='DETECT'?0x38bdf8:0x22d3ee
+    const pulse=success ? 1.8+.8*Math.sin(now*.02)**2 : error?1.8:moving||manual?1.35:1+.10*Math.sin(now*.003)
+    rimL.color.set(color); rimL.intensity=lit.rim*pulse
+    fillL?.color.set(color); if(fillL) fillL.intensity=(success ? .8 : error ? .68 : manual ? .58 : st==='DETECT' ? .55 : .38)
+    hemiL?.color.set(color); if(hemiL) hemiL.intensity=lit.hemi*(success?1.45:error?1.2:1)
+    if(groundGlow?.material) { groundGlow.material.opacity=success?1:error?.72:manual?.62:.48; groundGlow.material.color.set(color) }
   }
   if (safetyEnvelope && brakeProjection) {
     const ns=state.navSafety, fresh=state.now-state.navSafetyAt<2000
@@ -1769,7 +1860,7 @@ function syncDetections() {
   // 过滤小于 1mm / 1% 置信度的视觉抖动；相同快照不销毁并重建 GPU 资源。
   const q3 = v => Number.isFinite(+v) ? Math.round(+v * 1000) : null
   const signature = JSON.stringify([activeTarget?.track_id ?? null, activeTarget?.label ?? null, recommendedId ?? null,
-    selectedTrackId.value,
+    selectedTrackId.value, hoveredTrackId.value,
     (activeXYZ || []).map(q3), objects.map((d, i) => {
     const g = d.geometry || {}
     return [d.track_id ?? i, d.label, (d.scene_xyz || []).map(q3),
@@ -1780,7 +1871,12 @@ function syncDetections() {
   })])
   if (signature === lastDetectionSignature) return
   lastDetectionSignature = signature
+  const currentIds=new Set(objects.map(d=>d.track_id))
+  for(const [id,track] of previousTracks) if(!currentIds.has(id)) spawnTrackDissolve(track)
+  previousTracks=new Map(objects.filter(d=>Array.isArray(d.scene_xyz)).map(d=>[d.track_id,{
+    xyz:[...d.scene_xyz],color:DET_COLOR[d.label]??0x38bdf8}]))
   clearGroup(detectGroup)
+  detectionNodes=new Map()
   lockFx = null
   detectionLabels.length = 0
   for (const [objectIndex, d] of objects.entries()) {
@@ -1790,7 +1886,8 @@ function syncDetections() {
     const reachable = !!d.reachable, occluded = !!d.occluded
     const active = isActiveTarget(d)
     const selected = selectedTrackId.value === d.track_id
-    const col = selected ? 0x38bdf8 : DET_COLOR[d.label] ?? (reachable ? 0x43a047 : 0x8b949e)
+    const hovered = hoveredTrackId.value === d.track_id
+    const col = selected || hovered ? 0x38bdf8 : DET_COLOR[d.label] ?? (reachable ? 0x43a047 : 0x8b949e)
     const secondary = recommendedId != null && d.track_id !== recommendedId && !selected && !active
     const opacity = occluded ? .14 : secondary ? (reachable ? .34 : .18) : reachable ? .68 : .28
     const size = Array.isArray(geom.size) ? geom.size : [.028,.028,.028]
@@ -1805,6 +1902,8 @@ function syncDetections() {
     model.traverse(n => { n.userData.detectTarget = d })
     model.position.x = x; model.position.y = y; model.position.z += bottom
     detectGroup.add(model)
+    detectionNodes.set(d.track_id,model)
+    if(hovered) model.traverse(n=>{if(n.material){n.material.emissive?.set(0x22d3ee);n.material.emissiveIntensity=1.15;n.material.opacity=Math.max(n.material.opacity||0,.88)}})
 
     // 目标底部接触阴影：让投影模型真正“落”在台面上，不再像悬浮标记。
     const objShadow = new THREE.Mesh(new THREE.CircleGeometry(.5, 24),
@@ -1815,7 +1914,7 @@ function syncDetections() {
     objShadow.userData.helperLayer = true
     detectGroup.add(objShadow)
 
-    if (selected || active) {
+    if (selected || active || hovered) {
       const lock = new THREE.Group(), rr = Math.max(.024, Math.max(size[0],size[1])*.72)
       const lm = new THREE.MeshBasicMaterial({ color:selected ? 0x67e8f9 : 0xfbbf24,
         transparent:true, opacity:.9, depthWrite:false, toneMapped:false })
@@ -2189,7 +2288,8 @@ function solveCCD(target) {
 }
 let ikSend = null
 function ptrDown(e) { scenePointerStart = { x:e.clientX, y:e.clientY }; if (!tools.ik || !ikTarget) return; const r = renderer.domElement.getBoundingClientRect(); ndc.x = (e.clientX - r.left) / r.width * 2 - 1; ndc.y = -((e.clientY - r.top) / r.height) * 2 + 1; raycaster.setFromCamera(ndc, camera); if (raycaster.intersectObject(ikTarget, true).length) { dragging = true; controls.enabled = false } }
-function ptrMove(e) { if (!dragging) return; const r = renderer.domElement.getBoundingClientRect(); ndc.x = (e.clientX - r.left) / r.width * 2 - 1; ndc.y = -((e.clientY - r.top) / r.height) * 2 + 1; raycaster.setFromCamera(ndc, camera); const n = camera.getWorldDirection(new THREE.Vector3()).negate(); const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(n, ikTarget.position); const hit = new THREE.Vector3(); if (raycaster.ray.intersectPlane(plane, hit)) { ikTarget.position.copy(hit); solveCCD(hit) } }
+function ptrMove(e) { if (!dragging) { hoverVisionTrack(detectionAtPointer(e)?.track_id ?? null); return } const r = renderer.domElement.getBoundingClientRect(); ndc.x = (e.clientX - r.left) / r.width * 2 - 1; ndc.y = -((e.clientY - r.top) / r.height) * 2 + 1; raycaster.setFromCamera(ndc, camera); const n = camera.getWorldDirection(new THREE.Vector3()).negate(); const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(n, ikTarget.position); const hit = new THREE.Vector3(); if (raycaster.ray.intersectPlane(plane, hit)) { ikTarget.position.copy(hit); solveCCD(hit) } }
+function ptrLeave() { if (!dragging) hoverVisionTrack(null) }
 function ptrUp(e) {
   if (dragging) { dragging = false; controls.enabled = true; scenePointerStart = null; return }
   const start = scenePointerStart; scenePointerStart = null
@@ -2312,6 +2412,7 @@ onMounted(() => {
   document.addEventListener('fullscreenchange', onFsChange)
   renderer.domElement.addEventListener('pointerdown', ptrDown)
   renderer.domElement.addEventListener('pointermove', ptrMove)
+  renderer.domElement.addEventListener('pointerleave', ptrLeave)
   renderer.domElement.addEventListener('dblclick', onSceneDoubleClick)
   window.addEventListener('pointerup', ptrUp)
 })
@@ -2334,6 +2435,7 @@ onBeforeUnmount(() => {
   if (hostRO) hostRO.disconnect()
   window.removeEventListener('resize', fit); window.removeEventListener('pointerup', ptrUp)
   renderer?.domElement?.removeEventListener('dblclick', onSceneDoubleClick)
+  renderer?.domElement?.removeEventListener('pointerleave', ptrLeave)
   window.removeEventListener('pointermove', moveDetResize); window.removeEventListener('pointerup', stopDetResize)
   document.removeEventListener('fullscreenchange', onFsChange)
   if (screenTimer) clearInterval(screenTimer)
@@ -2391,13 +2493,33 @@ onBeforeUnmount(() => {
       <small>前向 {{ safetyHud.front == null ? '—' : safetyHud.front.toFixed(2)+'m' }}</small>
     </div>
 
+    <div v-if="props.focus" class="focus-hud">
+      <section class="fh-card fh-tl"><small>MISSION / CONTROL</small><b>{{ hudTask }}</b><span>{{ hudSource }}</span></section>
+      <section class="fh-card fh-tr"><small>COMPUTE / LINK</small><b>CPU {{ cpuAvg == null ? '—' : cpuAvg+'%' }} · GPU {{ hudGpu == null ? '—' : hudGpu+'%' }}</b><span>{{ state.connected ? 'ROS LINK ONLINE' : 'ROS LINK LOST' }}</span></section>
+      <section class="fh-card fh-bl"><small>CHASSIS VECTOR</small><b>{{ hudVx >= 0 ? '▲' : '▼' }} {{ Math.abs(hudVx).toFixed(2) }} m/s</b><span>Y {{ hudVy.toFixed(2) }} · ω {{ hudWz.toFixed(2) }}</span></section>
+      <section class="fh-card fh-br"><small>MANIPULATOR</small><b>{{ state.snack?.state || 'IDLE' }}</b><span>夹爪 {{ gripperText }} · Joints {{ jointRows.filter(j=>j.deg!=null).length }}/6</span></section>
+      <div v-if="state.snack?.step" class="fh-step"><i /><small>CURRENT DECISION</small><b>{{ state.snack.step }}</b></div>
+      <transition name="alert-pop"><div v-if="hudAlert" class="fh-alert"><i>!</i><div><small>IMPORTANT WARNING</small><b>{{ hudAlert }}</b></div></div></transition>
+    </div>
+
+    <svg class="vision-link" aria-hidden="true"><line ref="visionLink" /></svg>
+
     <!-- YOLO 识别画面小窗：浮在右上角，工具列左边 -->
     <div v-if="tools.detectionFeed" ref="detFeedBox" class="det-feed" :style="detFeedStyle">
       <div class="df-head">
         <b>实时识别</b>
         <span class="df-close" title="关闭" @click="tools.detectionFeed = false">✕</span>
       </div>
-      <img ref="detFeedImg" class="df-img" :src="detFeedSrc" alt="" @error="reloadDetFeed" />
+      <div class="df-stage" @mouseleave="hoverVisionTrack(null)">
+        <img ref="detFeedImg" class="df-img" :src="detFeedSrc" alt="" @error="reloadDetFeed" />
+        <svg class="df-boxes" :viewBox="`0 0 ${visionSize.w} ${visionSize.h}`" preserveAspectRatio="xMidYMid meet">
+          <g v-for="box in visionBoxes" :key="box.id" :data-track="box.id"
+            :class="{ hot:hoveredTrackId===box.id }" @mouseenter="hoverVisionTrack(box.id)" @click="requestTargetInspection((state.snack?.detections||[]).find(d=>d.track_id===box.id))">
+            <rect :x="box.bbox[0]" :y="box.bbox[1]" :width="box.bbox[2]" :height="box.bbox[3]" />
+            <text :x="box.bbox[0]+4" :y="Math.max(13,box.bbox[1]-4)">{{ box.label }} #{{ box.id }}</text>
+          </g>
+        </svg>
+      </div>
       <div class="df-stat">{{ detFeedStat }}</div>
       <div class="df-resize" title="拖动缩放 · 双击恢复默认" @pointerdown="startDetResize" @dblclick="resetDetFeedSize" />
     </div>
@@ -2417,6 +2539,7 @@ onBeforeUnmount(() => {
           <div><span>置信度</span><b>{{ targetInspection?.confidence == null ? '—' : (targetInspection.confidence * 100).toFixed(1) + '%' }}</b></div>
           <div><span>坐标 XYZ</span><b>{{ fmtTargetXYZ }} m</b></div>
           <div><span>深度来源</span><b>{{ targetInspection?.depth_src || '—' }}</b></div>
+          <div><span>原图区域</span><b>{{ targetInspection?.bbox?.length === 4 ? `x${targetInspection.bbox[0]} y${targetInspection.bbox[1]} · ${targetInspection.bbox[2]}×${targetInspection.bbox[3]}` : '—' }}</b></div>
           <div><span>抓取判断</span><b :class="targetInspection?.reachable ? 'tc-ok' : 'tc-bad'">
             {{ targetInspection?.reachable ? '垂直 IK 可达' : '当前不可达' }}</b></div>
           <div><span>抓取评分</span><b :class="targetQuality?.score >= 68 ? 'tc-ok' : 'tc-warn'">
@@ -2581,6 +2704,8 @@ onBeforeUnmount(() => {
 .loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; color: rgba(255,255,255,.6); font-family: ui-monospace, monospace; }
 .boot-hud{position:absolute;inset:0;z-index:30;display:flex;align-items:center;justify-content:center;gap:28px;pointer-events:none;background:radial-gradient(circle,rgba(8,47,73,.28),rgba(3,7,12,.78));backdrop-filter:blur(2px);font-family:ui-monospace,monospace}.boot-ring{position:relative;width:126px;height:126px;border:1px solid rgba(34,211,238,.5);border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#67e8f9;box-shadow:0 0 35px rgba(34,211,238,.14),inset 0 0 25px rgba(34,211,238,.08)}.boot-ring:before,.boot-ring i{content:'';position:absolute;inset:8px;border:2px dashed rgba(56,189,248,.36);border-radius:50%;animation:bootspin 5s linear infinite}.boot-ring i{inset:-8px;border-style:solid;border-color:#22d3ee transparent transparent;animation-duration:1.5s}.boot-ring span{font-size:12px;letter-spacing:2px}.boot-ring b{font-size:24px;margin-top:5px}.boot-list{min-width:210px}.boot-list div{display:flex;gap:9px;padding:5px;color:#475569;font-size:10px}.boot-list div.active{color:#67e8f9;text-shadow:0 0 9px #0891b2}.boot-list div.done{color:#34d399}.boot-hud>small{position:absolute;bottom:18%;color:#28546b;letter-spacing:3px;font-size:8px}.bootfade-leave-active{transition:opacity .45s}.bootfade-leave-to{opacity:0}@keyframes bootspin{to{transform:rotate(360deg)}}
 .safety-hud{position:absolute;z-index:8;left:14px;top:14px;display:grid;grid-template-columns:10px auto auto;align-items:center;gap:5px 8px;padding:7px 10px;pointer-events:none}.safety-hud i{width:7px;height:7px;border-radius:50%;background:#34d399;box-shadow:0 0 9px #34d399}.safety-hud span{color:#6ee7b7;font:700 8px ui-monospace;letter-spacing:1px}.safety-hud b{color:#34d399;font:700 10px ui-monospace}.safety-hud small{grid-column:2/4;color:#64748b;font:8px ui-monospace}.safety-hud.armed i{background:#f59e0b;box-shadow:0 0 9px #f59e0b}.safety-hud.armed span,.safety-hud.armed b{color:#fbbf24}.safety-hud.offline i{background:#fb3158;box-shadow:0 0 9px #fb3158}.safety-hud.offline span,.safety-hud.offline b{color:#fb7185}
+.focus-hud{position:absolute;inset:0;z-index:7;pointer-events:none;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.fh-card{position:absolute;width:178px;padding:8px 11px;border-left:1px solid rgba(56,189,248,.38);background:linear-gradient(90deg,rgba(4,12,20,.68),rgba(4,12,20,.08));opacity:.48;transition:opacity .18s,width .22s,background .22s;pointer-events:auto}.fh-card:hover{width:220px;opacity:.96;background:linear-gradient(90deg,rgba(4,12,20,.92),rgba(7,25,38,.52))}.fh-card small,.fh-step small,.fh-alert small{display:block;color:#38bdf8;font-size:7px;letter-spacing:1.4px}.fh-card b{display:block;color:#e2e8f0;font-size:11px;margin-top:5px;white-space:nowrap}.fh-card span{display:block;color:#64748b;font-size:8px;margin-top:4px;max-height:0;opacity:0;overflow:hidden;transition:.2s}.fh-card:hover span{max-height:20px;opacity:1}.fh-tl{left:15px;top:62px}.fh-tr{right:15px;top:15px;text-align:right;border-left:0;border-right:1px solid rgba(56,189,248,.38);background:linear-gradient(270deg,rgba(4,12,20,.68),rgba(4,12,20,.08))}.fh-bl{left:15px;bottom:72px}.fh-br{right:15px;bottom:72px;text-align:right;border-left:0;border-right:1px solid rgba(56,189,248,.38);background:linear-gradient(270deg,rgba(4,12,20,.68),rgba(4,12,20,.08))}.fh-step{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);display:flex;align-items:center;gap:8px;min-width:260px;max-width:52%;padding:7px 14px;border-top:1px solid rgba(56,189,248,.32);background:linear-gradient(90deg,transparent,rgba(4,12,20,.72),transparent);text-align:center;justify-content:center}.fh-step i{width:5px;height:5px;border-radius:50%;background:#38bdf8;box-shadow:0 0 9px #38bdf8}.fh-step small{display:inline}.fh-step b{color:#cbd5e1;font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.fh-alert{position:absolute;left:50%;top:42%;transform:translate(-50%,-50%);display:flex;align-items:center;gap:11px;padding:11px 18px;border:1px solid rgba(251,49,88,.62);background:rgba(55,8,20,.84);box-shadow:0 0 32px rgba(251,49,88,.18);border-radius:8px}.fh-alert>i{display:grid;place-items:center;width:25px;height:25px;border:1px solid #fb7185;border-radius:50%;color:#fb7185;font-style:normal;font-weight:800}.fh-alert small{color:#fb7185}.fh-alert b{display:block;margin-top:3px;color:#fecdd3;font-size:11px;max-width:380px}.alert-pop-enter-active,.alert-pop-leave-active{transition:.22s}.alert-pop-enter-from,.alert-pop-leave-to{opacity:0;transform:translate(-50%,-40%) scale(.94)}
+.vision-link{position:absolute;inset:0;width:100%;height:100%;z-index:8;pointer-events:none;overflow:visible}.vision-link line{stroke:#67e8f9;stroke-width:1;stroke-dasharray:5 5;opacity:0;filter:drop-shadow(0 0 4px #22d3ee);transition:opacity .12s}
 .glass { background: rgba(14,17,22,.55); backdrop-filter: blur(16px); border: 1px solid rgba(255,255,255,.12); color: #eef2f6; }
 .scene-menu { position:absolute; z-index:12; top:12px; left:50%; transform:translateX(-50%);
   display:flex; gap:3px; padding:4px; border-radius:9px; white-space:nowrap; }
@@ -2611,7 +2736,7 @@ onBeforeUnmount(() => {
 .df-head b { color: #E2E8F0; font-size: 11px; letter-spacing: .4px; }
 .df-close { color: #64748B; font-size: 13px; line-height: 1; cursor: pointer; padding: 0 2px; }
 .df-close:hover { color: #CBD5E1; }
-.df-img { display:block; width:100%; min-height:0; flex:1; object-fit:contain; background:#000; }
+.df-stage{position:relative;min-height:0;flex:1;background:#000;overflow:hidden}.df-img{display:block;width:100%;height:100%;object-fit:contain;background:#000}.df-boxes{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}.df-boxes g{pointer-events:all;cursor:crosshair}.df-boxes rect{fill:transparent;stroke:transparent;stroke-width:3;vector-effect:non-scaling-stroke;transition:.14s}.df-boxes text{fill:transparent;font:700 12px ui-monospace;paint-order:stroke;stroke:#031018;stroke-width:3;transition:.14s}.df-boxes g.hot rect{fill:rgba(34,211,238,.08);stroke:#67e8f9;filter:drop-shadow(0 0 5px #22d3ee)}.df-boxes g.hot text{fill:#a5f3fc}
 .df-stat { padding: 4px 9px; font-size: 9px; color: #94A3B8; text-align: right;
   background: rgba(15,23,42,.4); }
 .df-resize { position:absolute; left:0; bottom:0; width:22px; height:22px; cursor:nesw-resize;
