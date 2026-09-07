@@ -12,6 +12,7 @@ import { useStreamWatch } from '../composables/useStreamWatch'
 const props = defineProps({
   bare: { type: Boolean, default: false },
   focus: { type: Boolean, default: false },
+  armPanelOpen: { type: Boolean, default: false },
 })
 const emit = defineEmits(['focus'])
 const { state, actions, HOST, VISION_VIDEO_PORT } = useRos()
@@ -2496,7 +2497,7 @@ onBeforeUnmount(() => {
     <div v-if="props.focus" class="focus-hud">
       <section class="fh-card fh-tl"><small>MISSION / CONTROL</small><b>{{ hudTask }}</b><span>{{ hudSource }}</span></section>
       <section class="fh-card fh-tr"><small>COMPUTE / LINK</small><b>CPU {{ cpuAvg == null ? '—' : cpuAvg+'%' }} · GPU {{ hudGpu == null ? '—' : hudGpu+'%' }}</b><span>{{ state.connected ? 'ROS LINK ONLINE' : 'ROS LINK LOST' }}</span></section>
-      <section class="fh-card fh-bl"><small>CHASSIS VECTOR</small><b>{{ hudVx >= 0 ? '▲' : '▼' }} {{ Math.abs(hudVx).toFixed(2) }} m/s</b><span>Y {{ hudVy.toFixed(2) }} · ω {{ hudWz.toFixed(2) }}</span></section>
+      <section :class="['fh-card','fh-bl',{ shifted:props.armPanelOpen }]"><small>CHASSIS VECTOR</small><b>{{ hudVx >= 0 ? '▲' : '▼' }} {{ Math.abs(hudVx).toFixed(2) }} m/s</b><span>Y {{ hudVy.toFixed(2) }} · ω {{ hudWz.toFixed(2) }}</span></section>
       <section class="fh-card fh-br"><small>MANIPULATOR</small><b>{{ state.snack?.state || 'IDLE' }}</b><span>夹爪 {{ gripperText }} · Joints {{ jointRows.filter(j=>j.deg!=null).length }}/6</span></section>
       <div v-if="state.snack?.step" class="fh-step"><i /><small>CURRENT DECISION</small><b>{{ state.snack.step }}</b></div>
       <transition name="alert-pop"><div v-if="hudAlert" class="fh-alert"><i>!</i><div><small>IMPORTANT WARNING</small><b>{{ hudAlert }}</b></div></div></transition>
@@ -2855,6 +2856,8 @@ onBeforeUnmount(() => {
 .lk-out textarea { width: 100%; height: 104px; background: rgba(0,0,0,.35); color: #cfe3ff;
   border: 1px solid rgba(255,255,255,.12); border-radius: 8px; padding: 7px 8px; font-size: 10px;
   line-height: 1.5; font-family: ui-monospace, monospace; resize: vertical; }
+.fh-bl { transition: opacity .18s, width .22s, background .22s, left .22s; }
+.fh-bl.shifted { left: 276px; }
 @media (max-width: 820px) { .tele { width: 150px; } .ctrl { width: 190px; } }
 @media (max-width: 560px) { .tele { display: none; } }
 

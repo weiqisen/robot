@@ -379,7 +379,8 @@ onUnmounted(() => {
       <!-- 中央 3D 孪生。不加标题字，画面自己说明自己。 -->
       <div class="col center">
         <div class="viewport">
-          <Twin ref="twinRef" :bare="true" :focus="focusMode" @focus="v => focusMode = v" />
+          <Twin ref="twinRef" :bare="true" :focus="focusMode" :arm-panel-open="!armPanelCollapsed"
+            @focus="v => focusMode = v" />
           <div class="scene-head"><span>数字孪生</span><b>实时姿态</b></div>
           <div class="scene-status">
             <div><small>线速度</small><b>{{ vx.toFixed(2) }} <em>m/s</em></b></div>
