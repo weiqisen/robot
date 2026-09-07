@@ -124,6 +124,11 @@ const detFeedSize = reactive((() => {
   } catch { return { ...DET_FEED_DEFAULT } }
 })())
 const detFeedStyle = computed(() => ({ width:`${detFeedSize.width}px`, height:`${detFeedSize.height}px` }))
+const targetCardStyle = computed(() => {
+  const top = tools.detectionFeed ? 66 + detFeedSize.height : 58
+  return { top:`${top}px`, width:`min(${Math.max(390,Math.min(540,detFeedSize.width))}px,calc(100% - 28px))`,
+    maxHeight:`calc(100% - ${top + 14}px)` }
+})
 let detResize = null
 function startDetResize(e) {
   e.preventDefault(); e.stopPropagation()
@@ -315,7 +320,7 @@ function confirmTrackGrasp() {
   if (!actions.snackCmd({ action:'pick_track', track_id:id, outcome:'inspect' }))
     return message.error('ROS 未连接，无法发出抓取命令')
   graspConfirmOpen.value = false
-  message.success('已请求重新识别并复核目标；匹配通过后才会抓取')
+  message.success('已提交复核；将按补偿后的实际抓取点重新计算 IK，通过后才执行')
 }
 let detectionSyncRaf = null, lastDetectionSignature = ''
 const SERVO_MAP = [{ id: 1, joint: 'joint1' }, { id: 2, joint: 'joint2' }, { id: 3, joint: 'joint3' }, { id: 4, joint: 'joint4' }, { id: 5, joint: 'joint5' }, { id: 10, joint: 'r_joint' }]
@@ -2525,7 +2530,7 @@ onBeforeUnmount(() => {
       <div class="df-resize" title="拖动缩放 · 双击恢复默认" @pointerdown="startDetResize" @dblclick="resetDetFeedSize" />
     </div>
 
-    <div v-if="selectedTarget" class="target-card glass" @pointerdown.stop @pointerup.stop>
+    <div v-if="selectedTarget" class="target-card glass" :style="targetCardStyle" @pointerdown.stop @pointerup.stop>
       <div class="tc-head"><span class="tc-lock">TARGET LOCK</span>
         <b>{{ targetInspection?.label || selectedTarget.label || '目标' }} #{{ selectedTrackId }}</b>
         <button @click="closeTargetInspection">×</button></div>
@@ -2745,8 +2750,8 @@ onBeforeUnmount(() => {
 .df-resize::after { content:''; position:absolute; left:4px; bottom:4px; width:9px; height:9px;
   border-left:2px solid rgba(125,211,252,.85); border-bottom:2px solid rgba(125,211,252,.85);
   filter:drop-shadow(0 0 4px rgba(56,189,248,.55)); }
-.target-card { position:absolute; z-index:15; left:50%; bottom:18px; width:min(540px,calc(100% - 32px));
-  transform:translateX(-50%); border-radius:12px; overflow:hidden; box-shadow:0 18px 52px rgba(0,0,0,.5); }
+.target-card { position:absolute; z-index:15; right:14px; border-radius:12px; overflow:auto;
+  box-shadow:0 18px 52px rgba(0,0,0,.5); transition:top .2s,width .2s,max-height .2s; }
 .tc-head { height:38px; display:flex; align-items:center; gap:9px; padding:0 11px;
   border-bottom:1px solid rgba(148,163,184,.14); background:rgba(15,23,42,.66); }
 .tc-head b { color:#e2e8f0; font-size:12px; }.tc-head button { margin-left:auto; border:0;
@@ -2794,7 +2799,7 @@ onBeforeUnmount(() => {
 :global(.target-confirm-modal .confirm-meta .ant-alert) { margin-top:14px; }
 :global(.target-confirm-modal .confirm-actions) { display:flex; justify-content:flex-end; gap:8px;
   margin-top:18px; padding-top:14px; border-top:1px solid rgba(148,163,184,.15); }
-@media(max-width:640px) { .target-card { bottom:10px; }.tc-body { grid-template-columns:112px 1fr; }
+@media(max-width:640px) { .target-card { right:7px; }.tc-body { grid-template-columns:112px 1fr; }
   .tc-info { gap:6px; padding:8px; }.tc-actions { flex-wrap:wrap; }.tc-actions button { min-width:30%; }
   :global(.target-confirm-modal .confirm-target) { grid-template-columns:1fr; }
   :global(.target-confirm-modal .confirm-crop) { min-height:130px; }

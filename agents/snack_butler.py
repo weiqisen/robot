@@ -1121,6 +1121,19 @@ class SnackButler(Node):
     def _grasp_z_cfg(top_z, cfg):
         return max(top_z + cfg['grasp_z_offset'], cfg['table_z'] + cfg['grasp_clearance'])
 
+    @staticmethod
+    def _grasp_pose_cfg(p, cfg):
+        """Return the exact compensated pose used by execution.
+
+        Reachability, previews and execution must use one coordinate contract.  Checking
+        raw vision XYZ and only adding calibration offsets during motion produces a false
+        green target that is rejected seconds later by the same IK solver.
+        """
+        x = float(p[0]) + cfg.get('x_offset_hack', 0.0)
+        y = float(p[1]) + cfg.get('y_offset_hack', 0.0)
+        top_z = float(p[2]) + cfg.get('z_offset_hack', 0.0)
+        return x, y, SnackButler._grasp_z_cfg(top_z, cfg)
+
     def _capture_vision_snapshot(self):
         """主线程冻结一次视觉输入；T_bo 与这份图像一起进入 worker。"""
         with self.lock:
@@ -1155,7 +1168,8 @@ class SnackButler(Node):
             d['depth_src'] = how
             d['reachable'] = False
             if p is not None and self._in_workspace_cfg(p, cfg):
-                q = ik_best(p[0], p[1], self._grasp_z_cfg(p[2], cfg), GRASP_PITCH,
+                gx, gy, gz = self._grasp_pose_cfg(p, cfg)
+                q = ik_best(gx, gy, gz, GRASP_PITCH,
                             tool=cfg['tool_len'])
                 d['reachable'] = q is not None
                 d['pitch_deg'] = 180.0 if q is not None else None
@@ -1197,12 +1211,12 @@ class SnackButler(Node):
             if confidence is not None and confidence < .45: cautions.append('检测置信度偏低')
             preview = None
             if q and xyz:
-                gz = SnackButler._grasp_z_cfg(xyz[2], cfg)
-                q_pre = ik_best(xyz[0], xyz[1], gz + cfg['approach_h'], GRASP_PITCH,
+                gx, gy, gz = SnackButler._grasp_pose_cfg(xyz, cfg)
+                q_pre = ik_best(gx, gy, gz + cfg['approach_h'], GRASP_PITCH,
                                 seed=q, tool=cfg['tool_len']) or q
-                q_lift = ik_best(xyz[0], xyz[1], gz + cfg['lift_h'], GRASP_PITCH,
+                q_lift = ik_best(gx, gy, gz + cfg['lift_h'], GRASP_PITCH,
                                  seed=q, tool=cfg['tool_len']) or q_pre
-                q_safe = ik_best(xyz[0], xyz[1], cfg.get('safe_z', .08), GRASP_PITCH,
+                q_safe = ik_best(gx, gy, cfg.get('safe_z', .08), GRASP_PITCH,
                                  seed=q_pre, tool=cfg['tool_len']) or q_pre
                 preview = [{'name': name, 'q_deg': [round(math.degrees(v), 1) for v in pose]}
                            for name, pose in [('安全点', q_safe), ('预抓', q_pre),
@@ -1736,7 +1750,8 @@ class SnackButler(Node):
             return None, (f'点击处 {det["xyz"]} 不在工作区内 '
                           f'(x{self.cfg["workspace_rel"]["x"]} y{self.cfg["workspace_rel"]["y"]} '
                           f'离桌面 z{self.cfg["workspace_rel"]["z"]})')
-        q = ik_best(p[0], p[1], self.grasp_z(p[2]), GRASP_PITCH, tool=self.cfg['tool_len'])
+        gx, gy, gz = self._grasp_pose_cfg(p, self.cfg)
+        q = ik_best(gx, gy, gz, GRASP_PITCH, tool=self.cfg['tool_len'])
         if q is None:
             return None, f'点击处 {det["xyz"]} 垂直夹爪 IK 无解（请把物品或车身移近）'
         det['reachable'] = True
@@ -1874,7 +1889,8 @@ class SnackButler(Node):
                 self.state, self.step = 'IDLE', '自动补位拒绝：目标不在正前方安全走廊'
                 self.last_error = '仅支持正前方、横向偏差 ≤ 6cm 的目标'
                 return
-            if ik_best(x, y, self.grasp_z(z), GRASP_PITCH, tool=self.cfg['tool_len']):
+            gx, gy, gz = self._grasp_pose_cfg((x, y, z), self.cfg)
+            if ik_best(gx, gy, gz, GRASP_PITCH, tool=self.cfg['tool_len']):
                 yield from self.seq_grasp(tgt, outcome=outcome)
                 return
             step = min(float(self.cfg['auto_drive_grasp_step_m']), max_m - moved,
@@ -1970,14 +1986,12 @@ class SnackButler(Node):
             return False
         cfg = self.cfg
         x, y, zs = tgt['xyz']
-        # 坐标补偿：视觉定位有系统偏差时，在界面上调这三个参数实时修正
-        x += cfg.get('x_offset_hack', 0.0)
-        y += cfg.get('y_offset_hack', 0.0)
+        # 与检测阶段共用同一个补偿坐标契约，避免界面判为可达、执行时才拒绝。
+        x, y, gz = self._grasp_pose_cfg((x, y, zs), cfg)
         zs += cfg.get('z_offset_hack', 0.0)
         # 仅人工确认的空抓重试允许最多额外下探 3 mm，仍受桌面净空硬下限保护。
         retry_z_adjust = max(-.003, min(0.0, float(retry_z_adjust)))
-        gz = max(self.grasp_z(zs) + retry_z_adjust,
-                 cfg['table_z'] + cfg['grasp_clearance'])
+        gz = max(gz + retry_z_adjust, cfg['table_z'] + cfg['grasp_clearance'])
         self.decision('geometry', '计算抓取坐标',
                       '视觉顶面 z=%.3f，补偿后=(%.3f, %.3f, %.3f)，合爪 z=%.3f（桌面保护下限 %.3f）' %
                       (tgt['xyz'][2], x, y, zs, gz, cfg['table_z'] + cfg['grasp_clearance']))
