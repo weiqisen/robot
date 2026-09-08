@@ -1957,7 +1957,10 @@ function syncDetections() {
     const active = isActiveTarget(d)
     const selected = selectedTrackId.value === d.track_id
     const hovered = hoveredTrackId.value === d.track_id
-    const col = selected || hovered ? 0x38bdf8 : DET_COLOR[d.label] ?? (reachable ? 0x43a047 : 0x8b949e)
+    // 通用检测器无法给出语义类别时 label 会是 object。此前不可达 object
+    // 落到灰色 #8b949e，在深色玻璃和模型阴影上近似黑字。未知目标也要有
+    // 明确状态色：可达用亮青，不可达用琥珀；选中/悬停仍统一为高亮蓝。
+    const col = selected || hovered ? 0x38bdf8 : DET_COLOR[d.label] ?? (reachable ? 0x22d3ee : 0xf59e0b)
     const secondary = recommendedId != null && d.track_id !== recommendedId && !selected && !active
     const opacity = occluded ? .14 : secondary ? (reachable ? .34 : .18) : reachable ? .68 : .28
     const size = Array.isArray(geom.size) ? geom.size : [.028,.028,.028]
@@ -2188,10 +2191,15 @@ function layerLabel(text, sub = '', color = '#8b949e') {
   x.fillStyle = color
   x.font = '700 17px "PingFang SC", "Microsoft YaHei", sans-serif'
   x.textBaseline = 'middle'
+  x.lineWidth = 3
+  x.strokeStyle = 'rgba(2,6,12,.92)'
+  x.strokeText(text, 11, sub ? 17 : 15)
   x.fillText(text, 11, sub ? 17 : 15)
   if (sub) {
-    x.fillStyle = 'rgba(226,232,240,.6)'
+    x.fillStyle = 'rgba(226,232,240,.82)'
     x.font = '400 12px ui-monospace, Menlo, monospace'
+    x.lineWidth = 2
+    x.strokeText(sub, 11, 36)
     x.fillText(sub, 11, 36)
   }
   const tex = new THREE.CanvasTexture(c)
@@ -2813,7 +2821,7 @@ onBeforeUnmount(() => {
 .glass { background: rgba(14,17,22,.55); backdrop-filter: blur(16px); border: 1px solid rgba(255,255,255,.12); color: #eef2f6; }
 .scene-menu { position:absolute; z-index:12; top:12px; left:50%; transform:translateX(-50%);
   display:flex; gap:3px; padding:4px; border-radius:9px; white-space:nowrap; }
-.scene-menu button,.scene-pop button { border:1px solid transparent; background:transparent; color:#94A3B8;
+.scene-menu button,.scene-pop button { border:1px solid transparent; background:transparent; color:#CBD5E1;
   font:500 11px/1 var(--font-sans); border-radius:6px; cursor:pointer; }
 .scene-menu button { padding:7px 12px; }
 .scene-menu button:hover,.scene-menu button.on,.scene-pop button.on { color:#E2E8F0;
@@ -2825,6 +2833,11 @@ onBeforeUnmount(() => {
 .sp-title button { margin-left:auto; font-size:17px; color:#64748B; padding:0 3px; }
 .sp-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:5px; }
 .sp-grid button,.sp-actions button { padding:8px 6px; border-color:rgba(148,163,184,.12); }
+.sp-actions button { background:rgba(15,23,42,.5); color:#CBD5E1; }
+.sp-actions button:hover { color:#F1F5F9; border-color:rgba(103,232,249,.4); background:rgba(14,116,144,.16); }
+.sp-actions button.on { color:#A5F3FC; border-color:rgba(34,211,238,.48);
+  background:linear-gradient(180deg,rgba(8,145,178,.24),rgba(14,116,144,.13));
+  text-shadow:0 0 8px rgba(34,211,238,.5); }
 .sp-actions { display:flex; gap:6px; }.sp-actions button { flex:1; }
 
 /* ---- YOLO 识别画面小窗 ----
