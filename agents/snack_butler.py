@@ -403,6 +403,11 @@ class SnackButler(Node):
         self.servo_pulses = {}
         self.joint_rad = {}
         self.q_cmd = [math.radians(a) for a in self.cfg['observe_deg']]   # 我们下发的最新关节角
+        # 单调递增的机械臂目标版本，供数字孪生可靠区分“新的位置组命令”和
+        # 周期状态广播。只看 joint_states 会在驱动反馈滞后/缺帧时完全看不到切换。
+        self.arm_command_seq = 0
+        self.arm_command_at = 0.0
+        self.arm_command_duration = 0.0
 
         self.state = 'INIT'
         self.step = ''
@@ -1003,6 +1008,9 @@ class SnackButler(Node):
                               for i, p in zip(SERVO_IDS, pulses)]
                 self._tx_push(m)
         self.q_cmd = list(q)
+        self.arm_command_seq += 1
+        self.arm_command_at = time.time()
+        self.arm_command_duration = float(duration)
         return pulses
 
     def send_pulses(self, id_pulse, duration):
@@ -2618,6 +2626,14 @@ class SnackButler(Node):
             'ee': {'x': round(ee[0], 4), 'y': round(ee[1], 4), 'z': round(ee[2], 4),
                    'pitch_deg': round(math.degrees(ee[3]), 1)},
             'q_deg': [round(math.degrees(v), 1) for v in q],
+            # 与 q_deg（实时反馈）分开发布。网页收到新 seq 时先按这个目标驱动模型，
+            # 等真实 joint_states 追上后再恢复反馈跟随，避免旧反馈把模型拉回原位。
+            'arm_command': {
+                'seq': self.arm_command_seq,
+                'q_deg': [round(math.degrees(v), 2) for v in self.q_cmd],
+                'duration': round(self.arm_command_duration, 3),
+                'issued_at': round(self.arm_command_at, 3) if self.arm_command_at else None,
+            },
             'has_rgb': self.rgb is not None, 'has_depth': self.depth is not None,
             'has_K': self.K is not None,
             'calibrated': self.cfg['servo_map_calibrated'],

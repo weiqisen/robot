@@ -993,6 +993,30 @@ watch(() => state.joints, m => {
   info.eex = w.x.toFixed(3); info.eey = w.y.toFixed(3); info.eez = w.z.toFixed(3)
   updateJointAngles()      // 标签第三行的角度跟着刷
 })
+
+// 位置组由 snack_butler 状态机下发，不经过本页的滑块。机器人端为每次目标
+// 发布单调递增 seq；只在 seq 改变时预览一次，随后由上面的 joint_states 在
+// 到达目标（或保护超时）后接管。这样既不会“按钮按了模型没反应”，也不会
+// 因 5Hz 状态广播反复延长预览窗口而掩盖真实反馈。
+let lastArmCommandSeq = -1
+watch(() => state.snack?.arm_command, cmd => {
+  if (!robot || !cmd || !Array.isArray(cmd.q_deg) || cmd.q_deg.length < 5) return
+  const seq = Number(cmd.seq)
+  if (!Number.isFinite(seq) || seq === lastArmCommandSeq) return
+  lastArmCommandSeq = seq
+  const holdMs = Math.max(3200, (Number(cmd.duration) || 0) * 1000 + 1800)
+  IK_CHAIN.forEach((name, i) => {
+    const j = robot.joints[name]
+    const angle = THREE.MathUtils.degToRad(Number(cmd.q_deg[i]))
+    if (!j || !Number.isFinite(angle)) return
+    let lo = -Math.PI, hi = Math.PI
+    if (j.limit && +j.limit.lower !== +j.limit.upper) { lo = +j.limit.lower; hi = +j.limit.upper }
+    const target = Math.max(lo, Math.min(hi, angle))
+    robot.setJointValue(name, target)
+    jointPreview.set(name, { angle: target, expires: Date.now() + holdMs })
+  })
+  updateJointAngles()
+}, { deep: false })
 watch(() => state.odom, m => {
   if (!robot || !m) return
   const p = m.pose.pose.position, e = quatToEuler(m.pose.pose.orientation)
