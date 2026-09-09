@@ -69,6 +69,7 @@ const decisionLines = computed(() => {
     elapsed_ms: i && row.at && all[i-1].at ? Math.max(0, Math.round((row.at-all[i-1].at)*1000)) : null }))
   return rows.reverse()
 })
+const showDecisionDetail = ref(false)
 function decisionTime(epoch) {
   return epoch ? new Date(epoch * 1000).toLocaleTimeString('zh-CN', { hour12: false }) : '--:--:--'
 }
@@ -763,21 +764,24 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
     <!-- 右：实时决策 + 高级设置 -->
     <a-col :xs="24" :xl="9">
       <a-card size="small" title="抓取决策轨迹" class="inference-panel">
-        <template #extra><a-tag :color="online ? 'processing' : 'default'">节点原始决策 · 最新在上</a-tag></template>
+        <template #extra><a-tag :color="online ? 'processing' : 'default'">{{ online ? '在线' : '离线' }}</a-tag></template>
         <div class="infer-summary">{{ inferenceSummary }}</div>
         <div class="vision-timing">
-          <span>排队 <b>{{ visionTiming.queue_ms ?? '—' }}ms</b></span>
           <span>检测 <b>{{ visionTiming.detect_ms ?? '—' }}ms</b></span>
-          <span>定位+IK <b>{{ visionTiming.geometry_ik_ms ?? '—' }}ms</b></span>
+          <span>定位 <b>{{ visionTiming.geometry_ik_ms ?? '—' }}ms</b></span>
           <span>总计 <b>{{ visionTiming.total_ms ?? '—' }}ms</b></span>
+          <span>目标 <b>{{ candidateRanking.length || dets.length }}</b></span>
         </div>
         <div v-if="candidateRanking.length" class="candidate-rank">
-          <div v-for="c in candidateRanking.slice(0,5)" :key="c.track_id" :class="{ top:c.rank===1, rejected:!c.reachable }">
+          <div v-for="c in candidateRanking.slice(0,3)" :key="c.track_id" :class="{ top:c.rank===1, rejected:!c.reachable }">
             <i>#{{ c.rank }}</i><b>{{ CN[c.label] || c.label }} · {{ c.score }}</b>
-            <span>{{ c.decision }} · {{ c.summary }}</span>
+            <span>{{ c.reachable ? '可抓取' : '不可达' }}</span>
           </div>
         </div>
-        <div class="infer-terminal">
+        <a-button type="link" size="small" class="decision-toggle" @click="showDecisionDetail = !showDecisionDetail">
+          {{ showDecisionDetail ? '收起详细轨迹' : `查看详细轨迹（${decisionLines.length}）` }}
+        </a-button>
+        <div v-if="showDecisionDetail" class="infer-terminal">
           <div v-if="!decisionLines.length" class="infer-empty">{{ online ? '等待下一条抓取决策' : '等待视觉抓取节点连接' }}</div>
           <div v-for="line in decisionLines" :key="line.seq" :class="['infer-line', line.level]">
             <time>{{ decisionTime(line.at) }}<em v-if="line.elapsed_ms != null">+{{ line.elapsed_ms }}ms</em></time>
@@ -1161,12 +1165,13 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
 .inference-panel { overflow:hidden; }
 .infer-summary { padding:8px 10px; border:1px solid var(--border); border-radius:7px; background:var(--surface-2); font-size:12px; line-height:1.55; color:var(--text-2); }
 .vision-timing{display:grid;grid-template-columns:repeat(4,1fr);gap:5px;margin-top:7px}.vision-timing span{padding:5px;border:1px solid var(--border);border-radius:5px;color:var(--text-3);font-size:9px;text-align:center}.vision-timing b{display:block;margin-top:2px;color:#38bdf8;font:10px ui-monospace}.candidate-rank{display:grid;gap:3px;margin-top:7px}.candidate-rank>div{display:grid;grid-template-columns:28px 105px 1fr;gap:5px;align-items:center;padding:5px 7px;border-left:2px solid #64748b;background:rgba(100,116,139,.07);font-size:9px}.candidate-rank i{color:#64748b;font-style:normal}.candidate-rank b{color:#cbd5e1}.candidate-rank span{color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.candidate-rank .top{border-color:#34d399;background:rgba(6,78,59,.12)}.candidate-rank .top i,.candidate-rank .top b{color:#34d399}.candidate-rank .rejected{opacity:.58;border-color:#fb7185}
-.infer-terminal { margin-top:9px; padding:8px 0; min-height:260px; max-height:520px; overflow:auto; border-radius:7px; background:#101821; font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; }
+.infer-terminal { margin-top:4px; padding:4px 0; max-height:300px; overflow:auto; border-radius:7px; background:#101821; font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; }
 .infer-empty { padding:18px; text-align:center; color:#6f8295; }
 .infer-line { display:grid; grid-template-columns:72px 38px minmax(0,1fr); gap:6px; padding:5px 9px; color:#c5d1df; border-bottom:1px solid rgba(255,255,255,.035); }
 .infer-line time { color:#6f8295; }.infer-line time em{display:block;color:#3f9dbd;font:8px ui-monospace;font-style:normal}.infer-line b { color:#5dc3ff; font-weight:600; }.infer-line.warn b { color:#ffbc5b; }.infer-line.error b,.infer-line.error span { color:#ff8e8e; }.infer-line.success b { color:#6bd89b; }
 .quality-note{color:var(--text-3);font-size:11px}.failure-card{margin-top:9px;padding:9px;border:1px solid rgba(251,113,133,.28);border-radius:8px;background:rgba(127,29,29,.08)}.failure-card>div{display:flex;justify-content:space-between;gap:8px}.failure-card b{color:#fb7185;font-size:11px}.failure-card time{color:var(--text-3);font:10px ui-monospace}.failure-card p{margin:6px 0;color:var(--text-2);font-size:11px}.failure-card small{display:block;margin-bottom:8px;color:#fbbf24;font-size:10px;line-height:1.5}
 .infer-line span,.infer-line strong,.infer-line small { overflow-wrap:anywhere; }.infer-line strong { display:block; color:inherit; font-weight:600; }.infer-line small { display:block; margin-top:1px; color:#8fa2b5; font:11px/1.45 system-ui,sans-serif; }
+.decision-toggle{padding:3px 0;height:auto;font-size:11px}
 .infer-line.error small { color:#d98989; }.infer-detail { margin-top:8px; font-size:12px; line-height:1.6; color:var(--text-3); }
 .advanced-panels :deep(.ant-collapse-item) { border:1px solid var(--border); border-radius:8px!important; margin-bottom:8px; overflow:hidden; }
 .advanced-panels :deep(.ant-collapse-header) { font-weight:600; font-size:13px; background:var(--surface-2); }
