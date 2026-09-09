@@ -97,6 +97,11 @@ function onImgError() {
 onUnmounted(() => { if (retryT) clearTimeout(retryT) })
 const imgEl = ref(null)
 const canvasEl = ref(null)
+const imageTune = reactive({ brightness: 0.82, contrast: 1.05, saturation: 0.9 })
+const imageFilter = computed(() => ({
+  filter: `brightness(${imageTune.brightness}) contrast(${imageTune.contrast}) saturate(${imageTune.saturation})`,
+}))
+function resetImageTune() { Object.assign(imageTune, { brightness: 0.82, contrast: 1.05, saturation: 0.9 }) }
 const showOffsetPreview = ref(false)  // 是否显示补偿预览绿框
 const showSafeZone = ref(false)       // 是否显示安全抓取区域
 // 流卡住(web_video_server 重启等)时 <img> 不报错，只是不再更新——靠采样比对发现
@@ -600,9 +605,17 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
           </a-space>
         </template>
         <div class="stage" @click="onPick">
-          <img ref="imgEl" :src="src" @error="onImgError" />
+          <img ref="imgEl" :src="src" :style="imageFilter" @error="onImgError" />
           <canvas ref="canvasEl" class="overlay-canvas" />
           <div class="hint">{{ probeMode ? '只算不抓：点一下看它算出来的坐标' : `点画面选择目标 · 当前识别到 ${dets.length} 个` }}</div>
+        </div>
+
+        <div class="image-tune">
+          <span class="tune-title">画面校正</span>
+          <label>亮度 <input v-model.number="imageTune.brightness" type="range" min="0.45" max="1.2" step="0.01" /> <b>{{ imageTune.brightness.toFixed(2) }}</b></label>
+          <label>对比度 <input v-model.number="imageTune.contrast" type="range" min="0.7" max="1.5" step="0.01" /> <b>{{ imageTune.contrast.toFixed(2) }}</b></label>
+          <label>饱和度 <input v-model.number="imageTune.saturation" type="range" min="0.4" max="1.4" step="0.01" /> <b>{{ imageTune.saturation.toFixed(2) }}</b></label>
+          <a-button size="small" @click="resetImageTune">恢复默认</a-button>
         </div>
 
         <div class="target-workbench">
@@ -1211,6 +1224,8 @@ code { font-family: ui-monospace, monospace; font-size: 13px; }
   overflow-wrap: anywhere;
 }
 .status-sources { display: flex; max-width: 100%; }
+.image-tune{display:flex;align-items:center;flex-wrap:wrap;gap:8px 14px;margin-top:8px;padding:8px 10px;border:1px solid var(--border);border-radius:7px;background:var(--surface-2);font-size:12px;color:var(--text-2)}
+.image-tune label{display:flex;align-items:center;gap:5px;white-space:nowrap}.image-tune input{width:92px;accent-color:#38bdf8}.image-tune b{width:30px;font:11px ui-monospace;color:#38bdf8}.tune-title{font-weight:600;color:var(--text-1)}
 .replay-shell{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(300px,.85fr);gap:12px;background:#070b11;padding:12px;border-radius:12px;color:#dbeafe}
 .replay-stage{position:relative;background:#000;border-radius:9px;overflow:hidden;min-height:360px}.replay-stage video{display:block;width:100%;height:100%;max-height:65vh;object-fit:contain}
 .replay-loading{position:absolute;inset:0;z-index:3;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;background:rgba(2,6,12,.88);color:#94a3b8;font-size:12px}.replay-loading.error b{color:#fb7185}.replay-loading a{color:#67e8f9}
