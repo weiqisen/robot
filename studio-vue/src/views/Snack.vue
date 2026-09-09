@@ -18,6 +18,7 @@ const lastFailure = computed(() => sb.value?.last_failure || null)
 const selectedQuality = computed(() => selectedDet.value?.grasp_quality || null)
 const candidateRanking = computed(() => sb.value?.candidate_ranking || [])
 const visionTiming = computed(() => sb.value?.analysis?.timing || {})
+const liveAnalysis = computed(() => !!sb.value?.analysis?.live)
 
 const STATE_COLOR = {
   INIT: 'default', IDLE: 'default', OBSERVE: 'processing', DETECT: 'processing',
@@ -675,6 +676,10 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
           <div class="control-row">
             <span class="label">模式</span>
             <a-switch v-model:checked="probeMode" size="small" checked-children="只算不抓" un-checked-children="选择目标" />
+            <a-button size="small" :type="liveAnalysis ? 'primary' : 'default'" :disabled="!online"
+              @click="send({ action: 'live_analysis', enabled: !liveAnalysis }, liveAnalysis ? '已关闭实时识别' : '已开启实时识别')">
+              {{ liveAnalysis ? '实时识别中' : '实时识别' }}
+            </a-button>
             <a-tooltip title="空跑：识别、算坐标、算 IK 全跑，但不给舵机发指令">
               <a-switch :checked="!!cfg.dry_run" :disabled="!online" size="small"
                 checked-children="空跑" un-checked-children="实动"
