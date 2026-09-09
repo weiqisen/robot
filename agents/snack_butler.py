@@ -474,6 +474,10 @@ class SnackButler(Node):
         # 直接在 JPEG 的 DCT 阶段降采样解出小图，比「整解再 resize」便宜得多。
         self.create_subscription(CompressedImage, '/depth_cam/rgb/image_raw/compressed',
                                  self.on_rgb_compressed, sensor_qos)
+        # 部分机器人只发布原始 RGB、不发布 compressed；保留回退订阅，避免节点
+        # 看得到相机健康状态却因 self.rgb 为空而永远不发布标注图。
+        self.create_subscription(Image, '/depth_cam/rgb/image_raw',
+                                 self.on_rgb_raw, sensor_qos)
         self.create_subscription(Image, '/depth_cam/depth/image_raw', self.on_depth, sensor_qos)
         self.create_subscription(CameraInfo, '/depth_cam/rgb/camera_info', self.on_info, sensor_qos)
         self.create_subscription(JointState, '/controller_manager/joint_states', self.on_joints, 10)
@@ -836,6 +840,20 @@ class SnackButler(Node):
                 self.rgb = img
         except Exception:
             pass
+
+    def on_rgb_raw(self, msg):
+        """compressed 话题不可用时，从原始 RGB 话题取得标注流输入。"""
+        now = time.time()
+        fps = float(self.cfg.get('proc_fps') or 0)
+        if fps > 0 and now - self._last_dec < 1.0 / fps:
+            return
+        self._last_dec = now
+        img = self.imgmsg_to_cv(msg)
+        if img is None:
+            return
+        img = self.shrink(img)
+        with self.lock:
+            self.rgb = img
 
     def on_depth(self, msg):
         d = self.imgmsg_to_cv(msg, depth=True)
