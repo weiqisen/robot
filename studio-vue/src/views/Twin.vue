@@ -368,10 +368,14 @@ const SERVO_MAP = [{ id: 1, joint: 'joint1' }, { id: 2, joint: 'joint2' }, { id:
 
 function init() {
   const el = host.value
-  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
+  // 机械臂快速运动时透明 WebGL 画布会和页面背景发生帧间合成，
+  // 某些 GPU/浏览器组合会留下上一帧的半透明像素（看起来像幻影）。
+  // 孪生画布本身使用稳定的深色底，不需要透明合成。
+  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' })
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
-  // 透明清屏，让容器的多层渐变成为场景背景；比纯黑更容易分辨黑色结构件。
-  renderer.setClearColor(0x070a0e, 0)
+  // 每帧不透明清屏，避免动作过程中出现上帧残影。
+  renderer.setClearColor(0x070a0e, 1)
+  renderer.autoClear = true
   // 不做色调映射的话，金属高光会直接削顶成一块平的饱和色 —— 看着就是塑料。
   // ACES 把高光滚降下来，反射的明暗过渡才留得住。曝光补一点，抵消 ACES 整体压暗。
   renderer.toneMapping = THREE.ACESFilmicToneMapping
