@@ -6,7 +6,7 @@
 // 动作组读写的是**同一批 .d6a 文件**（那玩意就是 SQLite），
 // 所以网页里存的动作组，桌面端那个程序也能直接打开，反之亦然。
 import { ref, reactive, computed, onBeforeUnmount } from 'vue'
-import { message, Modal } from 'ant-design-vue'
+import { message } from 'ant-design-vue'
 import { useRos } from '../composables/useRos'
 import InfoNote from '../components/InfoNote.vue'
 
@@ -219,24 +219,21 @@ async function runNamedGroup(name) {
 }
 function runAllGroups() {
   if (!groups.value.length) return message.warning('没有可执行的动作组')
-  Modal.confirm({ title: '执行全部动作组？', okText: '开始执行', cancelText: '取消',
-    content: `将按当前列表顺序执行 ${groups.value.length} 个动作组，每组执行一次。请确认机械臂周围无人、无障碍物，并准备好随时点击停止。`,
-    onOk: async () => {
-      if (!online.value) return message.error('rosbridge 未连接')
-      running.value = true; stopFlag = false
-      try {
-        for (const name of groups.value) {
-          if (stopFlag) break
-          await previewGroup(name)
-          for (let i = 0; i < rows.value.length && !stopFlag; i++) {
-            const r = rows.value[i]; sel.value = i
-            actions.setServosCtl(ORDER.map((id, k) => ({ id, position: r.servos[k] })), (r.time || 1000) / 1000)
-            await new Promise(res => setTimeout(res, r.time || 1000))
-          }
+  if (!online.value) return message.error('rosbridge 未连接')
+  running.value = true; stopFlag = false
+  ;(async () => {
+    try {
+      for (const name of groups.value) {
+        if (stopFlag) break
+        await previewGroup(name)
+        for (let i = 0; i < rows.value.length && !stopFlag; i++) {
+          const r = rows.value[i]; sel.value = i
+          actions.setServosCtl(ORDER.map((id, k) => ({ id, position: r.servos[k] })), (r.time || 1000) / 1000)
+          await new Promise(res => setTimeout(res, r.time || 1000))
         }
-      } finally { running.value = false }
-    },
-  })
+      }
+    } finally { running.value = false }
+  })()
 }
 
 loadGroups()
