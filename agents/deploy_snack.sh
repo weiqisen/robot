@@ -77,10 +77,10 @@ echo "== webctl 已重启"
 echo "== 推送 agents"
 # jetson_agent / webrtc_agent 的 systemd 单元是早先手工装的，这里只更新脚本本身：
 # 网页的 BOM / 服务监控 / 运行日志页全靠 jetson_agent 推 topic，漏推就是一直空转。
-$SCP "$HERE"/agents/{snack_butler.py,arm_kinematics.py,vision_geometry.py,snack_detector.py,service_watchdog.py,llm_agent.py,jetson_agent.py,webrtc_agent.py,gpu_bench.py,explorer_agent.py,exploration_bringup.launch.py,web_bringup.launch.py,run_exploration_nav.sh,run_x11vnc.sh,nav_safety_guard.py,nav_safety_logic.py,lidar_watchdog.py,vision_stream_server.py,vision_stream_guard.py,exploration_nav_safety.yaml} \
+$SCP "$HERE"/agents/{snack_butler.py,arm_kinematics.py,vision_geometry.py,snack_detector.py,service_watchdog.py,llm_agent.py,jetson_agent.py,webrtc_agent.py,gpu_bench.py,explorer_agent.py,exploration_bringup.launch.py,web_bringup.launch.py,run_exploration_nav.sh,run_x11vnc.sh,enable_desktop.sh,disable_desktop.sh,nav_safety_guard.py,nav_safety_logic.py,lidar_watchdog.py,vision_stream_server.py,vision_stream_guard.py,exploration_nav_safety.yaml} \
      "$USER_@$ROBOT:~/"
 # scp 不保证本地脚本的执行位在所有目标环境中保持一致；显式设置，便于 systemd 和人工排障直接执行。
-$SSH "$USER_@$ROBOT" 'chmod 755 ~/run_exploration_nav.sh ~/run_x11vnc.sh'
+$SSH "$USER_@$ROBOT" 'chmod 755 ~/run_exploration_nav.sh ~/run_x11vnc.sh ~/enable_desktop.sh ~/disable_desktop.sh'
 # 配置文件已存在就不覆盖——上面标定出来的参数在里面
 $SSH "$USER_@$ROBOT" 'test -f ~/snack_butler_config.json || echo "{}" > ~/snack_butler_config.json'
 
@@ -321,7 +321,7 @@ $SSH "$USER_@$ROBOT" "echo '$USER_ ALL=(root) NOPASSWD: /usr/bin/systemctl resta
 
 # 网页只能重启界面列出的 9 个自建服务；每条 sudo 命令都固定到完整 unit 参数。
 $SSH "$USER_@$ROBOT" "sudo tee /etc/sudoers.d/jetrover-webctl >/dev/null <<'EOF'
-Cmnd_Alias JETROVER_WEBCTL_RESTART = /usr/bin/systemctl restart webctl.service, /usr/bin/systemctl restart jetson-agent.service, /usr/bin/systemctl restart snack-butler.service, /usr/bin/systemctl restart explorer-agent.service, /usr/bin/systemctl restart exploration-nav.service, /usr/bin/systemctl restart nav-safety.service, /usr/bin/systemctl restart lidar-watchdog.service, /usr/bin/systemctl restart webrtc-agent.service, /usr/bin/systemctl restart llm-agent.service
+Cmnd_Alias JETROVER_WEBCTL_RESTART = /usr/bin/systemctl restart webctl.service, /usr/bin/systemctl restart jetson-agent.service, /usr/bin/systemctl restart snack-butler.service, /usr/bin/systemctl restart explorer-agent.service, /usr/bin/systemctl restart exploration-nav.service, /usr/bin/systemctl restart nav-safety.service, /usr/bin/systemctl restart lidar-watchdog.service, /usr/bin/systemctl restart webrtc-agent.service, /usr/bin/systemctl restart llm-agent.service, /home/ubuntu/enable_desktop.sh, /home/ubuntu/disable_desktop.sh
 $USER_ ALL=(root) NOPASSWD: JETROVER_WEBCTL_RESTART
 EOF
 sudo chmod 440 /etc/sudoers.d/jetrover-webctl

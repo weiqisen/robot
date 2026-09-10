@@ -345,6 +345,12 @@ def system_storage():
         except Exception:
             pass
     return {'filesystems': fs, 'rows': sorted(rows, key=lambda x: x['bytes'], reverse=True)[:32], 'at': time.time()}
+
+
+def desktop_status():
+    target = subprocess.run(['systemctl', 'get-default'], capture_output=True, text=True, timeout=3).stdout.strip()
+    active = subprocess.run(['systemctl', 'is-active', 'gdm.service'], capture_output=True, text=True, timeout=3).stdout.strip()
+    return {'enabled': target == 'graphical.target', 'target': target, 'gdm': active}
 WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
 _cam = {'ts': 0.0, 'jpg': None}
 _cam_lock = threading.Lock()
@@ -512,6 +518,11 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split('?', 1)[0]
+        if path == '/api/system/desktop':
+            try:
+                return self._json(200, desktop_status())
+            except Exception as e:
+                return self._json(500, {'error': str(e)})
         if path == '/api/system/processes':
             try:
                 return self._json(200, system_processes('memory' if 'sort=memory' in self.path else 'cpu'))
@@ -646,6 +657,15 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_PUT(self):
         path = self.path.split('?', 1)[0]
+        if path in ('/api/system/desktop/enable', '/api/system/desktop/disable'):
+            script = '/home/ubuntu/' + ('enable_desktop.sh' if path.endswith('/enable') else 'disable_desktop.sh')
+            try:
+                r = subprocess.run(['sudo', '-n', script], capture_output=True, text=True, timeout=20)
+                if r.returncode:
+                    return self._json(500, {'error': r.stderr.strip() or 'desktop switch failed'})
+                return self._json(200, {'ok': True, **desktop_status()})
+            except Exception as e:
+                return self._json(500, {'error': str(e)})
         match = SERVICE_RESTART_PATH.fullmatch(path)
         if match:
             name = match.group(1)
