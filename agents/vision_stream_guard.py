@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""只守护独立视觉视频桥；连续无 JPEG 帧才重启该桥。"""
+"""守护视觉流：先重启桥，仍无帧才恢复上游相机 bringup。"""
 import subprocess
 import time
 import urllib.request
@@ -31,15 +31,25 @@ def main():
     time.sleep(STARTUP_GRACE)
     failures = 0
     last_restart = 0.0
+    bridge_restarts_since_frame = 0
     while True:
         if has_jpeg_frame():
             failures = 0
+            bridge_restarts_since_frame = 0
         else:
             failures += 1
             print('vision bridge frame check failed (%d/%d)' % (failures, FAILURES_BEFORE_RESTART), flush=True)
             if failures >= FAILURES_BEFORE_RESTART and time.monotonic() - last_restart >= RESTART_COOLDOWN:
-                print('restarting isolated vision-video.service only', flush=True)
-                subprocess.run(['/usr/bin/systemctl', 'restart', 'vision-video.service'], check=False)
+                if bridge_restarts_since_frame:
+                    # 视频桥重启后仍持续无 JPEG，根因通常是相机容器虽在但没有发布帧。
+                    # 这个固定 sudo 权限仅允许重启 bringup；不会发送机械臂或底盘命令。
+                    print('vision bridge still has no frames; restarting upstream start_app_node.service', flush=True)
+                    subprocess.run(['sudo', '-n', '/usr/bin/systemctl', 'restart', 'start_app_node.service'], check=False)
+                    bridge_restarts_since_frame = 0
+                else:
+                    print('restarting isolated vision-video.service', flush=True)
+                    subprocess.run(['/usr/bin/systemctl', 'restart', 'vision-video.service'], check=False)
+                    bridge_restarts_since_frame = 1
                 last_restart = time.monotonic()
                 failures = 0
                 time.sleep(STARTUP_GRACE)
