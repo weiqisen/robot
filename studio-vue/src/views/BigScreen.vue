@@ -104,17 +104,17 @@ async function runActionGroup() {
   let r, j
   try { r = await fetch(`${ACTION_API}/${encodeURIComponent(actionGroup.value)}`, { cache:'no-store' }); j = await r.json() } catch (e) { return message.error(`动作组读取失败：${e.message}`) }
   if (!r.ok || !j.rows?.length) return message.error(j.error || '动作组读取失败或为空')
-  actionRunning.value = true; actionStep.value = 0; actionTotal.value = j.rows.length; message.success(`开始执行：${actionLabel(actionGroup.value)}`)
-  try { for (let i=0; i<j.rows.length && actionRunning.value; i++) { const row=j.rows[i], ms=row.time||1000; actionStep.value=i+1; playActionRow(row, ms); await new Promise(res=>setTimeout(res,ms)) } } finally { actionRunning.value=false }
+  actionRunning.value = true; actionStep.value = 0; actionTotal.value = j.rows.length; twinRef.value?.setActionGroupAnimating(true); message.success(`开始执行：${actionLabel(actionGroup.value)}`)
+  try { for (let i=0; i<j.rows.length && actionRunning.value; i++) { const row=j.rows[i], ms=row.time||1000; actionStep.value=i+1; playActionRow(row, ms); await new Promise(res=>setTimeout(res,ms)) } } finally { actionRunning.value=false; twinRef.value?.setActionGroupAnimating(false) }
 }
 async function runAllActionGroups() {
   if (!actionGroups.value.length) return message.warning('动作组列表为空，请先刷新')
   if (!state.connected) return message.error('ROS 未连接，动作组未执行')
   if (actionRunning.value) return
-  actionRunning.value = true
-  try { for (const name of actionGroups.value) { if (!actionRunning.value) break; actionGroup.value = name; const r = await fetch(`${ACTION_API}/${encodeURIComponent(name)}`, { cache:'no-store' }); const j = await r.json(); if (!r.ok) { message.error(j.error || `动作组读取失败：${name}`); continue } actionTotal.value=j.rows?.length||0; for (let i=0;i<(j.rows||[]).length && actionRunning.value;i++){const row=j.rows[i],ms=row.time||1000;actionStep.value=i+1;playActionRow(row, ms);await new Promise(res=>setTimeout(res,ms))} } } finally { actionRunning.value=false }
+  actionRunning.value = true; twinRef.value?.setActionGroupAnimating(true)
+  try { for (const name of actionGroups.value) { if (!actionRunning.value) break; actionGroup.value = name; const r = await fetch(`${ACTION_API}/${encodeURIComponent(name)}`, { cache:'no-store' }); const j = await r.json(); if (!r.ok) { message.error(j.error || `动作组读取失败：${name}`); continue } actionTotal.value=j.rows?.length||0; for (let i=0;i<(j.rows||[]).length && actionRunning.value;i++){const row=j.rows[i],ms=row.time||1000;actionStep.value=i+1;playActionRow(row, ms);await new Promise(res=>setTimeout(res,ms))} } } finally { actionRunning.value=false; twinRef.value?.setActionGroupAnimating(false) }
 }
-function stopActionGroup() { actionRunning.value=false }
+function stopActionGroup() { actionRunning.value=false; twinRef.value?.setActionGroupAnimating(false) }
 loadActionGroups()
 
 // ---- 底盘手动驾驶：摇杆 + WASD，和实时控制页同一套安全前提 ----

@@ -974,6 +974,7 @@ function loop() {
 // 在反馈真正追上目标前，不能让旧值把本地预览立即拉回原位。
 const jointPreview = new Map()
 const feedbackAnim = new Map()
+let actionGroupAnimating = false
 function animateFeedbackJoint(name, target) {
   const j = robot?.joints?.[name]
   if (!j) return
@@ -999,7 +1000,7 @@ watch(() => state.joints, m => {
     // 动作组的本地轨迹正在逐帧写这个关节时，真实回报只作状态记录。
     // 绝不能再启动第二个反馈插值，否则两个 RAF 会相互抢位置而抽搐。
     const servo = SERVO_MAP.find(x => x.joint === name)
-    if (servo && jointAnim.has(servo.id)) { n++; continue }
+    if (servo && (actionGroupAnimating || jointAnim.has(servo.id))) { n++; continue }
     const preview = jointPreview.get(name)
     if (preview) {
       // 反馈进入约 2° 容差才交还实时跟随；超时则以反馈为准，避免模型永久假装到位。
@@ -1028,6 +1029,8 @@ watch(() => state.joints, m => {
 // 因 5Hz 状态广播反复延长预览窗口而掩盖真实反馈。
 let lastArmCommandSeq = -1
 watch(() => state.snack?.arm_command, cmd => {
+  // 动作组本身就是一段完整轨迹；状态机的异步命令不能中途抢占模型。
+  if (actionGroupAnimating) return
   if (!robot || !cmd || !Array.isArray(cmd.q_deg) || cmd.q_deg.length < 5) return
   const seq = Number(cmd.seq)
   if (!Number.isFinite(seq) || seq === lastArmCommandSeq) return
@@ -1150,7 +1153,11 @@ function animateServoPose(pulses, durationMs = 1000) {
   }
   requestAnimationFrame(frame)
 }
-defineExpose({ setJointByServoId, animateJointByServoId, animateServoPose })
+function setActionGroupAnimating(active) {
+  actionGroupAnimating = !!active
+  if (!actionGroupAnimating) jointPreview.clear()
+}
+defineExpose({ setJointByServoId, animateJointByServoId, animateServoPose, setActionGroupAnimating })
 
 // ---- CCD IK ----
 const IK_CHAIN = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5']
