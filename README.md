@@ -48,7 +48,7 @@ JetRover Robot Dashboard 是一套面向 Jetson 轮式机械臂机器人的开�
 ## 本地开发
 
 ```bash
-cd studio-vue
+cd robot-dashboard-front
 npm ci
 npm run dev
 ```
@@ -66,7 +66,7 @@ WEB_ONLY=1 NO_WAIT=1 ./agents/deploy_snack.sh
 ROBOT=192.168.3.99 ROBOT_USER=ubuntu ./agents/deploy_snack.sh
 
 # 提交前的最小验证
-npm --prefix studio-vue run build
+npm --prefix robot-dashboard-front run build
 python3 agents/test_kinematics.py
 python3 agents/test_vision.py
 python3 agents/test_nav_safety.py
@@ -77,7 +77,7 @@ python3 agents/test_webctl_bridge.py
 
 ## 贡献约定
 
-- 前端页面在 `studio-vue/`，没有 vue-router，菜单由 `App.vue` 的 hash 切换。
+- 前端页面在 `robot-dashboard-front/`，没有 vue-router，菜单由 `App.vue` 的 hash 切换。
 - 机器人端脚本在 `agents/`，部署后由 systemd 直接运行，并非 colcon 包。
 - 新增移动控制必须经过 `nav_safety_guard.py`；不要恢复对 `/cmd_vel` 的直发。
 - 机械臂默认姿态、相机外参和抓取高度均为安全关键配置。改动后先运行测试，再真机空跑。

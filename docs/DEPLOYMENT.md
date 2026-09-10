@@ -7,14 +7,14 @@
 ```text
 开发机仓库
   └─ agents/deploy_snack.sh
-       ├─ npm run build → studio-vue/dist
+       ├─ npm run build → robot-dashboard-front/dist
        ├─ 复制 README 与 docs → dist/project-docs
        ├─ SCP 网页与 agents 到 /home/ubuntu/
        ├─ 更新 webctl / snack-butler / 相关 systemd 单元
        └─ 重启已安装的守护服务，输出服务状态
 ```
 
-不要直接修改 `studio-vue/dist`：下一次构建会覆盖它。机器人上的标定配置 `/home/ubuntu/snack_butler_config.json` 是机器专属文件，脚本只会在缺失时创建空文件，不会覆盖现有标定。
+不要直接修改 `robot-dashboard-front/dist`：下一次构建会覆盖它。机器人上的标定配置 `/home/ubuntu/snack_butler_config.json` 是机器专属文件，脚本只会在缺失时创建空文件，不会覆盖现有标定。
 
 ## 环境要求
 
@@ -22,7 +22,7 @@
 
 - macOS 或 Linux，具备 `bash`、`ssh`、`scp`、`tar` 和 Node.js/npm。
 - 能通过 SSH 访问机器人；建议配置 SSH key。需要密码时，通过本地环境变量传给脚本，绝不写入仓库。
-- 前端依赖安装完成：`npm --prefix studio-vue ci`。
+- 前端依赖安装完成：`npm --prefix robot-dashboard-front ci`。
 
 ### 机器人
 
@@ -37,7 +37,7 @@
 2. 在开发机根目录执行：
 
 ```bash
-npm --prefix studio-vue ci
+npm --prefix robot-dashboard-front ci
 ./agents/deploy_snack.sh
 ```
 
@@ -63,7 +63,7 @@ ROBOT=192.168.3.99 ROBOT_USER=ubuntu NO_WAIT=1 ./agents/deploy_snack.sh
 ## 部署后验证
 
 ```bash
-npm --prefix studio-vue run build
+npm --prefix robot-dashboard-front run build
 python3 agents/test_kinematics.py
 python3 agents/test_vision.py
 python3 agents/test_nav_safety.py

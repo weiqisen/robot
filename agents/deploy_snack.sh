@@ -37,14 +37,14 @@ if [ -z "${NO_WAIT:-}" ]; then
 fi
 
 echo "== 推送网页"
-( cd "$HERE/studio-vue" && npm run build >/dev/null )
+( cd "$HERE/robot-dashboard-front" && npm run build >/dev/null )
 # 把项目文档一起放入静态包，后台「项目文档」页直接读取这些原始 Markdown。
-rm -rf "$HERE/studio-vue/dist/project-docs"
-mkdir -p "$HERE/studio-vue/dist/project-docs/docs"
-cp "$HERE/README.md" "$HERE/AGENTS.md" "$HERE/WEB_PROJECT_GUIDE.md" "$HERE/studio-vue/dist/project-docs/"
-cp "$HERE"/docs/*.md "$HERE/studio-vue/dist/project-docs/docs/"
+rm -rf "$HERE/robot-dashboard-front/dist/project-docs"
+mkdir -p "$HERE/robot-dashboard-front/dist/project-docs/docs"
+cp "$HERE/README.md" "$HERE/AGENTS.md" "$HERE/WEB_PROJECT_GUIDE.md" "$HERE/robot-dashboard-front/dist/project-docs/"
+cp "$HERE"/docs/*.md "$HERE/robot-dashboard-front/dist/project-docs/docs/"
 # macOS 会把 com.apple.* 扩展属性写进 tar，Linux 解包时刷几十行无意义警告。
-COPYFILE_DISABLE=1 tar -C "$HERE/studio-vue/dist" -czf /tmp/webctl.tgz .
+COPYFILE_DISABLE=1 tar -C "$HERE/robot-dashboard-front/dist" -czf /tmp/webctl.tgz .
 $SCP /tmp/webctl.tgz "$USER_@$ROBOT:/tmp/"
 # 先删旧 assets 再解包：文件名带 hash，不删就会越堆越多
 $SSH "$USER_@$ROBOT" 'mkdir -p ~/web_control && rm -rf ~/web_control/assets && tar -C ~/web_control -xzf /tmp/webctl.tgz && rm /tmp/webctl.tgz'

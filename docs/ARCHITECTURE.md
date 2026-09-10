@@ -99,10 +99,10 @@ Jetson / ROS 2
 
 | 想改什么 | 主要位置 |
 | --- | --- |
-| 菜单与页面挂载 | `studio-vue/src/App.vue` |
-| ROS 连接、地址与订阅公共逻辑 | `studio-vue/src/composables/useRos.js` |
-| 态势中心和数字孪生 | `studio-vue/src/views/` 中对应工作台视图与组件 |
-| 运维面板/API 展示 | `studio-vue/src/views/Logs.vue`、`agents/webctl_server.py` |
+| 菜单与页面挂载 | `robot-dashboard-front/src/App.vue` |
+| ROS 连接、地址与订阅公共逻辑 | `robot-dashboard-front/src/composables/useRos.js` |
+| 态势中心和数字孪生 | `robot-dashboard-front/src/views/` 中对应工作台视图与组件 |
+| 运维面板/API 展示 | `robot-dashboard-front/src/views/Logs.vue`、`agents/webctl_server.py` |
 | 视觉抓取与动作组 | `agents/snack_butler.py`、`agents/snack_detector.py`、`agents/arm_kinematics.py` |
 | 视频 | `agents/webrtc_agent.py`、`agents/vision_stream_server.py`、`agents/vision_stream_guard.py` |
 | 自主探索与安全速度 | `agents/explorer_agent.py`、`agents/nav_safety_guard.py` |
@@ -112,6 +112,6 @@ Jetson / ROS 2
 
 - 新增网页功能应优先复用 `useRos.js`，不要在多个页面硬编码机器人地址。
 - 新增底盘控制必须进入 `nav_safety_guard.py`；禁止恢复 `/cmd_vel` 直发。
-- 不要手改 `studio-vue/dist`；它是构建产物，部署脚本会重新生成。
+- 不要手改 `robot-dashboard-front/dist`；它是构建产物，部署脚本会重新生成。
 - 调整相机外参、`table_z`、`tool_len` 或默认机械臂姿态前，必须运行运动学/视觉测试并先空跑。
 - 服务恢复按“视频 → 视觉节点 → 基础 bringup”的影响范围逐级升级，详见[运维手册](OPERATIONS_RUNBOOK.md)。

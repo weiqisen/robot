@@ -11,7 +11,7 @@
 cd /Users/weiqisen/Desktop/robot
 python3 tools/sim_robot.py
 
-npm --prefix studio-vue run dev -- --host 127.0.0.1 --port 5274
+npm --prefix robot-dashboard-front run dev -- --host 127.0.0.1 --port 5274
 ```
 
 打开 <http://localhost:5274/?sim=1#explore> 或

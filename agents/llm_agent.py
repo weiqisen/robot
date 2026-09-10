@@ -4,7 +4,7 @@
 视觉抓取的自然语言指挥官。
 
 把「把红色的零食收到 A 筐」这种话翻译成 snack_butler 的命令，并把执行结果讲回来。
-跑在机器人上，网页 (studio-vue 的「视觉抓取」页) POST 到 :8092/ask。
+跑在机器人上，网页（robot-dashboard-front 的「视觉抓取」页）POST 到 :8092/ask。
 
     机器人：python3 ~/llm_agent.py        （systemd 服务 llm-agent）
     依赖：  pip3 install anthropic websocket-client

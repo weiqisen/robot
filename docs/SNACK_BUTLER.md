@@ -21,7 +21,7 @@ COCO 80 个常见类别；HSV 继续识别没有通用语义类别的彩色零�
 采集该物品图片并微调自定义权重。
 | `agents/snack_butler.py` | 机器人 | ROS2 节点：状态机、命令接口、标注图输出 |
 | `agents/llm_agent.py` | 机器人 | 自然语言 → 命令（Claude tool use），HTTP :8092 |
-| `studio-vue/src/views/Snack.vue` | 网页 | 控制台：画面点选抓取、参数、标定、对话 |
+| `robot-dashboard-front/src/views/Snack.vue` | 网页 | 控制台：画面点选抓取、参数、标定、对话 |
 | `agents/test_*.py` | Mac | 离线自测，不需要机器人 |
 
 视觉推理与 ROS 控制事件循环相互隔离：主线程只冻结 RGB、深度、内参和当时的

@@ -61,7 +61,7 @@
 
 ```text
 robot/
-├─ studio-vue/                 Vue 3 前端
+├─ robot-dashboard-front/      Vue 3 前端
 │  ├─ src/App.vue              页面注册、hash 导航、全局外壳
 │  ├─ src/views/               页面级组件
 │  ├─ src/components/          可复用 UI 组件
@@ -103,7 +103,7 @@ robot/
 - noVNC：远程桌面
 - 原生 Canvas：雷达、地图、姿态和轻量图表
 
-入口是 `studio-vue/src/main.js`，全局外壳是 `studio-vue/src/App.vue`。
+入口是 `robot-dashboard-front/src/main.js`，全局外壳是 `robot-dashboard-front/src/App.vue`。
 
 ### 页面切换为什么没有 vue-router
 
@@ -120,7 +120,7 @@ http://192.168.3.63:8000/#control
 
 ### 机器人地址如何决定
 
-统一入口在 `studio-vue/src/composables/useRos.js`：
+统一入口在 `robot-dashboard-front/src/composables/useRos.js`：
 
 1. 查询参数 `?robot=IP` 优先。
 2. `?sim=1` 使用本机模拟器。
@@ -392,7 +392,7 @@ API key 只存在机器人 `~/.llm_agent.env`，不能写进前端、仓库或�
 ### 只有网页
 
 ```bash
-cd studio-vue
+cd robot-dashboard-front
 npm ci
 npm run dev
 ```
@@ -418,7 +418,7 @@ http://localhost:5273/?sim=1
 最小验证：
 
 ```bash
-npm --prefix studio-vue run build
+npm --prefix robot-dashboard-front run build
 python3 agents/test_kinematics.py
 python3 agents/test_vision.py
 python3 agents/test_nav_safety.py
@@ -431,7 +431,7 @@ python3 agents/test_webctl_bridge.py
 ./agents/deploy_snack.sh
 ```
 
-脚本会构建 `studio-vue/dist`、复制网页和 agents、安装/更新 systemd 单元并重启服务。不要直接修改
+脚本会构建 `robot-dashboard-front/dist`、复制网页和 agents、安装/更新 systemd 单元并重启服务。不要直接修改
 `dist`，它是构建产物。机器人地址和密码可放入被 Git 忽略的 `.robot.env`。
 
 部署后至少检查：
@@ -448,7 +448,7 @@ ssh ubuntu@192.168.3.63 \
 
 ### 新增页面
 
-1. 在 `studio-vue/src/views/` 新建 `.vue` 文件。
+1. 在 `robot-dashboard-front/src/views/` 新建 `.vue` 文件。
 2. 在 `App.vue` 导入并加入 `MENU`。
 3. 公共状态优先复用 `useRos()`；避免建立第二条 rosbridge 连接。
 4. 通用 UI 再抽到 `components/`。
@@ -476,7 +476,7 @@ shell、任意文件读写或任意 systemd 控制暴露给网页。
 ### 修改三维模型
 
 - 机器人结构、材质和交互主要在 `Twin.vue`。
-- URDF 与网格在 `studio-vue/public/model/`。
+- URDF 与网格在 `robot-dashboard-front/public/model/`。
 - 区分“真实关节状态”“本地拖动预览”“计划轨迹”，不要互相覆盖。
 - 2D HTML 标签和 3D 模型缩放属于不同坐标系，需要单独做缩放补偿。
 - 修改后从默认视角、放大视角、窄屏和完整总览分别检查。
@@ -498,8 +498,8 @@ shell、任意文件读写或任意 systemd 控制暴露给网页。
 
 1. `README.md`：先跑起来。
 2. 本文：建立全局心智模型。
-3. `studio-vue/src/App.vue`：理解页面组织。
-4. `studio-vue/src/composables/useRos.js`：理解所有实时数据和控制入口。
+3. `robot-dashboard-front/src/App.vue`：理解页面组织。
+4. `robot-dashboard-front/src/composables/useRos.js`：理解所有实时数据和控制入口。
 5. 选择一个小页面，例如 `Telemetry.vue` 或 `Board.vue`，观察状态如何变成 UI。
 6. `agents/nav_safety_guard.py`：理解底盘安全边界。
 7. 根据方向阅读 `docs/SNACK_BUTLER.md` 或 `docs/AUTONOMOUS_EXPLORATION.md`。

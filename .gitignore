@@ -2,7 +2,7 @@
 node_modules/
 # 构建输出，部署时现 build，不入库
 # 注意：gitignore 不支持行尾注释，注释必须单独一行，否则整行会被当成模式
-studio-vue/dist/
+robot-dashboard-front/dist/
 __pycache__/
 *.pyc
 .venv/
