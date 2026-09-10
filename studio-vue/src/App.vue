@@ -29,6 +29,7 @@ import Snack from './views/Snack.vue'
 import Remote from './views/Remote.vue'
 import ArmStudio from './views/ArmStudio.vue'
 import GpuBench from './views/GpuBench.vue'
+import Docs from './views/Docs.vue'
 
 const { state } = useRos()
 const { isDark, antdTheme, toggle } = useTheme()
@@ -54,6 +55,7 @@ const MENU = [
   { key: 'topics', icon: UnorderedListOutlined, label: '话题总览', comp: markRaw(Topics) },
   { key: 'explorer', icon: SearchOutlined, label: '话题浏览器', comp: markRaw(Explorer) },
   { key: 'logs', icon: FileTextOutlined, label: '运行日志', comp: markRaw(Logs) },
+  { key: 'docs', icon: FileTextOutlined, label: '项目文档', comp: markRaw(Docs) },
   { group: '操作' },
   { key: 'control', icon: ControlOutlined, label: '实时控制', comp: markRaw(Control), full: true },
   { key: 'armstudio', icon: BuildOutlined, label: '动作组编辑器', comp: markRaw(ArmStudio), full: true },
