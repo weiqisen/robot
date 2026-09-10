@@ -1,6 +1,6 @@
-# JetRover Robot Console
+# JetRover Robot Dashboard
 
-JetRover Robot Console 是一套面向 Jetson 轮式机械臂机器人的开源控制台。它把 ROS 话题、相机、导航、视觉抓取、数字孪生和设备运维收拢到一个浏览器工作台，让第一次接触 ROS 的操作者也能安全地观察、学习与操作机器人。
+JetRover Robot Dashboard 是一套面向 Jetson 轮式机械臂机器人的开源工作台。它把 ROS 话题、相机、导航、视觉抓取、数字孪生和设备运维收拢到一个浏览器界面，让第一次接触 ROS 的操作者也能安全地观察、学习与操作机器人。
 
 > 这是控制台，不是对硬件安全机制的替代品。第一次运动、改动机械臂标定或底盘速度前，请先阅读专项文档并完成空跑检查。
 
