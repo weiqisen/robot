@@ -20,6 +20,7 @@ except Exception as e:
     raise
 
 VIDEO_BASE = "http://127.0.0.1:8080/stream"
+VISION_VIDEO_BASE = "http://127.0.0.1:8082/stream"
 DEFAULT_TOPIC = "/depth_cam/rgb/image_raw"
 PORT = 8091
 pcs = set()
@@ -29,7 +30,8 @@ class MjpegCameraTrack(VideoStreamTrack):
     """从 web_video_server 的 MJPEG 流拉帧，作为 WebRTC 视频轨。"""
     def __init__(self, topic):
         super().__init__()
-        url = "%s?topic=%s&type=mjpeg" % (VIDEO_BASE, topic)
+        self.base = VISION_VIDEO_BASE if topic == '/snack_butler/image_result' else VIDEO_BASE
+        url = "%s?topic=%s&type=mjpeg" % (self.base, topic)
         self.cap = cv2.VideoCapture(url)
         try: self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         except Exception: pass
@@ -44,7 +46,7 @@ class MjpegCameraTrack(VideoStreamTrack):
             await asyncio.sleep(0.05)
             try: self.cap.release()
             except Exception: pass
-            self.cap = cv2.VideoCapture("%s?topic=%s&type=mjpeg" % (VIDEO_BASE, self.topic))
+            self.cap = cv2.VideoCapture("%s?topic=%s&type=mjpeg" % (self.base, self.topic))
             frame = None
         if frame is None:
             frame = np.zeros((360, 640, 3), dtype='uint8')  # 黑帧占位

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, reactive, watch, onUnmounted } from 'vue'
+import { ref, computed, reactive, watch, onMounted, onUnmounted } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import { useRos, videoUrl } from '../composables/useRos'
 import { useStreamWatch } from '../composables/useStreamWatch'
@@ -7,7 +7,7 @@ import InfoNote from '../components/InfoNote.vue'
 import { useMjpegGate } from '../composables/useMjpeg'
 import CudaInferenceCard from '../components/CudaInferenceCard.vue'
 
-const { state, actions, HOST, VISION_VIDEO_PORT } = useRos()
+const { state, actions, HOST, VISION_VIDEO_PORT, WEBRTC_PORT } = useRos()
 
 const sb = computed(() => state.snack)
 const online = computed(() => !!sb.value)
@@ -86,19 +86,56 @@ const inferenceSummary = computed(() => {
 // ---- 视频：节点发的标注图 ----
 const stamp = ref(Date.now())
 const active = useMjpegGate()   // 页面被 keep-alive 挂起时释放连接，见 useMjpeg
-const src = computed(() => (active.value ? videoUrl(HOST, VISION_VIDEO_PORT, '/snack_butler/image_result', stamp.value) : ''))
+const rtcActive = ref(false)
+const src = computed(() => (active.value && !rtcActive.value ? videoUrl(HOST, VISION_VIDEO_PORT, '/snack_butler/image_result', stamp.value) : ''))
 let retryT = null
 function reloadVideo() { stamp.value = Date.now() }
 // 图流断了(节点没起/相机没数据/web_video_server 刚好没订阅上)就每 3 秒换个 t 重连。
 // 注意：模板里不能直接写 setTimeout —— Vue 模板只认白名单里的全局量，
 // setTimeout 会被解析成 _ctx.setTimeout(undefined)，一报错重连就彻底断了。
 function onImgError() {
+  if (rtcActive.value) return
   if (retryT) return
   retryT = setTimeout(() => { retryT = null; reloadVideo() }, 3000)
 }
-onUnmounted(() => { if (retryT) clearTimeout(retryT) })
 const imgEl = ref(null)
+const videoEl = ref(null)
 const canvasEl = ref(null)
+let rtcPc = null, rtcFallbackT = null
+function stopRTC() {
+  if (rtcFallbackT) { clearTimeout(rtcFallbackT); rtcFallbackT = null }
+  if (rtcPc) { try { rtcPc.close() } catch {} rtcPc = null }
+  rtcActive.value = false
+  if (videoEl.value) videoEl.value.srcObject = null
+}
+async function startRTC() {
+  stopRTC()
+  if (!active.value) return
+  try {
+    rtcPc = new RTCPeerConnection({ iceServers: [] })
+    rtcPc.addTransceiver('video', { direction:'recvonly' })
+    rtcPc.ontrack = e => { if (videoEl.value) videoEl.value.srcObject = e.streams[0] }
+    rtcPc.onconnectionstatechange = () => {
+      if (!rtcPc) return
+      if (rtcPc.connectionState === 'connected') rtcActive.value = true
+      else if (['failed','disconnected','closed'].includes(rtcPc.connectionState)) stopRTC()
+    }
+    const offer = await rtcPc.createOffer(); await rtcPc.setLocalDescription(offer)
+    await new Promise(resolve => {
+      if (rtcPc.iceGatheringState === 'complete') return resolve()
+      const done = () => { if (rtcPc?.iceGatheringState === 'complete') { rtcPc.removeEventListener('icegatheringstatechange', done); resolve() } }
+      rtcPc.addEventListener('icegatheringstatechange', done); setTimeout(resolve, 1200)
+    })
+    const response = await fetch(`http://${HOST}:${WEBRTC_PORT}/offer`, { method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ sdp:rtcPc.localDescription.sdp, type:rtcPc.localDescription.type, topic:'/snack_butler/image_result' }) })
+    if (!response.ok) throw new Error('WebRTC 信令失败')
+    await rtcPc.setRemoteDescription(await response.json())
+    rtcFallbackT = setTimeout(() => { if (!rtcActive.value) stopRTC() }, 4500)
+  } catch { stopRTC() }
+}
+watch(active, on => { if (on) startRTC(); else stopRTC() })
+onMounted(startRTC)
+onUnmounted(() => { if (retryT) clearTimeout(retryT); stopRTC() })
 const imageTune = reactive({ brightness: 0.82, contrast: 1.05, saturation: 0.9 })
 const imageFilter = computed(() => ({
   filter: `brightness(${imageTune.brightness}) contrast(${imageTune.contrast}) saturate(${imageTune.saturation})`,
@@ -107,7 +144,11 @@ function resetImageTune() { Object.assign(imageTune, { brightness: 0.82, contras
 const showOffsetPreview = ref(false)  // 是否显示补偿预览绿框
 const showSafeZone = ref(false)       // 是否显示安全抓取区域
 // 流卡住(web_video_server 重启等)时 <img> 不报错，只是不再更新——靠采样比对发现
-useStreamWatch(() => imgEl.value, reloadVideo)
+useStreamWatch(() => (rtcActive.value ? null : imgEl.value), reloadVideo)
+
+const activeMedia = () => rtcActive.value ? videoEl.value : imgEl.value
+const mediaWidth = el => el?.videoWidth || el?.naturalWidth || 0
+const mediaHeight = el => el?.videoHeight || el?.naturalHeight || 0
 
 // 绘制选中目标的黄色高亮框
 function drawSelectionBox(ctx, scale) {
@@ -161,8 +202,8 @@ function drawSelectionBox(ctx, scale) {
 // 绘制补偿后的预览框 + 安全抓取区域
 function drawOffsetPreview() {
   const canvas = canvasEl.value
-  const img = imgEl.value
-  if (!canvas || !img || !img.naturalWidth) return
+  const img = activeMedia(), iw = mediaWidth(img), ih = mediaHeight(img)
+  if (!canvas || !img || !iw) return
 
   // 两个开关都关闭时清空并退出
   if (!showOffsetPreview.value && !showSafeZone.value) {
@@ -173,9 +214,9 @@ function drawOffsetPreview() {
 
   // canvas 尺寸匹配容器显示尺寸（而不是原图尺寸）
   const rect = img.getBoundingClientRect()
-  const scale = Math.min(rect.width / img.naturalWidth, rect.height / img.naturalHeight)
-  const dw = img.naturalWidth * scale
-  const dh = img.naturalHeight * scale
+  const scale = Math.min(rect.width / iw, rect.height / ih)
+  const dw = iw * scale
+  const dh = ih * scale
 
   canvas.width = dw
   canvas.height = dh
@@ -340,18 +381,18 @@ function setReplaySpeed(v) { replaySpeed.value = +v; if (replayVideo.value) repl
 watch(recording, (now, before) => { if (before && !now) setTimeout(loadRecordings, 600) })
 loadRecordings()
 
-watch([dets, cfg, showOffsetPreview, showSafeZone, selected, () => imgEl.value?.naturalWidth], () => {
+watch([dets, cfg, showOffsetPreview, showSafeZone, selected, rtcActive, () => mediaWidth(activeMedia())], () => {
   requestAnimationFrame(drawOffsetPreview)
 }, { deep: true, immediate: true })
 function onPick(e) {
-  const el = imgEl.value
-  if (!el || !el.naturalWidth) return
+  const el = activeMedia(), iw = mediaWidth(el), ih = mediaHeight(el)
+  if (!el || !iw) return
   const r = el.getBoundingClientRect()
-  const scale = Math.min(r.width / el.naturalWidth, r.height / el.naturalHeight)
-  const dw = el.naturalWidth * scale, dh = el.naturalHeight * scale
+  const scale = Math.min(r.width / iw, r.height / ih)
+  const dw = iw * scale, dh = ih * scale
   const u = (e.clientX - r.left - (r.width - dw) / 2) / scale
   const v = (e.clientY - r.top - (r.height - dh) / 2) / scale
-  if (u < 0 || v < 0 || u > el.naturalWidth || v > el.naturalHeight) return
+  if (u < 0 || v < 0 || u > iw || v > ih) return
   const uu = Math.round(u), vv = Math.round(v)
   if (probeMode.value) return send({ action: 'probe', u: uu, v: vv }, `探针 (${uu}, ${vv})，臂不动`)
   const nearest = detRows.value
@@ -607,7 +648,8 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
           </a-space>
         </template>
         <div class="stage" @click="onPick">
-          <img ref="imgEl" :src="src" :style="imageFilter" @error="onImgError" />
+          <img v-show="!rtcActive" ref="imgEl" :src="src" :style="imageFilter" @error="onImgError" />
+          <video v-show="rtcActive" ref="videoEl" autoplay muted playsinline :style="imageFilter" @loadedmetadata="drawOffsetPreview" />
           <canvas ref="canvasEl" class="overlay-canvas" />
           <div class="hint">{{ probeMode ? '只算不抓：点一下看它算出来的坐标' : `点画面选择目标 · 当前识别到 ${dets.length} 个` }}</div>
         </div>
@@ -1134,7 +1176,7 @@ function jump(id) { document.getElementById(`snack-${id}`)?.scrollIntoView({ beh
 
 <style scoped>
 .stage { position: relative; background: #000; border-radius: 8px; overflow: hidden; cursor: crosshair; }
-.stage img { width: 100%; display: block; aspect-ratio: 4/3; max-height:55vh; object-fit: contain; background: #000; }
+.stage img,.stage video { width: 100%; display: block; aspect-ratio: 4/3; max-height:55vh; object-fit: contain; background: #000; }
 .overlay-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; object-fit: contain; }
 .hint { position: absolute; left: 8px; bottom: 8px; background: rgba(0,0,0,.55); color: #fff;
   font-size: 12px; padding: 3px 8px; border-radius: 4px; pointer-events: none; }
