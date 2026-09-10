@@ -22,6 +22,8 @@ const host = ref(null)
 const loading = ref(true), loadErr = ref('')
 const bootVisible = ref(true), bootStage = ref(0)
 const BOOT_STEPS = ['载入数字车体','连接激光雷达','同步深度视觉','校验机械臂关节','确认 GPU 推理','态势中心就绪']
+// 模型就绪后只给极短的状态确认，不再用仪式动画阻塞工作台。
+const BOOT_STEP_MS = 110, BOOT_TAIL_MS = 100
 // 默认开的只留「看车」必需的几层：示意盒子和坐标轴平时是干扰，识别流才是常看的。
 // 尺寸标注（dimensions）对调试抓取高度有用，默认开着。
 const tools = reactive({ lidar: true, grid: true, points: false, ik: false, tags: false,
@@ -913,8 +915,8 @@ function loop() {
   raf = requestAnimationFrame(loop)
   const now=performance.now()
   if (bootVisible.value) {
-    bootStage.value=Math.min(BOOT_STEPS.length-1,Math.floor((now-bootStartedAt)/520))
-    if (now-bootStartedAt>BOOT_STEPS.length*520+450) bootVisible.value=false
+    bootStage.value=Math.min(BOOT_STEPS.length-1,Math.floor((now-bootStartedAt)/BOOT_STEP_MS))
+    if (now-bootStartedAt>BOOT_STEPS.length*BOOT_STEP_MS+BOOT_TAIL_MS) bootVisible.value=false
   }
   if (holoScan) {
     const active=bootVisible.value || state.snack?.state === 'DETECT'
