@@ -16,6 +16,7 @@ class LidarWatchdog(Node):
         super().__init__('lidar_watchdog')
         self.boot = time.monotonic()
         self.last_scan = 0.0
+        self.scan_seen = False
         self.last_restart = 0.0
         self.attempts = 0
         self.last_heartbeat = 0.0
@@ -25,6 +26,7 @@ class LidarWatchdog(Node):
 
     def on_scan(self, _msg):
         self.last_scan = time.monotonic()
+        self.scan_seen = True
         self.attempts = 0
 
     def tick(self):
@@ -32,8 +34,8 @@ class LidarWatchdog(Node):
         raw = sorted(glob.glob('/dev/ttyCH341USB*') + glob.glob('/dev/ttyUSB*'))
         if now - self.last_heartbeat >= 60.0:
             age = None if self.last_scan == 0 else round(now - self.last_scan, 1)
-            self.get_logger().info('[heartbeat] device=%s scan_age=%s attempts=%s cooldown=%ss' %
-                                   (os.path.exists('/dev/lidar'), age, self.attempts,
+            self.get_logger().info('[heartbeat] device=%s scan_seen=%s scan_age=%s attempts=%s cooldown=%ss' %
+                                   (os.path.exists('/dev/lidar'), self.scan_seen, age, self.attempts,
                                     max(0, round(120 - (now - self.last_restart))) if self.last_restart else 0))
             self.last_heartbeat = now
         if raw and not os.path.exists('/dev/lidar'):
@@ -46,7 +48,11 @@ class LidarWatchdog(Node):
             return
         if now - self.boot < 45.0:
             return
-        stale = self.last_scan == 0.0 or now - self.last_scan > 6.0
+        # 首帧一直没收到时不能证明是“中断”：可能是 topic/remap/QoS 配置问题。
+        # 重启整个 ROS 栈只会制造更大的通信抖动，必须先观察到过有效帧再恢复。
+        if not self.scan_seen:
+            return
+        stale = now - self.last_scan > 6.0
         if not stale or now - self.last_restart < 120.0 or self.attempts >= 3:
             return
         self.attempts += 1; self.last_restart = now
