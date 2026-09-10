@@ -206,8 +206,11 @@ function actionLabel(name) {
     [/^(left|turnleft)/, '左转'], [/^(right|turnright)/, '右转'], [/^(forward)/, '前进'], [/^(back|backward)/, '后退'],
   ]
   for (const [re, label] of rules) if (re.test(s)) return label.replace('$2', s.match(re)?.[2] || '')
+  const words = s.match(/camera|garbage|handcontrol|horizontal|linefollow|moveobject|navigation|pick|place|foodwaste|debug|init|center|control|up|down|left|right|object|follow|waste|vertical|open|close|test|wave|dance/g) || []
+  const cn = { camera:'相机', garbage:'垃圾', handcontrol:'手动控制', horizontal:'水平', linefollow:'循迹', moveobject:'移动物体', navigation:'导航', pick:'抓取', place:'放置', foodwaste:'厨余', debug:'调试', init:'初始化', center:'居中', control:'控制', up:'上', down:'下', left:'左', right:'右', object:'物体', follow:'跟随', waste:'废弃物', vertical:'垂直', open:'打开', close:'关闭', test:'测试', wave:'挥手', dance:'舞蹈' }
+  const label = [...new Set(words.map(w => cn[w]))].join(' · ')
   const n = groups.value.indexOf(name) + 1
-  return n > 0 ? `动作组 ${n}` : '动作组'
+  return label || (n > 0 ? `动作组 ${n}` : '动作组')
 }
 async function previewGroup(name) { group.value = name; await openGroup() }
 async function runNamedGroup(name) {
@@ -330,8 +333,8 @@ onBeforeUnmount(() => { stopFlag = true })
         </div>
         <div class="group-panel">
           <div class="group-head"><b>预设动作组</b><span>{{ groups.length }} 组 · 点击卡片预览，点击执行按钮运行</span><button class="btn" @click="loadGroups">刷新</button><button class="btn" @click="saveGroup">另存当前</button><button class="btn danger" :disabled="running || !online" @click="runAllGroups">全部执行一次</button></div>
-          <div class="legacy-actions"><select v-model="group" class="sel"><option value="">选择动作组…</option><option v-for="g in groups" :key="g" :value="g">{{ actionLabel(g) }}（{{ g }}）</option></select><button class="btn" @click="openGroup">打开</button><button class="btn" @click="saveGroup">另存</button></div>
-          <div class="group-grid"><div v-for="g in groups" :key="g" :class="['group-tile', { active: group === g }]" @click="previewGroup(g)"><div class="group-name">{{ actionLabel(g) }}</div><div class="group-code" :title="g">{{ g }}</div><button class="btn tile-run" :disabled="running || !online" @click.stop="runNamedGroup(g)">{{ group === g && running ? '运行中…' : '执行' }}</button></div><div v-if="!groups.length" class="group-empty">暂无动作组</div></div>
+          <div class="legacy-actions"><select v-model="group" class="sel"><option value="">选择动作组…</option><option v-for="g in groups" :key="g" :value="g">{{ actionLabel(g) }}</option></select><button class="btn" @click="openGroup">打开</button><button class="btn" @click="saveGroup">另存</button></div>
+          <div class="group-grid"><div v-for="g in groups" :key="g" :class="['group-tile', { active: group === g }]" :title="`原始名称：${g}`" @click="previewGroup(g)"><div class="group-name">{{ actionLabel(g) }}</div><div class="group-code">预设动作</div><button class="btn tile-run" :disabled="running || !online" @click.stop="runNamedGroup(g)">{{ group === g && running ? '运行中…' : '执行' }}</button></div><div v-if="!groups.length" class="group-empty">暂无动作组</div></div>
         </div>
       </div>
     </div>
