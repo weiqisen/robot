@@ -84,6 +84,19 @@ function toggleTopPanel(name) { topPanel.value = topPanel.value === name ? '' : 
 // 两块浮窗都能点标题栏收起，只留一行标题，腾出画面
 const drivePadCollapsed = ref(true)
 const armPanelCollapsed = ref(true)
+const actionGroups = ref([]), actionGroup = ref(''), actionRunning = ref(false)
+const actionStep = ref(0), actionTotal = ref(0)
+const actionLabel = name => ({ camera_up:'相机上抬', init:'初始化', pick:'抓取', place:'放置', horizontal:'水平姿态' }[name] || `动作组 ${actionGroups.value.indexOf(name) + 1}`)
+async function loadActionGroups() { try { const r = await fetch(`http://${location.hostname}:8000/api/actions`, { cache:'no-store' }); actionGroups.value = (await r.json()).groups || [] } catch {} }
+async function runActionGroup() {
+  if (!actionGroup.value || !state.connected || actionRunning.value) return
+  const r = await fetch(`http://${location.hostname}:8000/api/actions/${actionGroup.value}`, { cache:'no-store' }); const j = await r.json()
+  if (!r.ok || !j.rows?.length) return message.error('动作组读取失败或为空')
+  actionRunning.value = true; actionStep.value = 0; actionTotal.value = j.rows.length
+  try { for (let i=0; i<j.rows.length && actionRunning.value; i++) { const row=j.rows[i]; actionStep.value=i+1; row.servos.forEach((pulse,k) => twinRef.value?.setJointByServoId([1,2,3,4,5,10][k], pulse)); actions.setServosCtl([1,2,3,4,5,10].map((id,k)=>({id,position:row.servos[k]})),(row.time||1000)/1000); await new Promise(res=>setTimeout(res,row.time||1000)) } } finally { actionRunning.value=false }
+}
+function stopActionGroup() { actionRunning.value=false }
+loadActionGroups()
 
 // ---- 底盘手动驾驶：摇杆 + WASD，和实时控制页同一套安全前提 ----
 // 解锁条件、限速、发布频率都跟 Control.vue 对齐，避免两个入口行为不一致。
@@ -382,6 +395,11 @@ onUnmounted(() => {
           <Twin ref="twinRef" :bare="true" :focus="focusMode" :arm-panel-open="!armPanelCollapsed"
             @focus="v => focusMode = v" />
           <div class="scene-head"><span>数字孪生</span><b>实时姿态</b></div>
+          <div class="scene-action-card">
+            <div><small>动作组</small><b>{{ actionRunning ? `执行中 · ${actionStep}/${actionTotal}` : '工具台快捷执行' }}</b></div>
+            <select v-model="actionGroup"><option value="">选择动作组</option><option v-for="g in actionGroups" :key="g" :value="g">{{ actionLabel(g) }}</option></select>
+            <div class="scene-action-buttons"><button :disabled="!actionGroup || !state.connected || actionRunning" @click="runActionGroup">{{ actionRunning ? '执行中…' : '执行' }}</button><button v-if="actionRunning" class="stop" @click="stopActionGroup">停止</button><button v-else @click="loadActionGroups">刷新</button></div>
+          </div>
           <div class="scene-status">
             <div><small>线速度</small><b>{{ vx.toFixed(2) }} <em>m/s</em></b></div>
             <div><small>航向</small><b>{{ deg(euler.yaw).toFixed(1) }}<em>°</em></b></div>
@@ -695,6 +713,7 @@ onUnmounted(() => {
 .scene-head { position:absolute; z-index:3; top:20px; left:28px; display:flex; flex-direction:column; gap:5px; pointer-events:none; }
 .scene-head span { color:#64748B; font-size:10px; letter-spacing:2px; text-transform:uppercase; }
 .scene-head b { font-size:18px; letter-spacing:1px; }
+.scene-action-card{position:absolute;z-index:4;top:20px;right:24px;width:220px;padding:10px 11px;border:1px solid rgba(56,189,248,.28);border-radius:9px;background:rgba(8,12,18,.84);backdrop-filter:blur(8px);color:#E2E8F0}.scene-action-card>div:first-child{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:7px}.scene-action-card small{color:#64748B;font-size:9px}.scene-action-card b{font-size:10px;color:#7DD3FC}.scene-action-card select{width:100%;padding:5px;border:1px solid rgba(148,163,184,.3);border-radius:5px;background:#111923;color:#CBD5E1;font-size:11px}.scene-action-buttons{display:flex;gap:6px;margin-top:7px}.scene-action-buttons button{flex:1;padding:4px;border:1px solid rgba(56,189,248,.4);border-radius:5px;background:rgba(14,116,144,.25);color:#7DD3FC;font-size:11px;cursor:pointer}.scene-action-buttons button:disabled{opacity:.4;cursor:default}.scene-action-buttons button.stop{border-color:rgba(251,113,133,.5);background:rgba(127,29,29,.3);color:#FB7185}
 /* 右侧留出驾驶盘的宽度，读数带别铺到它底下 */
 .scene-status { position:absolute; z-index:3; left:28px; right:262px; bottom:28px; display:flex; flex-wrap:wrap; gap:10px; pointer-events:none; }
 .scene-status>div { min-width:98px; padding:10px 12px; border:1px solid rgba(255,255,255,.08); border-radius:8px; background:rgba(8,11,18,.78); backdrop-filter:blur(8px); }
