@@ -27,7 +27,16 @@ function normalize(value, depth=0) {
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k,v]) => [k, normalize(v, depth + 1)]))
   return value
 }
-function pretty(m){return JSON.stringify(normalize(m), (k,v)=>Array.isArray(v)&&v.length>48?`[${v.length} 项数组，已折叠]`:v,2)}
+function decodeBytes(value) {
+  if (!Array.isArray(value) || value.length <= 8 || !value.every(x => Number.isInteger(x) && x >= 0 && x <= 255)) return null
+  try { return new TextDecoder().decode(new Uint8Array(value)).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '') } catch { return null }
+}
+function pretty(m){return JSON.stringify(normalize(m), (k,v)=>{
+  // JSON.stringify 会再次遍历数组；在这里兜底，确保日志字节永远优先显示为文字。
+  const text = decodeBytes(v)
+  if (text != null) return text
+  return Array.isArray(v)&&v.length>48?`[${v.length} 项数组，已折叠]`:v
+},2)}
 function start(){if(!current.value)return message.warning('先选择一条话题'); stop();count.value=0;t0=Date.now();history.value=[];unsub=actions.subscribe(sel.value,current.value.type,m=>{count.value++;const sec=(Date.now()-t0)/1000;hz.value=`${(count.value/Math.max(sec,.1)).toFixed(1)} FPS · ${count.value} 条`;echo.value=pretty(m);history.value.unshift({at:new Date().toLocaleTimeString(),text:echo.value.slice(0,180)});history.value.splice(12)},100)}
 function stop(){if(unsub){unsub();unsub=null}hz.value='已停止'}
 function choose(name){const x=options.value.find(o=>o.value===name);if(x){sel.value=x.value;start()}}
