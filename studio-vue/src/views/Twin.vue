@@ -1266,7 +1266,8 @@ function buildAxes(group) {
 //
 // 朝向：探针实测 depth_cam_frame 的 +Z 在 link 系里是 +X，所以镜头装在 +X 面。
 // 外壳 bbox（link 系）：x[-0.0125, 0.0126] y[-0.0439, 0.0459] z[-0.0126, 0.0125]
-const CAM_FX = 0.0126        // 外壳前表面
+const CAM_FX = 0.0126        // 原始外壳前表面
+const CAM_DETAIL_X = CAM_FX + 0.0012 // 装饰必须离开原网格，避免共面 Z-fighting
 function decorateDepthCam() {
   const link = robot && robot.links && robot.links.depth_cam_link
   if (!link) return
@@ -1283,7 +1284,7 @@ function decorateDepthCam() {
     new THREE.BoxGeometry(0.0016, 0.083, 0.0188),
     new THREE.MeshStandardMaterial({ color: 0x0a0c10, metalness: 0.35,
       roughness: 0.10, envMapIntensity: 1.6 })))
-  panel.position.set(CAM_FX, 0.001, 0)
+  panel.position.set(CAM_DETAIL_X, 0.001, 0)
   link.add(panel)
 
   // 实物的光圈与前面板基本齐平：只画金属压圈和玻璃面，不再做凸出的镜筒。
@@ -1293,7 +1294,7 @@ function decorateDepthCam() {
       new THREE.MeshStandardMaterial({ color: 0x77808a, metalness: 0.72,
         roughness: 0.28, envMapIntensity: 1.5, side: THREE.DoubleSide })))
     ring.quaternion.copy(faceX)
-    ring.position.set(CAM_FX + 0.00082, y, 0)
+    ring.position.set(CAM_DETAIL_X + 0.00082, y, 0)
     link.add(ring)
 
     const glass = mark(new THREE.Mesh(
@@ -1303,7 +1304,7 @@ function decorateDepthCam() {
         emissive: emissive || 0x000000, emissiveIntensity: emissive ? 0.35 : 0,
         side: THREE.DoubleSide })))
     glass.quaternion.copy(faceX)
-    glass.position.set(CAM_FX + 0.00084, y, 0)
+    glass.position.set(CAM_DETAIL_X + 0.00084, y, 0)
     link.add(glass)
   }
 
@@ -1320,7 +1321,7 @@ function decorateDepthCam() {
     new THREE.MeshStandardMaterial({ color: 0x34d399, emissive: 0x34d399,
       emissiveIntensity: 0.9, toneMapped: false, side: THREE.DoubleSide })))
   led.quaternion.copy(faceX)
-  led.position.set(CAM_FX + 0.00084, 0.0405, 0)
+  led.position.set(CAM_DETAIL_X + 0.00084, 0.0405, 0)
   link.add(led)
 }
 
