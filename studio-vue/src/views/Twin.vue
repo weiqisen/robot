@@ -199,9 +199,9 @@ async function startDetRtc() {
       detRtcPc.addEventListener('icegatheringstatechange', done); setTimeout(resolve, 1200)
     })
     const response = await fetch(`http://${HOST}:${WEBRTC_PORT}/offer`, { method:'POST', headers:{'Content-Type':'application/json'},
-      // 大屏框由下方 SVG 根据实时检测结果绘制；视频直接取 30fps 原始 RGB，
-      // 不再等后端把框画进 image_result（该流受识别频率限制）。
-      body:JSON.stringify({ sdp:detRtcPc.localDescription.sdp, type:detRtcPc.localDescription.type, topic:'/depth_cam/rgb/image_raw' }) })
+      // 先走已验证的标注图直连；原始 RGB 高帧率链路需在拿到首帧后才允许切换，
+      // 不能让一次失败的协商遮住备用画面。
+      body:JSON.stringify({ sdp:detRtcPc.localDescription.sdp, type:detRtcPc.localDescription.type, topic:'/snack_butler/image_result' }) })
     if (!response.ok) throw new Error('WebRTC 信令失败')
     await detRtcPc.setRemoteDescription(await response.json())
     detRtcFallback = setTimeout(() => { if (!detRtcActive.value) stopDetRtc() }, 4500)
