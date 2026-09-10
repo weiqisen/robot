@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""恢复 sllidar 在 USB 断连重枚举后仍握着旧文件描述符的问题。"""
+"""观察雷达 USB/scan 状态；雷达可由操作者物理关闭，不能因此重启整套 ROS。"""
 import os
 import glob
 import subprocess
@@ -20,9 +20,10 @@ class LidarWatchdog(Node):
         self.last_restart = 0.0
         self.attempts = 0
         self.last_heartbeat = 0.0
+        self.last_stale_notice = 0.0
         self.create_subscription(LaserScan, '/scan', self.on_scan, qos_profile_sensor_data)
         self.create_timer(2.0, self.tick)
-        self.get_logger().info('[startup] 雷达 watchdog 已启动；串口存在且 /scan 中断时才执行受限恢复')
+        self.get_logger().info('[startup] 雷达 watchdog 已启动；仅监测，不会因 /scan 静默重启 ROS')
 
     def on_scan(self, _msg):
         self.last_scan = time.monotonic()
@@ -48,20 +49,12 @@ class LidarWatchdog(Node):
             return
         if now - self.boot < 45.0:
             return
-        # 首帧一直没收到时不能证明是“中断”：可能是 topic/remap/QoS 配置问题。
-        # 重启整个 ROS 栈只会制造更大的通信抖动，必须先观察到过有效帧再恢复。
-        if not self.scan_seen:
-            return
-        stale = now - self.last_scan > 6.0
-        if not stale or now - self.last_restart < 120.0 or self.attempts >= 3:
-            return
-        self.attempts += 1; self.last_restart = now
-        self.get_logger().error('/scan 中断且 /dev/lidar 存在，重启 start_app_node（第%d次）' % self.attempts)
-        try:
-            subprocess.run(['sudo', '-n', '/usr/bin/systemctl', 'restart', 'start_app_node.service'],
-                           timeout=30, check=True)
-        except Exception as e:
-            self.get_logger().error('重启失败: %s' % e)
+        # 雷达可能被人为物理关闭；无论是否曾经收到 scan，都不能拿雷达静默
+        # 作为重启完整 ROS 图的理由，否则会中断机械臂、rosbridge 和网页控制。
+        stale = not self.scan_seen or now - self.last_scan > 6.0
+        if stale and now - self.last_stale_notice >= 120.0:
+            self.get_logger().warning('/scan 当前无数据（可能是雷达已手动关闭）；保持其他 ROS 服务运行')
+            self.last_stale_notice = now
 
 
 def main():
