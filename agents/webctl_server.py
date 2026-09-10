@@ -71,6 +71,18 @@ SERVICE_UNITS = {
     'webrtc-agent', 'llm-agent', 'start_app_node',
 }
 SERVICE_ACTION_PATH = re.compile(r'^/api/services/([a-z0-9_-]+)/(restart|stop)$')
+SERVICE_DETAILS = [
+    ('start_app_node', '底层 ROS / 相机 bringup'),
+    ('webctl', '网页服务 :8000'),
+    ('jetson-agent', '遥测 / 日志 / 服务监控'),
+    ('snack-butler', '视觉引导抓取'),
+    ('explorer-agent', '自主避障探索 / 返航'),
+    ('exploration-nav', '在线 SLAM + Nav2'),
+    ('nav-safety', '导航速度安全闸门'),
+    ('lidar-watchdog', '雷达断连自动恢复'),
+    ('webrtc-agent', 'WebRTC 信令 :8091'),
+    ('llm-agent', '自然语言指令 :8092'),
+]
 
 
 # 抓取图像链路的每一环。fix 是这一环坏了该重启谁（None = 只能人工处理），
@@ -99,6 +111,55 @@ def _unit_active(unit):
                               text=True, timeout=2).stdout.strip() == 'active'
     except Exception:
         return False
+
+
+def services_snapshot():
+    """为刚打开的运维面板提供即时服务快照，不必等下一轮 ROS 遥测。"""
+    names = [name for name, _ in SERVICE_DETAILS]
+    props = ('Id,ActiveState,SubState,MainPID,NRestarts,MemoryCurrent,'
+             'ExecMainStartTimestampMonotonic,LoadState')
+    try:
+        proc = subprocess.run(['systemctl', 'show', '-p', props] +
+                              [name + '.service' for name in names],
+                              capture_output=True, text=True, timeout=5)
+    except Exception as exc:
+        raise RuntimeError(f'systemctl snapshot failed: {exc}')
+    if not proc.stdout.strip():
+        raise RuntimeError(proc.stderr.strip() or 'systemctl returned no service data')
+    blocks, current = [], {}
+    for line in proc.stdout.splitlines():
+        if not line.strip():
+            if current:
+                blocks.append(current); current = {}
+        elif '=' in line:
+            key, value = line.split('=', 1); current[key] = value
+    if current:
+        blocks.append(current)
+    try:
+        now_mono = float(open('/proc/uptime', encoding='utf-8').read().split()[0])
+    except Exception:
+        now_mono = 0.0
+    descriptions = dict(SERVICE_DETAILS)
+    rows = []
+    for index, block in enumerate(blocks):
+        name = (block.get('Id') or (names[index] + '.service')).removesuffix('.service')
+        state = block.get('ActiveState', 'unknown')
+        start = block.get('ExecMainStartTimestampMonotonic', '0')
+        try:
+            uptime = max(0, int(now_mono - int(start) / 1_000_000)) if state == 'active' and int(start) else None
+        except (TypeError, ValueError):
+            uptime = None
+        memory = block.get('MemoryCurrent', '')
+        rows.append({
+            'name': name, 'desc': descriptions.get(name, ''),
+            'state': 'notfound' if block.get('LoadState') == 'not-found' else state,
+            'sub': block.get('SubState', ''),
+            'pid': int(block.get('MainPID', '0') or 0),
+            'restarts': int(block.get('NRestarts', '0') or 0),
+            'mem_mb': round(int(memory) / 1048576, 1) if memory.isdigit() else None,
+            'uptime': uptime,
+        })
+    return rows
 
 
 def _port_open(port, host='127.0.0.1', timeout=1.5):
@@ -528,6 +589,11 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split('?', 1)[0]
+        if path == '/api/services':
+            try:
+                return self._json(200, {'ts': time.time(), 'services': services_snapshot()})
+            except Exception as e:
+                return self._json(500, {'error': str(e)})
         if path == '/api/system/desktop':
             try:
                 return self._json(200, desktop_status())

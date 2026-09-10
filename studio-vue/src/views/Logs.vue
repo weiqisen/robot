@@ -6,6 +6,7 @@ const { state, HOST } = useRos()
 const SRC = [['all','全部'],['sys','systemd'],['ros','/rosout']], LVL = [['all','全部'],['error','错误'],['warn','警告'],['info','信息']]
 const srcF=ref('all'), lvlF=ref('all'), svcF=ref('all'), q=ref(''), paused=ref(false), follow=ref(true), box=ref(null), busy=ref({})
 const desktop=ref(null), desktopBusy=ref(false), navigationStack=ref(null), navigationBusy=ref(false)
+const cachedUnits = ref(null)
 const hhmmss=t=>(String(t||'').match(/\d{2}:\d{2}:\d{2}/)||['--:--:--'])[0], dur=t=>t==null?'--':t>=86400?`${Math.floor(t/86400)}天`:t>=3600?`${Math.floor(t/3600)}时`:`${Math.floor(t/60)}分`
 const RESPONSIBILITIES={
  start_app_node:{summary:'启动并托管关键硬件和基础 ROS 节点。',items:['RGB / 深度相机驱动','雷达驱动与过滤','底盘控制器、里程计、IMU','机械臂舵机控制','ROS 基础组件','rosbridge :9090 与 MJPEG :8080']},
@@ -21,20 +22,22 @@ const RESPONSIBILITIES={
 }
 const responsibility=n=>RESPONSIBILITIES[n]||{summary:'机器人自建工作负载。',items:['由 systemd 常驻守护','可在白名单内管理']}
 let frozen=[]
-const units=computed(()=>state.units?.services||[]), activeN=computed(()=>units.value.filter(s=>s.state==='active').length), usedMem=computed(()=>units.value.reduce((n,s)=>n+(+s.mem_mb||0),0))
+const units=computed(()=>state.units?.services?.length ? state.units.services : cachedUnits.value?.services||[]), activeN=computed(()=>units.value.filter(s=>s.state==='active').length), usedMem=computed(()=>units.value.reduce((n,s)=>n+(+s.mem_mb||0),0))
 const bootstrapRows=computed(()=>units.value.map(s=>({t:new Date().toISOString(),from:'sys',unit:s.name,src:'service-monitor',lvl:s.state==='active'?'info':'warn',msg:`[startup] ${s.state}/${s.sub||'--'} pid=${s.pid||'--'} uptime=${dur(s.uptime)} mem=${s.mem_mb??'--'}MB`})))
 const rows=computed(()=>{const all=paused.value?frozen:(state.logs.length?state.logs:bootstrapRows.value),kw=q.value.trim().toLowerCase();return all.filter(e=>(srcF.value==='all'||e.from===srcF.value)&&(lvlF.value==='all'||e.lvl===lvlF.value)&&(svcF.value==='all'||e.unit===svcF.value||e.src===svcF.value)&&(!kw||(e.msg+' '+(e.src||'')).toLowerCase().includes(kw)))})
 const serviceOptions=computed(()=>[{value:'all',label:'全部工作负载'},...units.value.map(s=>({value:s.name,label:`${s.name} · ${s.desc}`}))]), counts=computed(()=>state.logs.reduce((c,e)=>{if(e.lvl in c)c[e.lvl]++;return c},{error:0,warn:0}))
 const serviceCommand=(n,a)=>`sudo systemctl ${a} ${n}.service`, desktopCommand=e=>`sudo /home/ubuntu/${e?'enable_desktop.sh':'disable_desktop.sh'}`, navigationCommand=r=>`sudo /home/ubuntu/${r?'resume_navigation_stack.sh':'pause_navigation_stack.sh'}`
 async function copyCommand(c){try{await navigator.clipboard.writeText(c)}catch(_){const e=document.createElement('textarea');e.value=c;e.style.cssText='position:fixed;opacity:0';document.body.appendChild(e);e.select();document.execCommand('copy');e.remove()}message.success('命令已复制')}
 async function refreshModes(){const get=async(p,t)=>{try{const r=await fetch(`http://${HOST}:8000${p}`,{cache:'no-store'}),d=await r.json();if(!r.ok)throw Error(d.error||r.status);t.value=d}catch(e){t.value={error:e.message}}};await Promise.all([get('/api/system/desktop',desktop),get('/api/system/navigation-stack',navigationStack)])}
+function loadCachedUnits(){try{const raw=sessionStorage.getItem('jetrover:services');if(raw){const data=JSON.parse(raw);if(data?.services?.length)cachedUnits.value=data}}catch(_){}}
+async function refreshUnits(){try{const r=await fetch(`http://${HOST}:8000/api/services`,{cache:'no-store'}),data=await r.json();if(!r.ok)throw Error(data.error||r.status);if(data.services?.length){cachedUnits.value=data;sessionStorage.setItem('jetrover:services',JSON.stringify(data))}}catch(_){/* ROS 上报仍是兜底，保留最近有效快照 */}}
 async function put(p,t,b,ok){b.value=true;try{const r=await fetch(`http://${HOST}:8000${p}`,{method:'PUT'}),d=await r.json();if(!r.ok)throw Error(d.error||r.status);t.value=d;message.success(ok)}catch(e){message.error('操作失败：'+e.message);throw e}finally{b.value=false}}
 function toggleDesktop(e){Modal.confirm({title:e?'开启图形桌面？':'关闭图形桌面？',content:e?'会恢复 7 英寸触摸屏桌面。':'会立即停止 GNOME，后续无桌面启动；网页、SSH、ROS 与控制不会停止。',okText:e?'开启':'关闭',cancelText:'取消',okButtonProps:e?{}:{danger:true},onOk:()=>put(`/api/system/desktop/${e?'enable':'disable'}`,desktop,desktopBusy,e?'图形桌面已开启':'图形桌面已关闭')})}
 function toggleNavigation(r){Modal.confirm({title:r?'恢复自主导航？':'进入导航待机？',content:r?'会恢复 SLAM、Nav2 和自主探索。':'会暂停 SLAM、Nav2 与自主探索，约释放 1 GB 内存；相机、抓取、雷达看门狗和速度安全闸门继续运行。',okText:r?'恢复':'待机',cancelText:'取消',okButtonProps:r?{}:{danger:true},onOk:()=>put(`/api/system/navigation-stack/${r?'resume':'pause'}`,navigationStack,navigationBusy,r?'自主导航已恢复':'导航已进入待机')})}
 function serviceAction(s,a){const core=s.name==='start_app_node',nav=['explorer-agent','exploration-nav','nav-safety'].includes(s.name),stop=a==='stop';Modal.confirm({title:`${stop?'停止':'重启'} ${s.name}？`,okText:`确认${stop?'停止':'重启'}`,cancelText:'取消',content:stop?'服务会保持离线，直到手动重启；确认不会影响正在执行的任务。':core?'会重建 ROS、相机和底层驱动话题；不会向机械臂或底盘发送动作命令。':nav?'该服务参与自主移动，请确认小车已停稳。':'服务会短暂离线，通常数秒内恢复。',okButtonProps:{danger:stop||core||nav},async onOk(){busy.value[`${s.name}:${a}`]=true;try{const r=await fetch(`http://${HOST}:8000/api/services/${s.name}/${a}`,{method:'POST'}),d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||`HTTP ${r.status}`);message.success(`${s.name} 正在${stop?'停止':'重启'}`)}catch(e){message.error(`${stop?'停止':'重启'}失败：${e.message}`);throw e}finally{busy.value[`${s.name}:${a}`]=false}}})}
 const restart=s=>serviceAction(s,'restart'),stop=s=>serviceAction(s,'stop')
 watch(paused,v=>{frozen=v?state.logs.slice():[]});watch(()=>state.logs.length,()=>{if(!paused.value&&follow.value)nextTick(()=>{if(box.value)box.value.scrollTop=box.value.scrollHeight})})
-function onScroll(){if(box.value)follow.value=box.value.scrollHeight-box.value.scrollTop-box.value.clientHeight<40}function clear(){state.logs.splice(0);frozen=[]}function toBottom(){follow.value=true;if(box.value)box.value.scrollTop=box.value.scrollHeight}onMounted(refreshModes)
+function onScroll(){if(box.value)follow.value=box.value.scrollHeight-box.value.scrollTop-box.value.clientHeight<40}function clear(){state.logs.splice(0);frozen=[]}function toBottom(){follow.value=true;if(box.value)box.value.scrollTop=box.value.scrollHeight}onMounted(()=>{loadCachedUnits();refreshModes();refreshUnits()})
 </script>
 
 <template>
