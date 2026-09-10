@@ -3,12 +3,17 @@
 import subprocess
 import time
 import urllib.request
+import os
 
 URL = 'http://127.0.0.1:8082/stream'
 CHECK_INTERVAL = 10
 FAILURES_BEFORE_RESTART = 2
 RESTART_COOLDOWN = 45
 STARTUP_GRACE = 45
+# 重启 vision-video 会因 systemd Requires 连带重启本守护进程；这个短期标记
+# 因而必须放在进程外，才能在“桥恢复失败”后升级到相机 bringup 恢复。
+BRIDGE_RECOVERY_MARKER = '/tmp/jetrover-vision-bridge-restart'
+BRIDGE_RECOVERY_TTL = 240
 
 
 def has_jpeg_frame():
@@ -31,25 +36,33 @@ def main():
     time.sleep(STARTUP_GRACE)
     failures = 0
     last_restart = 0.0
-    bridge_restarts_since_frame = 0
     while True:
         if has_jpeg_frame():
             failures = 0
-            bridge_restarts_since_frame = 0
+            try:
+                os.unlink(BRIDGE_RECOVERY_MARKER)
+            except FileNotFoundError:
+                pass
         else:
             failures += 1
             print('vision bridge frame check failed (%d/%d)' % (failures, FAILURES_BEFORE_RESTART), flush=True)
             if failures >= FAILURES_BEFORE_RESTART and time.monotonic() - last_restart >= RESTART_COOLDOWN:
-                if bridge_restarts_since_frame:
+                marker_is_fresh = (os.path.exists(BRIDGE_RECOVERY_MARKER)
+                                   and time.time() - os.path.getmtime(BRIDGE_RECOVERY_MARKER) < BRIDGE_RECOVERY_TTL)
+                if marker_is_fresh:
                     # 视频桥重启后仍持续无 JPEG，根因通常是相机容器虽在但没有发布帧。
                     # 这个固定 sudo 权限仅允许重启 bringup；不会发送机械臂或底盘命令。
                     print('vision bridge still has no frames; restarting upstream start_app_node.service', flush=True)
                     subprocess.run(['sudo', '-n', '/usr/bin/systemctl', 'restart', 'start_app_node.service'], check=False)
-                    bridge_restarts_since_frame = 0
+                    try:
+                        os.unlink(BRIDGE_RECOVERY_MARKER)
+                    except FileNotFoundError:
+                        pass
                 else:
                     print('restarting isolated vision-video.service', flush=True)
+                    with open(BRIDGE_RECOVERY_MARKER, 'w', encoding='ascii') as marker:
+                        marker.write(str(time.time()))
                     subprocess.run(['/usr/bin/systemctl', 'restart', 'vision-video.service'], check=False)
-                    bridge_restarts_since_frame = 1
                 last_restart = time.monotonic()
                 failures = 0
                 time.sleep(STARTUP_GRACE)
