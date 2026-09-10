@@ -199,7 +199,9 @@ async function startDetRtc() {
       detRtcPc.addEventListener('icegatheringstatechange', done); setTimeout(resolve, 1200)
     })
     const response = await fetch(`http://${HOST}:${WEBRTC_PORT}/offer`, { method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({ sdp:detRtcPc.localDescription.sdp, type:detRtcPc.localDescription.type, topic:'/snack_butler/image_result' }) })
+      // 大屏框由下方 SVG 根据实时检测结果绘制；视频直接取 30fps 原始 RGB，
+      // 不再等后端把框画进 image_result（该流受识别频率限制）。
+      body:JSON.stringify({ sdp:detRtcPc.localDescription.sdp, type:detRtcPc.localDescription.type, topic:'/depth_cam/rgb/image_raw' }) })
     if (!response.ok) throw new Error('WebRTC 信令失败')
     await detRtcPc.setRemoteDescription(await response.json())
     detRtcFallback = setTimeout(() => { if (!detRtcActive.value) stopDetRtc() }, 4500)
@@ -2969,7 +2971,7 @@ onBeforeUnmount(() => {
 .df-head b { color: #E2E8F0; font-size: 11px; letter-spacing: .4px; }
 .df-close { color: #64748B; font-size: 13px; line-height: 1; cursor: pointer; padding: 0 2px; }
 .df-close:hover { color: #CBD5E1; }
-.df-stage{position:relative;min-height:0;flex:1;background:#000;overflow:hidden}.df-img{display:block;width:100%;height:100%;object-fit:contain;background:#000}.df-boxes{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}.df-boxes g{pointer-events:all;cursor:crosshair}.df-boxes rect{fill:transparent;stroke:transparent;stroke-width:3;vector-effect:non-scaling-stroke;transition:.14s}.df-boxes text{opacity:0;fill:transparent;font:700 12px ui-monospace;paint-order:stroke;stroke:transparent;stroke-width:2;transition:.14s}.df-boxes g.hot rect{fill:rgba(34,211,238,.08);stroke:#67e8f9;filter:drop-shadow(0 0 5px #22d3ee)}.df-boxes g.hot text{opacity:1;fill:#a5f3fc;stroke:#031018}
+.df-stage{position:relative;min-height:0;flex:1;background:#000;overflow:hidden}.df-img{display:block;width:100%;height:100%;object-fit:contain;background:#000}.df-boxes{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}.df-boxes g{pointer-events:all;cursor:crosshair}.df-boxes rect{fill:rgba(34,211,238,.025);stroke:rgba(103,232,249,.72);stroke-width:2;vector-effect:non-scaling-stroke;transition:.14s}.df-boxes text{opacity:1;fill:#a5f3fc;font:700 12px ui-monospace;paint-order:stroke;stroke:#031018;stroke-width:2;transition:.14s}.df-boxes g.hot rect{fill:rgba(34,211,238,.12);stroke:#67e8f9;stroke-width:3;filter:drop-shadow(0 0 5px #22d3ee)}.df-boxes g.hot text{fill:#fff}
 .df-stat { min-height:22px; padding: 4px 9px; font-size: 9px; color: #94A3B8; text-align: right;
   background: rgba(15,23,42,.4); display:flex; align-items:center; justify-content:flex-end; gap:7px; }
 .df-stat button { border:1px solid rgba(56,189,248,.35); border-radius:4px; padding:2px 6px;

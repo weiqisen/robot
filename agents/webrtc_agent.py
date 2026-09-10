@@ -37,43 +37,50 @@ vision_bridge = None
 
 
 class RosVisionBridge(Node):
-    """只缓存最新的标注图，不让慢客户端把 ROS 图像队列堆起来。"""
+    """缓存最新的标注图和 RGB 图，不让慢客户端把 ROS 图像队列堆起来。"""
     def __init__(self):
         super().__init__('webrtc_vision_bridge')
         self.cv = threading.Condition()
-        self.frame, self.seq = None, 0
-        qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+        self.frames = {'vision': None, 'camera': None}
+        self.seqs = {'vision': 0, 'camera': 0}
+        reliable_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                          history=HistoryPolicy.KEEP_LAST)
-        self.create_subscription(Image, '/snack_butler/image_result', self.on_image, qos)
+        sensor_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT,
+                                history=HistoryPolicy.KEEP_LAST)
+        self.create_subscription(Image, '/snack_butler/image_result',
+                                 lambda msg: self.on_image('vision', msg), reliable_qos)
+        self.create_subscription(Image, '/depth_cam/rgb/image_raw',
+                                 lambda msg: self.on_image('camera', msg), sensor_qos)
 
-    def on_image(self, msg):
+    def on_image(self, channel, msg):
         try:
             raw = np.frombuffer(msg.data, dtype=np.uint8)
             frame = raw.reshape(msg.height, msg.width, 3).copy()
             if str(msg.encoding).lower() == 'rgb8':
                 frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             with self.cv:
-                self.frame, self.seq = frame, self.seq + 1
+                self.frames[channel] = frame
+                self.seqs[channel] += 1
                 self.cv.notify_all()
         except Exception:
             pass
 
-    def latest_after(self, previous):
+    def latest_after(self, channel, previous):
         with self.cv:
-            self.cv.wait_for(lambda: self.seq != previous, timeout=.12)
-            return self.frame, self.seq
+            self.cv.wait_for(lambda: self.seqs[channel] != previous, timeout=.05)
+            return self.frames[channel], self.seqs[channel]
 
 
 class RosVisionTrack(VideoStreamTrack):
     """直取 ROS 最新帧，去掉 ROS -> MJPEG -> OpenCV 的中间缓存。"""
-    def __init__(self, bridge):
+    def __init__(self, bridge, channel):
         super().__init__()
-        self.bridge, self.seq = bridge, -1
+        self.bridge, self.channel, self.seq = bridge, channel, -1
 
     async def recv(self):
         pts, time_base = await self.next_timestamp()
         frame, self.seq = await asyncio.get_event_loop().run_in_executor(
-            None, self.bridge.latest_after, self.seq)
+            None, self.bridge.latest_after, self.channel, self.seq)
         if frame is None:
             frame = np.zeros((360, 640, 3), dtype='uint8')
         vf = VideoFrame.from_ndarray(frame, format='bgr24')
@@ -127,8 +134,10 @@ async def offer(request):
         if pc.connectionState in ("failed", "closed", "disconnected"):
             await pc.close(); pcs.discard(pc)
 
-    track = (RosVisionTrack(vision_bridge)
-             if topic == '/snack_butler/image_result' and vision_bridge is not None
+    channel = ('vision' if topic == '/snack_butler/image_result' else
+               'camera' if topic == '/depth_cam/rgb/image_raw' else None)
+    track = (RosVisionTrack(vision_bridge, channel)
+             if channel is not None and vision_bridge is not None
              else MjpegCameraTrack(topic))
     pc.addTrack(track)
 
