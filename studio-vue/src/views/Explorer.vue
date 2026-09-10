@@ -1,35 +1,19 @@
 <script setup>
-import { ref, computed, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { message } from 'ant-design-vue'
 import { useRos } from '../composables/useRos'
-const { state, actions } = useRos()
-const options = computed(() => state.topics.map(([n, t]) => ({ value: n, label: `${n}  ·  ${t}`, type: t })))
-const sel = ref(null)
-const echo = ref('选择一个话题并点「订阅」，这里会实时显示它的消息内容（JSON）。')
-const hz = ref('')
-let unsub = null, count = 0, t0 = 0
-function subscribe() {
-  const opt = options.value.find(o => o.value === sel.value); if (!opt) return
-  stop(); count = 0; t0 = Date.now()
-  unsub = actions.subscribe(opt.value, opt.type, m => {
-    count++; const dt = (Date.now() - t0) / 1000
-    hz.value = dt > 0 ? `${(count / dt).toFixed(1)} Hz · ${count} 帧` : ''
-    echo.value = JSON.stringify(m, (k, v) => (Array.isArray(v) && v.length > 64 ? `[${v.length} 项数组，已折叠]` : v), 2)
-  }, 100)
-}
-function stop() { if (unsub) { unsub(); unsub = null; hz.value = '已停止' } }
-onUnmounted(stop)
+const {state,actions}=useRos(); const sel=ref(''), echo=ref('选择一个话题，点击“开始观察”。'), hz=ref('—'), count=ref(0), history=ref([]), payload=ref('{\n  "data": "hello ROS"\n}')
+const options=computed(()=>state.topics.map(([value,type])=>({value,label:`${value}  ·  ${type}`,type})))
+const current=computed(()=>options.value.find(x=>x.value===sel.value)); const isSafeDemo=computed(()=>sel.value==='/ros_learning/demo')
+let unsub=null,t0=0
+function pretty(m){return JSON.stringify(m,(k,v)=>Array.isArray(v)&&v.length>48?`[${v.length} 项数组，已折叠]`:v,2)}
+function start(){if(!current.value)return message.warning('先选择一条话题'); stop();count.value=0;t0=Date.now();history.value=[];unsub=actions.subscribe(sel.value,current.value.type,m=>{count.value++;const sec=(Date.now()-t0)/1000;hz.value=`${(count.value/Math.max(sec,.1)).toFixed(1)} FPS · ${count.value} 条`;echo.value=pretty(m);history.value.unshift({at:new Date().toLocaleTimeString(),text:echo.value.slice(0,180)});history.value.splice(12)},100)}
+function stop(){if(unsub){unsub();unsub=null}hz.value='已停止'}
+function choose(name){const x=options.value.find(o=>o.value===name);if(x){sel.value=x.value;start()}}
+function sendDemo(){if(!isSafeDemo.value)return message.warning('学习台只允许向 /ros_learning/demo 发演练消息，不会控制真机');try{const data=JSON.parse(payload.value);if(!actions.publish('/ros_learning/demo','std_msgs/msg/String',data))throw Error('ROS 未连接');message.success('演练消息已发布：该话题没有真机执行器')}catch(e){message.error('JSON 格式不正确：'+e.message)}}
+onMounted(()=>{try{const x=JSON.parse(localStorage.getItem('ros.learning.topic'));if(x)sel.value=x.name}catch{}});onUnmounted(stop)
 </script>
-<template>
-  <a-card size="small">
-    <a-space style="margin-bottom:12px" wrap>
-      <a-select v-model:value="sel" :options="options" show-search style="min-width:360px" placeholder="选择话题" />
-      <a-button type="primary" @click="subscribe">订阅</a-button>
-      <a-button @click="stop">停止</a-button>
-      <span style="color:#52c41a;font-family:ui-monospace,monospace;font-size:14px">{{ hz }}</span>
-    </a-space>
-    <pre class="echo">{{ echo }}</pre>
-  </a-card>
-</template>
-<style scoped>
-.echo { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; font-family: ui-monospace, monospace; font-size: 14px; color: var(--text-1); overflow: auto; max-height: 540px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
-</style>
+<template><div class="browser"><section class="intro"><span>ROS 学习 · 第 3 步</span><h2>观察消息，再安全地发一条演练消息</h2><p>左边订阅真实话题；右边只开放无执行器的学习话题，避免把练习误变成机械臂或底盘控制。</p></section>
+<a-row :gutter="[16,16]"><a-col :xs="24" :xl="16"><a-card title="实时话题观察器" size="small"><div class="bar"><a-select v-model:value="sel" :options="options" show-search option-filter-prop="label" placeholder="选择话题" style="min-width:360px;flex:1"/><a-button type="primary" @click="start">开始观察</a-button><a-button @click="stop">停止</a-button><b>{{hz}}</b></div><div class="quick"><span>推荐：</span><a-button size="small" @click="choose('/scan')">雷达</a-button><a-button size="small" @click="choose('/snack_butler/state')">抓取状态</a-button><a-button size="small" @click="choose('/system/log')">系统日志</a-button><a-button size="small" @click="choose('/controller_manager/joint_states')">机械臂关节</a-button></div><pre>{{echo}}</pre></a-card></a-col>
+<a-col :xs="24" :xl="8"><a-card title="安全消息演练" size="small"><p class="tip">练习 ROS 的“发布”概念：填 JSON 后发送到 <code>/ros_learning/demo</code>。该话题无人执行，绝不会驱动车体。</p><a-textarea v-model:value="payload" :rows="7"/><a-button type="primary" block style="margin-top:10px" @click="sendDemo">发布演练消息</a-button><p class="tip">真正控制机器人请使用“实时控制”“视觉引导抓取”等专用页面，它们有独立的安全检查。</p></a-card><a-card title="最近收到的消息" size="small" style="margin-top:16px"><div v-for="x in history" :key="x.at+x.text" class="hist"><b>{{x.at}}</b><span>{{x.text}}</span></div><span v-if="!history.length" class="tip">开始观察后，这里保留最近 12 条摘要。</span></a-card></a-col></a-row></div></template>
+<style scoped>.browser{max-width:1320px;margin:auto}.intro{padding:18px 2px}.intro span{color:var(--accent);font:700 11px ui-monospace}.intro h2{margin:6px 0;font-size:22px}.intro p,.tip{color:var(--text-3);font-size:12px;line-height:1.65}.bar{display:flex;align-items:center;gap:8px}.bar b{color:#16a34a;font:700 12px ui-monospace}.quick{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:12px 0}.quick span{font-size:12px;color:var(--text-3)}pre{min-height:360px;max-height:55vh;overflow:auto;margin:0;padding:14px;border-radius:8px;background:#111827;color:#d1fae5;font:12px/1.55 ui-monospace;white-space:pre-wrap;word-break:break-word}.hist{padding:7px 0;border-bottom:1px solid var(--divider);font:11px ui-monospace}.hist b{display:block;color:var(--accent)}.hist span{color:var(--text-3);white-space:pre-wrap;word-break:break-all}@media(max-width:600px){.bar{flex-wrap:wrap}.bar .ant-select{min-width:100%!important}}</style>

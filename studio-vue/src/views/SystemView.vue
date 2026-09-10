@@ -2,19 +2,16 @@
 import { computed } from 'vue'
 import { useRos } from '../composables/useRos'
 const { state } = useRos()
-const nodeRows = computed(() => state.nodes.map((n, i) => ({ key: i, name: n })))
-const svcRows = computed(() => state.services.map((n, i) => ({ key: i, name: n })))
-const col = [{ title: '', dataIndex: 'name', key: 'name' }]
+const role = n => n.includes('snack') ? '视觉抓取' : n.includes('nav') || n.includes('explor') ? '导航 / 探索' : n.includes('camera') ? '相机' : n.includes('rosbridge') ? '网页通信' : 'ROS 基础组件'
+const nodes = computed(() => state.nodes.map((name, key) => ({ key, name, role:role(name) })))
+const flow = computed(() => [['感知', state.topics.filter(([n]) => /camera|scan|imu/.test(n)).length, '相机、雷达和 IMU'], ['决策', state.nodes.filter(n => /snack|explor|nav/.test(n)).length, '抓取和导航'], ['执行', state.topics.filter(([n]) => /servo|cmd_vel|set_/.test(n)).length, '舵机、底盘和外设']])
+const go = p => { location.hash = p }
 </script>
-<template>
-  <a-row :gutter="[16, 16]">
-    <a-col :xs="24" :md="12">
-      <a-card title="运行节点" size="small"><template #extra><a-tag>{{ state.counts.nodes }}</a-tag></template>
-        <a-table :columns="col" :data-source="nodeRows" size="small" :pagination="false" :show-header="false" :scroll="{ y: 500 }" /></a-card>
-    </a-col>
-    <a-col :xs="24" :md="12">
-      <a-card title="服务" size="small"><template #extra><a-tag>{{ state.counts.services }}</a-tag></template>
-        <a-table :columns="col" :data-source="svcRows" size="small" :pagination="false" :show-header="false" :scroll="{ y: 500 }" /></a-card>
-    </a-col>
-  </a-row>
-</template>
+<template><div class="learn-page">
+  <section class="hero"><div><span class="eyebrow">ROS 学习 · 第 1 步</span><h2>机器人系统正在怎样协作？</h2><p>把 ROS 想成机器人内部的消息网络：节点负责做事，话题传递实时信息，服务用于一次性请求。</p></div><div :class="['link',{off:!state.connected}]"><i/>{{ state.connected?'已连上 ROS 主节点':'正在连接 ROS 主节点' }}</div></section>
+  <section class="flow"><button v-for="x in flow" :key="x[0]" @click="go('topics')"><b>{{x[0]}}</b><strong>{{x[1]}}</strong><span>{{x[2]}}</span></button></section>
+  <section class="next"><div><b>从哪里开始？</b><span>先看“话题总览”，再到“话题浏览器”订阅一条真实数据。</span></div><a-button type="primary" @click="go('topics')">查看实时数据流</a-button><a-button @click="go('logs')">查看实时日志</a-button></section>
+  <a-row :gutter="[16,16]"><a-col :xs="24" :lg="14"><a-card title="节点：谁在做事" size="small"><template #extra><a-tag color="blue">{{state.counts.nodes}} 个</a-tag></template><a-table :data-source="nodes" :pagination="{pageSize:8,size:'small'}" size="small"><a-table-column title="节点名称" data-index="name"/><a-table-column title="它在负责什么" data-index="role"><template #default="{text}"><a-tag>{{text}}</a-tag></template></a-table-column></a-table></a-card></a-col>
+  <a-col :xs="24" :lg="10"><a-card title="服务：可被请求的能力" size="small"><template #extra><a-tag>{{state.counts.services}} 个</a-tag></template><p class="hint">服务不像话题那样持续推送；它用于“请求一次，返回一次”。日常先观察话题即可。</p><div class="svc"><code v-for="s in state.services.slice(0,14)" :key="s">{{s}}</code><span v-if="!state.services.length">等待 ROS 返回服务列表…</span></div></a-card></a-col></a-row>
+</div></template>
+<style scoped>.learn-page{max-width:1320px;margin:auto}.hero{display:flex;justify-content:space-between;gap:20px;padding:22px 24px;border-radius:14px;color:#e8f5ff;background:linear-gradient(120deg,#123554,#0e1e32 68%);margin-bottom:16px}.eyebrow{color:#7dd3fc;font:700 11px ui-monospace;letter-spacing:1.2px}.hero h2{margin:7px 0;font-size:22px}.hero p{margin:0;color:#b8d1e5;max-width:720px}.link{align-self:flex-start;white-space:nowrap;padding:8px 10px;border:1px solid #266384;border-radius:20px;color:#86efac;font-size:12px}.link i{display:inline-block;width:7px;height:7px;margin-right:6px;border-radius:50%;background:#34d399}.link.off{color:#fbbf24}.link.off i{background:#fbbf24}.flow{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}.flow button{border:1px solid var(--border);border-radius:10px;padding:16px;text-align:left;background:var(--surface);cursor:pointer}.flow button:hover{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}.flow b,.flow span{display:block}.flow b,.hint{color:var(--text-3);font-size:12px}.flow strong{display:block;margin:4px 0;font-size:26px}.flow span{color:var(--text-3);font-size:12px}.next{display:flex;align-items:center;gap:10px;padding:13px 16px;margin-bottom:16px;border:1px solid var(--border);border-radius:10px;background:var(--surface)}.next div{margin-right:auto;display:flex;flex-direction:column;gap:3px}.next span{color:var(--text-3);font-size:12px}.svc{display:flex;flex-wrap:wrap;gap:7px}.svc code{padding:5px 7px;border-radius:5px;background:var(--surface-2);font-size:11px}@media(max-width:700px){.hero,.next{display:block}.link{display:inline-block;margin-top:12px}.flow{grid-template-columns:1fr}.next .ant-btn{margin:9px 8px 0 0}}</style>

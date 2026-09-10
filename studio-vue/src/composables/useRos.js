@@ -143,6 +143,13 @@ function connect() {
 
 // ---- 发布/控制方法 ----
 const actions = {
+  // 供 ROS 学习台发布已验证的演示消息使用。业务控制仍应优先调用下方具名方法，
+  // 这样页面能保留对应的安全边界与可读意图。
+  publish(name, messageType, payload) {
+    if (!state.connected || !name || !messageType) return false
+    topic(name, messageType).publish(new ROSLIB.Message(payload || {}))
+    return true
+  },
   cmdVel(vx, vy, wz) {
     if (!state.connected) return
     topic('/manual_cmd_vel', 'geometry_msgs/msg/Twist').publish(new ROSLIB.Message({
