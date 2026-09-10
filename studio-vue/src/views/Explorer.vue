@@ -6,7 +6,28 @@ const {state,actions}=useRos(); const sel=ref(''), echo=ref('选择一个话题�
 const options=computed(()=>state.topics.map(([value,type])=>({value,label:`${value}  ·  ${type}`,type})))
 const current=computed(()=>options.value.find(x=>x.value===sel.value)); const isSafeDemo=computed(()=>sel.value==='/ros_learning/demo')
 let unsub=null,t0=0
-function pretty(m){return JSON.stringify(m,(k,v)=>Array.isArray(v)&&v.length>48?`[${v.length} 项数组，已折叠]`:v,2)}
+function normalize(value, depth=0) {
+  if (depth > 5) return value
+  if (typeof value === 'string') {
+    const text = value.trim()
+    // ROS 常把结构化内容放进 std_msgs/String.data；自动再解一层，
+    // 让 /system/log、抓取状态等不再显示满屏反斜杠。
+    if ((text.startsWith('{') && text.endsWith('}')) || (text.startsWith('[') && text.endsWith(']'))) {
+      try { return normalize(JSON.parse(text), depth + 1) } catch {}
+    }
+    return value
+  }
+  if (Array.isArray(value)) {
+    // 有些 systemd 日志会以十进制字节列表抵达；还原 UTF-8 并清理终端颜色码。
+    if (value.length > 8 && value.every(x => Number.isInteger(x) && x >= 0 && x <= 255)) {
+      try { return new TextDecoder().decode(new Uint8Array(value)).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '') } catch {}
+    }
+    return value.map(v => normalize(v, depth + 1))
+  }
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k,v]) => [k, normalize(v, depth + 1)]))
+  return value
+}
+function pretty(m){return JSON.stringify(normalize(m), (k,v)=>Array.isArray(v)&&v.length>48?`[${v.length} 项数组，已折叠]`:v,2)}
 function start(){if(!current.value)return message.warning('先选择一条话题'); stop();count.value=0;t0=Date.now();history.value=[];unsub=actions.subscribe(sel.value,current.value.type,m=>{count.value++;const sec=(Date.now()-t0)/1000;hz.value=`${(count.value/Math.max(sec,.1)).toFixed(1)} FPS · ${count.value} 条`;echo.value=pretty(m);history.value.unshift({at:new Date().toLocaleTimeString(),text:echo.value.slice(0,180)});history.value.splice(12)},100)}
 function stop(){if(unsub){unsub();unsub=null}hz.value='已停止'}
 function choose(name){const x=options.value.find(o=>o.value===name);if(x){sel.value=x.value;start()}}
