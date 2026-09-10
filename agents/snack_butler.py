@@ -326,6 +326,19 @@ DEFAULT_CONFIG = {
     "click_box_px": 44,        # 直接抓点击处时，取这么大的方块做深度中位数
 
     # --- 运动 ---
+    # 视觉抓取不能直接复用 .d6a 的固定脉冲（目标 XY 每次不同），但复用动作组
+    # 「分段 + 各段独立节奏」的设计。原先所有关节跨度都固定 1.2s：小幅预抓
+    # 调整被拖得很慢、看起来软趴趴；大幅转场又没有明确的速度意图。
+    "motion_profile": {
+        # 安全转场 / 预抓：快而不猛，适合跨越较大关节角。
+        "transfer": {"min_s": 0.55, "max_s": 1.55, "speed_deg_s": 72.0, "settle_s": 0.16},
+        # 垂直下探：末端靠近桌面，速度独立限制，绝不随大转场一起加速。
+        "descend":  {"min_s": 0.70, "max_s": 1.05, "speed_deg_s": 42.0, "settle_s": 0.16},
+        # 抬起：抓住后尽快离开桌面，仍限制最大关节速度。
+        "lift":     {"min_s": 0.52, "max_s": 1.15, "speed_deg_s": 68.0, "settle_s": 0.14},
+        # 观察位/收臂：相机和机械臂的共用姿态，平稳但不再死等固定时长。
+        "park":     {"min_s": 0.65, "max_s": 1.55, "speed_deg_s": 58.0, "settle_s": 0.20},
+    },
     "move_time": 1.2,
     "settle": 0.35,
     "detect_frames": 5,        # 观察位上取几帧做中值，抗噪
@@ -1074,6 +1087,20 @@ class SnackButler(Node):
         span = max((abs(a - b) for a, b in zip(q, self.q_cmd)), default=0.0)
         return clamp(math.degrees(span) / max(1.0, speed_deg_s), min_s, max_s)
 
+    def move_action_stage(self, q, stage):
+        """执行一个动作组式关节段，返回「指令时长 + 到位余量」。
+
+        这里的姿态仍由当前目标的 IK 求得；只把桌面动作组成熟的“每段独立时间”
+        模式带进抓取状态机，不能拿固定 .d6a 脉冲覆盖视觉目标。
+        """
+        profiles = self.cfg.get('motion_profile') or {}
+        p = profiles.get(stage) or profiles.get('transfer') or {}
+        duration = self.arm_move_duration(
+            q, min_s=float(p.get('min_s', .65)), max_s=float(p.get('max_s', 1.8)),
+            speed_deg_s=float(p.get('speed_deg_s', 55.0)))
+        self.send_arm(q, duration)
+        return duration, float(p.get('settle_s', self.cfg.get('settle', .25)))
+
     def beep(self, ms=80):
         try:
             b = BuzzerState()
@@ -1728,17 +1755,18 @@ class SnackButler(Node):
         self.state = 'OBSERVE'
         self.step = '回观察位'
         q = [math.radians(a) for a in self.cfg['observe_deg']]
-        self.send_arm(q, self.cfg['move_time'])
+        duration, settle = self.move_action_stage(q, 'park')
         if open_gripper:
             self.gripper(True)
-        yield self.cfg['move_time'] + self.cfg['settle']
+        yield duration + settle
         self.step = '就位'
 
     def seq_home(self):
         self.state = 'HOME'
         self.step = '收臂'
-        self.send_arm([math.radians(a) for a in self.cfg['home_deg']], self.cfg['move_time'])
-        yield self.cfg['move_time'] + self.cfg['settle']
+        duration, settle = self.move_action_stage(
+            [math.radians(a) for a in self.cfg['home_deg']], 'park')
+        yield duration + settle
 
     def seq_reset_arm(self):
         """空闲时执行可恢复的张爪、收臂复位；不会中断正在运行的轨迹。"""
@@ -1996,8 +2024,8 @@ class SnackButler(Node):
         self.state = 'RECOVERY'
         self.step = '安全恢复：抬升到中断动作的安全高度'
         self.journal_phase('recovery_lift')
-        self.send_arm(lift, self.cfg['move_time'])
-        yield self.cfg['move_time'] + self.cfg['settle']
+        duration, settle = self.move_action_stage(lift, 'lift')
+        yield duration + settle
         self.step = '安全恢复：收回机械臂'
         self.journal_phase('recovery_home')
         yield from self.seq_home()
@@ -2107,9 +2135,10 @@ class SnackButler(Node):
             self.step = f'安全移动到目标上方 (z={safe_z:.3f})'
             self.journal_phase('safe_move')
             self.gripper(True)
-            self.send_arm(q_safe, cfg['move_time'])
-            self.decision('motion', '移动到安全中间点', '目标 XY，base_link 绝对 z=%.3f' % safe_z)
-            yield cfg['move_time'] + cfg['settle']
+            duration, settle = self.move_action_stage(q_safe, 'transfer')
+            self.decision('motion', '动作组·安全中间点',
+                          '目标 XY，base_link 绝对 z=%.3f；%.2fs 转场' % (safe_z, duration))
+            yield duration + settle
         else:
             self.decision('motion', '跳过安全中间点', '该姿态 IK 无解，直接进入预抓姿态', 'warn')
 
@@ -2118,9 +2147,11 @@ class SnackButler(Node):
         self.journal_phase('pre_grasp')
         if not q_safe:
             self.gripper(True)
-        self.send_arm(q_pre, cfg['move_time'])
-        self.decision('motion', '移动到预抓悬停位', '目标上方 %.0f mm，夹爪 pitch=180°' % (cfg['approach_h'] * 1000))
-        yield cfg['move_time'] + cfg['settle']
+        duration, settle = self.move_action_stage(q_pre, 'transfer')
+        self.decision('motion', '动作组·预抓悬停位',
+                      '目标上方 %.0f mm，夹爪 pitch=180°；%.2fs 转场' %
+                      (cfg['approach_h'] * 1000, duration))
+        yield duration + settle
 
         # eye-in-hand 相机已到悬停位；此时重识别主方向，只校正 joint5，不改变垂直 pitch。
         self.step = '预抓复核物体方向'
@@ -2149,9 +2180,10 @@ class SnackButler(Node):
         self.step = '下探'
         self.motion_phase('descending')
         self.journal_phase('descending')
-        self.send_arm(q_grasp, 0.9)
-        self.decision('motion', '垂直下探', '移动到合爪高度 z=%.3f' % gz)
-        yield 0.9 + cfg['settle']
+        duration, settle = self.move_action_stage(q_grasp, 'descend')
+        self.decision('motion', '动作组·垂直下探',
+                      '移动到合爪高度 z=%.3f；精细段 %.2fs' % (gz, duration))
+        yield duration + settle
 
         self.step = '合爪'
         self.motion_phase('closing_gripper')
@@ -2162,9 +2194,10 @@ class SnackButler(Node):
         self.step = '抬起'
         self.motion_phase('lifting')
         self.journal_phase('lifting')
-        self.send_arm(q_lift, 0.9)
-        self.decision('motion', '抓取后抬起', '目标上方 %.0f mm' % (cfg['lift_h'] * 1000))
-        yield 0.9 + 0.2
+        duration, settle = self.move_action_stage(q_lift, 'lift')
+        self.decision('motion', '动作组·抓取后抬起',
+                      '目标上方 %.0f mm；%.2fs 撤离桌面' % (cfg['lift_h'] * 1000, duration))
+        yield duration + settle
 
         self.step = '抓取复核：回观察位检查目标是否仍在桌面'
         self.motion_phase('verify_grasp')
@@ -2259,23 +2292,20 @@ class SnackButler(Node):
             self.decision('place', '投放区 IK 无解', self.last_error, 'error')
         else:
             self.decision('place', '投放姿态可达', '先到投放区上方，再垂直下降', 'success')
-        over_time = self.arm_move_duration(q_over, min_s=.9, max_s=2.0, speed_deg_s=48.0)
-        self.send_arm(q_over, over_time)
-        yield over_time + .10
+        over_time, over_settle = self.move_action_stage(q_over, 'transfer')
+        yield over_time + over_settle
         if q_drop:
             self.motion_phase('place_down')
             self.journal_phase('place_down')
-            down_time = self.arm_move_duration(q_drop, min_s=.75, max_s=1.25, speed_deg_s=38.0)
-            self.send_arm(q_drop, down_time)
-            yield down_time + .08
+            down_time, down_settle = self.move_action_stage(q_drop, 'descend')
+            yield down_time + down_settle
         self.step = '松爪'
         self.motion_phase('release')
         self.journal_phase('release')
         self.decision('place', '到达投放位，松爪', '投放到 %s' % b.get('label', binname), 'success')
         yield self.gripper(True)
-        up_time = self.arm_move_duration(q_over, min_s=.75, max_s=1.25, speed_deg_s=38.0)
-        self.send_arm(q_over, up_time)
-        yield up_time + .08
+        up_time, up_settle = self.move_action_stage(q_over, 'lift')
+        yield up_time + up_settle
         self.journal_phase('post_place')
 
     def seq_auto(self):
