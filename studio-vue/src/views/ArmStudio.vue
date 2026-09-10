@@ -6,7 +6,7 @@
 // 动作组读写的是**同一批 .d6a 文件**（那玩意就是 SQLite），
 // 所以网页里存的动作组，桌面端那个程序也能直接打开，反之亦然。
 import { ref, reactive, computed, onBeforeUnmount } from 'vue'
-import { message } from 'ant-design-vue'
+import { message, Modal } from 'ant-design-vue'
 import { useRos } from '../composables/useRos'
 import InfoNote from '../components/InfoNote.vue'
 
@@ -197,6 +197,32 @@ const ACTION_NAMES = {
 function actionLabel(name) {
   return ACTION_NAMES[name] || name
 }
+async function previewGroup(name) { group.value = name; await openGroup() }
+async function runNamedGroup(name) {
+  await previewGroup(name)
+  await runGroup()
+}
+function runAllGroups() {
+  if (!groups.value.length) return message.warning('没有可执行的动作组')
+  Modal.confirm({ title: '执行全部动作组？', okText: '开始执行', cancelText: '取消',
+    content: `将按当前列表顺序执行 ${groups.value.length} 个动作组，每组执行一次。请确认机械臂周围无人、无障碍物，并准备好随时点击停止。`,
+    onOk: async () => {
+      if (!online.value) return message.error('rosbridge 未连接')
+      running.value = true; stopFlag = false
+      try {
+        for (const name of groups.value) {
+          if (stopFlag) break
+          await previewGroup(name)
+          for (let i = 0; i < rows.value.length && !stopFlag; i++) {
+            const r = rows.value[i]; sel.value = i
+            actions.setServosCtl(ORDER.map((id, k) => ({ id, position: r.servos[k] })), (r.time || 1000) / 1000)
+            await new Promise(res => setTimeout(res, r.time || 1000))
+          }
+        }
+      } finally { running.value = false }
+    },
+  })
+}
 
 loadGroups()
 onBeforeUnmount(() => { stopFlag = true })
@@ -290,14 +316,9 @@ onBeforeUnmount(() => { stopFlag = true })
             {{ running ? '运行中' : '运行' }}</button>
           <button class="btn" :disabled="!running" @click="stopGroup">停止</button>
         </div>
-        <div class="bg">
-          <select v-model="group" class="sel">
-            <option value="">选择动作组…</option>
-            <option v-for="g in groups" :key="g" :value="g">{{ actionLabel(g) }} ({{ g }})</option>
-          </select>
-          <button class="btn" @click="openGroup">打开</button>
-          <button class="btn" @click="saveGroup">另存</button>
-          <button class="btn" @click="loadGroups">刷新</button>
+        <div class="group-panel">
+          <div class="group-head"><b>预设动作组</b><span>{{ groups.length }} 组 · 点击卡片预览，点击执行按钮运行</span><button class="btn" @click="loadGroups">刷新</button><button class="btn" @click="saveGroup">另存当前</button><button class="btn danger" :disabled="running || !online" @click="runAllGroups">全部执行一次</button></div>
+          <div class="group-grid"><div v-for="g in groups" :key="g" :class="['group-tile', { active: group === g }]" @click="previewGroup(g)"><div class="group-name">{{ actionLabel(g) }}</div><div class="group-code">{{ g }}</div><button class="btn tile-run" :disabled="running || !online" @click.stop="runNamedGroup(g)">{{ group === g && running ? '运行中…' : '执行' }}</button></div><div v-if="!groups.length" class="group-empty">暂无动作组</div></div>
         </div>
       </div>
     </div>
@@ -352,6 +373,12 @@ td.empty { color: #999; padding: 14px; }
 
 .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
 .bottom { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-start; }
+.group-panel { flex: 1 1 100%; border: 1px solid #d8d8d8; border-radius: 6px; padding: 9px; background: #fff; }
+.group-head { display:flex; align-items:center; flex-wrap:wrap; gap:7px; margin-bottom:8px; font-size:12px; }
+.group-head b { font-size:14px; }.group-head span { color:#777; margin-right:auto; }.group-head .btn { padding:4px 9px; }
+.group-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(122px,1fr)); gap:7px; max-height:230px; overflow:auto; padding:2px; }
+.group-tile { position:relative; min-height:72px; padding:9px 8px 30px; border:1px solid #e0e0e0; border-radius:6px; background:#fafafa; cursor:pointer; transition:.15s; }
+.group-tile:hover,.group-tile.active { border-color:#FCA400; background:#fff8e8; box-shadow:0 1px 4px rgba(217,141,0,.2); }.group-name { font-weight:650; color:#333; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }.group-code { margin-top:4px; color:#999; font:10px ui-monospace; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }.tile-run { position:absolute; right:7px; bottom:6px; padding:2px 8px; font-size:11px; }.btn.danger { background:#fff1f0; border-color:#ff7875; color:#cf1322; }.btn.danger:hover { background:#ffccc7; }.group-empty { padding:18px; color:#999; text-align:center; grid-column:1/-1; }
 .bg { display: flex; flex-direction: column; gap: 6px; border: 1px solid #d8d8d8;
   border-radius: 4px; padding: 8px; }
 .bg.run { flex-direction: row; align-items: center; }
