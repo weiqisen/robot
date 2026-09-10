@@ -68,9 +68,9 @@ VNC_ADDR = (os.environ.get('VNC_HOST') or '127.0.0.1', int(os.environ.get('VNC_P
 SERVICE_UNITS = {
     'webctl', 'jetson-agent', 'snack-butler', 'explorer-agent',
     'exploration-nav', 'nav-safety', 'lidar-watchdog',
-    'webrtc-agent', 'llm-agent',
+    'webrtc-agent', 'llm-agent', 'start_app_node',
 }
-SERVICE_RESTART_PATH = re.compile(r'^/api/services/([a-z0-9-]+)/restart$')
+SERVICE_RESTART_PATH = re.compile(r'^/api/services/([a-z0-9_-]+)/restart$')
 
 
 # 抓取图像链路的每一环。fix 是这一环坏了该重启谁（None = 只能人工处理），

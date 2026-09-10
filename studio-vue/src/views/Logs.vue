@@ -1,178 +1,61 @@
 <script setup>
-import { ref, computed, watch, nextTick } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import { useRos } from '../composables/useRos'
-const { state, HOST } = useRos()
 
-// 两路来源：systemd journal（start_app_node / snack-butler / jetson-agent / webctl / wifi）
-// 和 ROS 的 /rosout。合并流在 useRos 里常驻订阅，进来就有最近的历史。
+const { state, HOST } = useRos()
 const SRC = [['all', '全部'], ['sys', 'systemd'], ['ros', '/rosout']]
 const LVL = [['all', '全部'], ['error', '错误'], ['warn', '警告'], ['info', '信息']]
-const srcF = ref('all')
-const lvlF = ref('all')
-const svcF = ref('all')
-const q = ref('')
-const paused = ref(false)
-const follow = ref(true)
-const box = ref(null)
+const srcF = ref('all'), lvlF = ref('all'), svcF = ref('all'), q = ref('')
+const paused = ref(false), follow = ref(true), box = ref(null), restarting = ref({})
+const desktop = ref(null), desktopBusy = ref(false)
+const navigationStack = ref(null), navigationBusy = ref(false)
 const hhmmss = t => (String(t || '').match(/\d{2}:\d{2}:\d{2}/) || ['--:--:--'])[0]
+const dur = t => t == null ? '--' : t >= 86400 ? `${Math.floor(t / 86400)}天` : t >= 3600 ? `${Math.floor(t / 3600)}时` : `${Math.floor(t / 60)}分`
 
 let frozen = []
-const rows = computed(() => {
-  const all = paused.value ? frozen : (state.logs.length ? state.logs : bootstrapRows.value)
-  const kw = q.value.trim().toLowerCase()
-  return all.filter(e =>
-    (srcF.value === 'all' || e.from === srcF.value) &&
-    (lvlF.value === 'all' || e.lvl === lvlF.value) &&
-    (svcF.value === 'all' || e.unit === svcF.value || e.src === svcF.value) &&
-    (!kw || (e.msg + ' ' + (e.src || '')).toLowerCase().includes(kw)))
-})
 const units = computed(() => state.units?.services || [])
-const bootstrapRows = computed(() => units.value.map(s => ({
-  t: new Date().toISOString(), from: 'sys', unit: s.name, src: 'service-monitor',
-  lvl: s.state === 'active' ? 'info' : 'warn',
-  msg: `[startup] ${s.state}/${s.sub || '--'} pid=${s.pid || '--'} uptime=${dur(s.uptime)} mem=${s.mem_mb ?? '--'}MB`,
-})))
-const serviceOptions = computed(() => [
-  { value: 'all', label: '全部服务' },
-  ...units.value.map(s => ({ value: s.name, label: `${s.name} · ${s.desc}` })),
-])
 const activeN = computed(() => units.value.filter(s => s.state === 'active').length)
-const restarting = ref({})
-const NAV = new Set(['explorer-agent', 'exploration-nav', 'nav-safety'])
-const dur = t => t == null ? '--' : t >= 86400 ? `${Math.floor(t / 86400)}天` : t >= 3600 ? `${Math.floor(t / 3600)}时` : `${Math.floor(t / 60)}分`
+const usedMem = computed(() => units.value.reduce((n, s) => n + (+s.mem_mb || 0), 0))
+const bootstrapRows = computed(() => units.value.map(s => ({ t: new Date().toISOString(), from: 'sys', unit: s.name, src: 'service-monitor', lvl: s.state === 'active' ? 'info' : 'warn', msg: `[startup] ${s.state}/${s.sub || '--'} pid=${s.pid || '--'} uptime=${dur(s.uptime)} mem=${s.mem_mb ?? '--'}MB` })))
+const rows = computed(() => {
+  const all = paused.value ? frozen : (state.logs.length ? state.logs : bootstrapRows.value), kw = q.value.trim().toLowerCase()
+  return all.filter(e => (srcF.value === 'all' || e.from === srcF.value) && (lvlF.value === 'all' || e.lvl === lvlF.value) && (svcF.value === 'all' || e.unit === svcF.value || e.src === svcF.value) && (!kw || (e.msg + ' ' + (e.src || '')).toLowerCase().includes(kw)))
+})
+const serviceOptions = computed(() => [{ value: 'all', label: '全部工作负载' }, ...units.value.map(s => ({ value: s.name, label: `${s.name} · ${s.desc}` }))])
+const counts = computed(() => state.logs.reduce((c, e) => { if (e.lvl in c) c[e.lvl]++; return c }, { error: 0, warn: 0 }))
+async function refreshModes() {
+  const get = async (path, target) => { try { const r = await fetch(`http://${HOST}:8000${path}`, { cache: 'no-store' }), d = await r.json(); if (!r.ok) throw Error(d.error || r.status); target.value = d } catch (e) { target.value = { error: e.message } } }
+  await Promise.all([get('/api/system/desktop', desktop), get('/api/system/navigation-stack', navigationStack)])
+}
+async function put(path, target, busy, okText) { busy.value = true; try { const r = await fetch(`http://${HOST}:8000${path}`, { method: 'PUT' }), d = await r.json(); if (!r.ok) throw Error(d.error || r.status); target.value = d; message.success(okText) } catch (e) { message.error('操作失败：' + e.message); throw e } finally { busy.value = false } }
+function toggleDesktop(enable) { Modal.confirm({ title: enable ? '开启图形桌面？' : '关闭图形桌面？', content: enable ? '会恢复 7 英寸触摸屏桌面。' : '会立即停止 GNOME，后续无桌面启动；网页、SSH、ROS 与控制不会停止。', okText: enable ? '开启桌面' : '关闭桌面', cancelText: '取消', okButtonProps: enable ? {} : { danger: true }, onOk: () => put(`/api/system/desktop/${enable ? 'enable' : 'disable'}`, desktop, desktopBusy, enable ? '图形桌面已开启' : '图形桌面已关闭') }) }
+function toggleNavigation(run) { Modal.confirm({ title: run ? '恢复自主导航？' : '进入导航待机？', content: run ? '会恢复 SLAM、Nav2 和自主探索。' : '会暂停 SLAM、Nav2 与自主探索，约释放 1 GB 内存；相机、抓取、雷达看门狗和速度安全闸门继续运行。', okText: run ? '恢复导航' : '进入待机', cancelText: '取消', okButtonProps: run ? {} : { danger: true }, onOk: () => put(`/api/system/navigation-stack/${run ? 'resume' : 'pause'}`, navigationStack, navigationBusy, run ? '自主导航已恢复' : '导航已进入待机') }) }
 function restart(s) {
-  Modal.confirm({ title: `重启 ${s.name}？`, okText: '确认重启', cancelText: '取消',
-    content: NAV.has(s.name) ? '该服务参与自主移动，请确认小车已停稳。' : '服务会短暂离线，通常数秒内恢复。',
-    okButtonProps: { danger: NAV.has(s.name) },
-    async onOk() {
-      restarting.value[s.name] = true
-      try {
-        const r = await fetch(`http://${HOST}:8000/api/services/${s.name}/restart`, { method: 'POST' })
-        const body = await r.json().catch(() => ({}))
-        if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`)
-        message.success(`${s.name} 正在重启`)
-      } catch (e) { message.error(`重启失败：${e.message}`); throw e }
-      finally { restarting.value[s.name] = false }
-    } })
+  const isCore = s.name === 'start_app_node', isNav = ['explorer-agent', 'exploration-nav', 'nav-safety'].includes(s.name)
+  Modal.confirm({ title: `重启 ${s.name}？`, okText: '确认重启', cancelText: '取消', content: isCore ? '会重建 ROS、相机和底层驱动话题；不会向机械臂或底盘发送动作命令。' : isNav ? '该服务参与自主移动，请确认小车已停稳。' : '服务会短暂离线，通常数秒内恢复。', okButtonProps: { danger: isCore || isNav }, async onOk() { restarting.value[s.name] = true; try { const r = await fetch(`http://${HOST}:8000/api/services/${s.name}/restart`, { method: 'POST' }), d = await r.json().catch(() => ({})); if (!r.ok) throw Error(d.error || `HTTP ${r.status}`); message.success(`${s.name} 正在重启`) } catch (e) { message.error(`重启失败：${e.message}`); throw e } finally { restarting.value[s.name] = false } } })
 }
 watch(paused, v => { frozen = v ? state.logs.slice() : [] })
-
-// 跟随滚动：只有用户没往上翻的时候才自动贴底
-watch(() => state.logs.length, () => {
-  if (paused.value || !follow.value) return
-  nextTick(() => { const b = box.value; if (b) b.scrollTop = b.scrollHeight })
-})
-function onScroll() {
-  const b = box.value
-  if (b) follow.value = b.scrollHeight - b.scrollTop - b.clientHeight < 40
-}
-function clear() { state.logs.splice(0, state.logs.length); frozen = [] }
-function toBottom() { follow.value = true; const b = box.value; if (b) b.scrollTop = b.scrollHeight }
-
-const counts = computed(() => {
-  const c = { error: 0, warn: 0 }
-  for (const e of state.logs) if (e.lvl in c) c[e.lvl]++
-  return c
-})
+watch(() => state.logs.length, () => { if (!paused.value && follow.value) nextTick(() => { if (box.value) box.value.scrollTop = box.value.scrollHeight }) })
+function onScroll() { if (box.value) follow.value = box.value.scrollHeight - box.value.scrollTop - box.value.clientHeight < 40 }
+function clear() { state.logs.splice(0); frozen = [] }
+function toBottom() { follow.value = true; if (box.value) box.value.scrollTop = box.value.scrollHeight }
+onMounted(refreshModes)
 </script>
 
 <template>
-  <a-card size="small" :body-style="{ padding: 0 }">
-    <template #title>运行日志</template>
-    <template #extra>
-      <span class="ex">{{ state.logs.length }} 条缓冲 ·
-        <b class="e">{{ counts.error }} 错误</b> · <b class="w">{{ counts.warn }} 警告</b></span>
-    </template>
-
-    <div class="service-strip">
-      <div v-for="s in units" :key="s.name" :class="['svc', s.state, { selected: svcF === s.name }]"
-        role="button" tabindex="0" @click="svcF = svcF === s.name ? 'all' : s.name"
-        @keydown.enter="svcF = svcF === s.name ? 'all' : s.name">
-        <i /><span><b>{{ s.name }}</b><small>{{ s.desc }}</small></span>
-        <span class="svc-meta"><em>{{ s.state === 'active' ? '运行中' : s.state === 'notfound' ? '未安装' : s.state }}</em>
-          <small>PID {{ s.pid || '--' }} · {{ s.mem_mb ?? '--' }} MB · {{ dur(s.uptime) }}</small></span>
-        <a-button size="small" :loading="!!restarting[s.name]" @click.stop="restart(s)">重启</a-button>
-      </div>
-      <div v-if="!units.length" class="svc-wait">等待自建服务清单…</div>
-    </div>
-
-    <div class="coverage">
-      <b>自建服务日志覆盖 {{ activeN }}/{{ units.length }}</b>
-      <span>journal 实时流 + 每 60 秒心跳 + 服务状态变化事件</span>
-    </div>
-
-    <div class="bar">
-      <a-radio-group v-model:value="srcF" size="small" button-style="solid">
-        <a-radio-button v-for="s in SRC" :key="s[0]" :value="s[0]">{{ s[1] }}</a-radio-button>
-      </a-radio-group>
-      <a-radio-group v-model:value="lvlF" size="small">
-        <a-radio-button v-for="l in LVL" :key="l[0]" :value="l[0]">{{ l[1] }}</a-radio-button>
-      </a-radio-group>
-      <a-select v-model:value="svcF" size="small" :options="serviceOptions" show-search
-        option-filter-prop="label" style="width:260px" />
-      <a-input v-model:value="q" size="small" allow-clear placeholder="搜索关键字…" style="width:200px" />
-      <span class="sp" />
-      <a-button size="small" :type="paused ? 'primary' : 'default'" @click="paused = !paused">
-        {{ paused ? '已暂停' : '暂停' }}</a-button>
-      <a-button size="small" :disabled="follow" @click="toBottom">回到底部</a-button>
-      <a-button size="small" danger @click="clear">清空</a-button>
-    </div>
-
-    <div ref="box" class="term" @scroll="onScroll">
-      <div v-for="(e, i) in rows" :key="i" :class="['ln', e.lvl]">
-        <span class="t">{{ hhmmss(e.t) }}</span>
-        <span :class="['tag', e.from]">{{ e.from === 'ros' ? 'ROS' : 'SYS' }}</span>
-        <span class="unit">{{ e.unit || 'ros' }}</span>
-        <span class="src">{{ e.src || '-' }}</span>
-        <span class="msg">{{ e.msg }}</span>
-      </div>
-      <div v-if="!rows.length" class="empty">
-        {{ state.logs.length ? '没有匹配的日志' : '等待日志…（systemd 来自 jetson_agent，ROS 来自 /rosout）' }}
-      </div>
-    </div>
-  </a-card>
+  <div class="ops-page">
+    <section class="ops-head"><div><span>OPERATIONS / CONTROL PLANE</span><h2>运维面板</h2><p>集中查看工作负载、系统模式与实时事件；所有重启均在固定服务白名单内执行。</p></div><div class="ops-summary"><b><i/> {{ activeN }} / {{ units.length }}</b><small>工作负载就绪 · {{ usedMem.toFixed(0) }} MB 已监测</small></div></section>
+    <section class="mode-grid">
+      <article class="mode-card"><div class="mode-icon">▣</div><div><small>NODE MODE</small><b>图形桌面</b><p v-if="desktop?.error">状态读取失败</p><p v-else>{{ desktop?.enabled ? '已开启 · GNOME 正在运行' : '已关闭 · 无桌面启动' }}</p></div><a-switch :checked="!!desktop?.enabled" :loading="desktopBusy" checked-children="开" un-checked-children="关" @change="toggleDesktop" /></article>
+      <article class="mode-card"><div class="mode-icon">◇</div><div><small>NAVIGATION MODE</small><b>自主导航</b><p v-if="navigationStack?.error">状态读取失败</p><p v-else>{{ navigationStack?.running ? '运行中 · SLAM / Nav2 / 探索' : '待机 · 已释放导航资源' }}</p></div><a-switch :checked="!!navigationStack?.running" :loading="navigationBusy" checked-children="运行" un-checked-children="待机" @change="toggleNavigation" /></article>
+      <article class="mode-card core-card"><div class="mode-icon">◎</div><div><small>CORE INFRASTRUCTURE</small><b>相机 / ROS 主节点</b><p>start_app_node · 相机、ROS 与底层驱动</p></div><a-button danger size="small" :loading="!!restarting.start_app_node" @click="restart({name:'start_app_node'})">重启底层</a-button></article>
+    </section>
+    <section class="workloads"><div class="section-title"><div><span>WORKLOADS</span><b>服务 / Pod</b></div><small>点击卡片筛选下方事件流</small></div><div class="pod-grid"><article v-for="s in units" :key="s.name" :class="['pod', s.state, { selected: svcF === s.name }]" @click="svcF = svcF === s.name ? 'all' : s.name"><header><span :class="['dot', s.state]"/><code>{{ s.name }}</code><em>{{ s.state === 'active' ? 'Running' : s.state }}</em></header><p>{{ s.desc }}</p><dl><div><dt>PID</dt><dd>{{ s.pid || '—' }}</dd></div><div><dt>内存</dt><dd>{{ s.mem_mb == null ? '—' : `${s.mem_mb} MB` }}</dd></div><div><dt>运行</dt><dd>{{ dur(s.uptime) }}</dd></div></dl><footer><span>{{ s.restarts ? `重启 ${s.restarts} 次` : '稳定运行' }}</span><a-button size="small" :loading="!!restarting[s.name]" @click.stop="restart(s)">重启</a-button></footer></article><div v-if="!units.length" class="pods-wait">正在等待 jetson-agent 上报服务清单…</div></div></section>
+    <a-card class="event-card" size="small" :body-style="{ padding: 0 }"><template #title><span class="event-title">事件流 <small>{{ state.logs.length }} 条缓冲 · <b class="err">{{ counts.error }} 错误</b> · <b class="warn">{{ counts.warn }} 警告</b></small></span></template><div class="bar"><a-radio-group v-model:value="srcF" size="small" button-style="solid"><a-radio-button v-for="s in SRC" :key="s[0]" :value="s[0]">{{ s[1] }}</a-radio-button></a-radio-group><a-radio-group v-model:value="lvlF" size="small"><a-radio-button v-for="l in LVL" :key="l[0]" :value="l[0]">{{ l[1] }}</a-radio-button></a-radio-group><a-select v-model:value="svcF" size="small" :options="serviceOptions" show-search option-filter-prop="label" style="width:240px"/><a-input v-model:value="q" size="small" allow-clear placeholder="搜索事件…" style="width:180px"/><span class="sp"/><a-button size="small" :type="paused ? 'primary' : 'default'" @click="paused = !paused">{{ paused ? '已暂停' : '暂停' }}</a-button><a-button size="small" :disabled="follow" @click="toBottom">回到底部</a-button><a-button size="small" danger @click="clear">清空</a-button></div><div ref="box" class="term" @scroll="onScroll"><div v-for="(e, i) in rows" :key="i" :class="['ln', e.lvl]"><span class="t">{{ hhmmss(e.t) }}</span><span :class="['tag', e.from]">{{ e.from === 'ros' ? 'ROS' : 'SYS' }}</span><span class="unit">{{ e.unit || 'ros' }}</span><span class="src">{{ e.src || '-' }}</span><span class="msg">{{ e.msg }}</span></div><div v-if="!rows.length" class="empty">{{ state.logs.length ? '没有匹配的事件' : '等待日志…（systemd 与 ROS /rosout 合并）' }}</div></div></a-card>
+  </div>
 </template>
 
 <style scoped>
-.ex { color: var(--text-3); font-size: 13px; }
-.ex .e { color: #f14c4c; } .ex .w { color: #cca700; }
-.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px;
-  border-bottom: 1px solid var(--divider); }
-.sp { margin-left: auto; }
-.service-strip { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:8px; padding:12px;
-  background:var(--surface-2); border-bottom:1px solid var(--divider); }
-.svc { min-width:0; display:flex; align-items:center; gap:9px; text-align:left; padding:9px 10px; border-radius:7px;
-  border:1px solid var(--border); background:var(--surface); color:var(--text-2); cursor:pointer; font-family:inherit; }
-.svc:hover,.svc.selected { border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-soft); }
-.svc>i { width:8px; height:8px; flex:0 0 auto; border-radius:50%; background:var(--text-4); }
-.svc.active>i { background:#34d399; box-shadow:0 0 0 3px rgba(52,211,153,.14); }
-.svc.failed>i,.svc.inactive>i { background:#f43f5e; }
-.svc>span { min-width:0; display:flex; flex-direction:column; gap:2px; }
-.svc b { font:600 11px/1.2 var(--font-code); overflow:hidden; text-overflow:ellipsis; }
-.svc small { color:var(--text-4); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.svc-meta { margin-left:auto; text-align:right; flex:0 1 auto; }
-.svc-meta em { font-style:normal; font-size:10px; color:var(--text-4); }
-.svc-meta small { color:var(--text-4); font:10px var(--font-code); white-space:nowrap; }
-.svc-wait { color:var(--text-4); padding:8px; }
-.coverage { display:flex; align-items:center; gap:12px; padding:7px 12px; font-size:11px; color:var(--text-4);
-  border-bottom:1px solid var(--divider); }
-.coverage b { color:var(--text-2); }
-
-/* VS Code Dark+ 的集成终端配色，两个主题下都保持深色——日志本来就该是深底 */
-.term { height: calc(100vh - 590px); min-height: 300px; overflow-y: auto; background: #1e1e1e;
-  padding: 10px 14px; font-family: var(--font-code); font-size: 12.5px; line-height: 1.65;
-  border-radius: 0 0 8px 8px; }
-.ln { display: flex; gap: 10px; white-space: pre-wrap; word-break: break-word; color: #cccccc; }
-.ln .t { color: #6a9955; flex-shrink: 0; }
-.ln .tag { flex-shrink: 0; width: 30px; font-size: 11px; }
-.ln .tag.sys { color: #569cd6; } .ln .tag.ros { color: #c586c0; }
-.ln .unit { color:#dcdcaa; flex-shrink:0; width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.ln .src { color: #9cdcfe; flex-shrink: 0; max-width: 190px; overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap; }
-.ln .msg { flex: 1; min-width: 0; }
-.ln.warn .msg { color: #cca700; }
-.ln.error .msg { color: #f14c4c; }
-.ln.debug { opacity: .6; }
-.empty { color: #808080; padding: 20px 0; }
+.ops-page{max-width:1480px;margin:auto}.ops-head{display:flex;justify-content:space-between;gap:20px;padding:20px 4px 16px}.ops-head>div>span,.section-title span,.mode-card small{display:block;color:var(--accent);font:700 10px var(--font-code);letter-spacing:1.25px}.ops-head h2{margin:5px 0 4px;font-size:26px;letter-spacing:-.5px}.ops-head p{margin:0;color:var(--text-3);font-size:13px}.ops-summary{align-self:center;display:flex;flex-direction:column;align-items:flex-end}.ops-summary b{font:700 18px var(--font-code)}.ops-summary b i{display:inline-block;width:8px;height:8px;border-radius:50%;background:#34d399;box-shadow:0 0 0 4px rgba(52,211,153,.13)}.ops-summary small{color:var(--text-3);font-size:11px;margin-top:4px}.mode-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:18px}.mode-card{display:flex;align-items:center;gap:11px;min-width:0;padding:13px;border:1px solid var(--divider);border-radius:9px;background:var(--surface)}.mode-icon{display:grid;place-items:center;flex:0 0 30px;width:30px;height:30px;border-radius:7px;background:var(--accent-soft);color:var(--accent);font-weight:700}.mode-card>div:nth-child(2){min-width:0;flex:1}.mode-card b{display:block;margin:2px 0;font-size:14px}.mode-card p{margin:0;color:var(--text-3);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.workloads{padding:15px;border:1px solid var(--divider);border-radius:10px;background:var(--surface);margin-bottom:16px}.section-title{display:flex;align-items:end;justify-content:space-between;margin-bottom:12px}.section-title b{display:block;font-size:17px;margin-top:3px}.section-title small{color:var(--text-3);font-size:11px}.pod-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:9px}.pod{min-width:0;border:1px solid var(--divider);border-radius:8px;padding:11px;background:var(--surface-2);cursor:pointer;transition:.16s}.pod:hover,.pod.selected{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}.pod header{display:flex;align-items:center;gap:7px}.pod code{font:600 12px var(--font-code);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.pod header em{margin-left:auto;font:10px var(--font-code);color:var(--text-3)}.dot{width:7px;height:7px;border-radius:50%;background:var(--text-4);flex:0 0 auto}.dot.active{background:#34d399;box-shadow:0 0 0 3px rgba(52,211,153,.14)}.dot.failed,.dot.inactive{background:#f43f5e}.pod>p{height:30px;margin:8px 0;color:var(--text-3);font-size:11px;line-height:1.35;overflow:hidden}.pod dl{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin:0;padding:8px 0;border-top:1px solid var(--divider)}.pod dl div{min-width:0}.pod dt{color:var(--text-4);font-size:9px}.pod dd{margin:2px 0 0;font:11px var(--font-code);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.pod footer{display:flex;align-items:center;justify-content:space-between;color:var(--text-4);font-size:10px}.pods-wait{padding:14px;color:var(--text-3)}.event-card{margin-bottom:16px}.event-title{font-weight:600}.event-title small{font-weight:400;color:var(--text-3);margin-left:8px}.err{color:#f14c4c}.warn{color:#cca700}.bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--divider)}.sp{margin-left:auto}.term{height:calc(100vh - 690px);min-height:270px;overflow-y:auto;background:#1e1e1e;padding:10px 14px;font-family:var(--font-code);font-size:12.5px;line-height:1.65;border-radius:0 0 8px 8px}.ln{display:flex;gap:10px;white-space:pre-wrap;word-break:break-word;color:#ccc}.ln .t{color:#6a9955;flex-shrink:0}.ln .tag{flex-shrink:0;width:30px;font-size:11px}.ln .tag.sys{color:#569cd6}.ln .tag.ros{color:#c586c0}.ln .unit{color:#dcdcaa;flex-shrink:0;width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ln .src{color:#9cdcfe;flex-shrink:0;max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ln .msg{flex:1;min-width:0}.ln.warn .msg{color:#cca700}.ln.error .msg{color:#f14c4c}.empty{color:#808080;padding:20px 0}@media(max-width:900px){.mode-grid{grid-template-columns:1fr}.ops-head{display:block}.ops-summary{align-items:flex-start;margin-top:12px}.term{height:420px}}@media(max-width:600px){.workloads{padding:10px}.pod-grid{grid-template-columns:1fr}.section-title small{display:none}.bar .sp{display:none}.bar{gap:6px}.ops-head{padding-left:2px}.core-card{padding-bottom:15px}}
 </style>

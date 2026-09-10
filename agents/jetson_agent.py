@@ -17,6 +17,7 @@ HW_TOPIC = "/system/hardware"
 # 第三列是对应的脚本路径 —— 一起报它的修改时间，就能一眼看出刚推的版本有没有真的落地。
 # 列表里不存在的服务会标成「未安装」而不是报错。
 SVC_UNITS = [
+    ("start_app_node", "底层 ROS / 相机 bringup", "/home/ubuntu/web_bringup.launch.py"),
     ("webctl",        "网页服务 :8000",        "/home/ubuntu/web_control/index.html"),
     ("jetson-agent",  "遥测 / 日志 / 服务监控", "/home/ubuntu/jetson_agent.py"),
     ("snack-butler",  "视觉引导抓取",          "/home/ubuntu/snack_butler.py"),

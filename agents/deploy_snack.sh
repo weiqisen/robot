@@ -321,7 +321,7 @@ $SSH "$USER_@$ROBOT" "echo '$USER_ ALL=(root) NOPASSWD: /usr/bin/systemctl resta
 
 # 网页只能重启界面列出的 9 个自建服务；每条 sudo 命令都固定到完整 unit 参数。
 $SSH "$USER_@$ROBOT" "sudo tee /etc/sudoers.d/jetrover-webctl >/dev/null <<'EOF'
-Cmnd_Alias JETROVER_WEBCTL_RESTART = /usr/bin/systemctl restart webctl.service, /usr/bin/systemctl restart jetson-agent.service, /usr/bin/systemctl restart snack-butler.service, /usr/bin/systemctl restart explorer-agent.service, /usr/bin/systemctl restart exploration-nav.service, /usr/bin/systemctl restart nav-safety.service, /usr/bin/systemctl restart lidar-watchdog.service, /usr/bin/systemctl restart webrtc-agent.service, /usr/bin/systemctl restart llm-agent.service, /home/ubuntu/enable_desktop.sh, /home/ubuntu/disable_desktop.sh, /home/ubuntu/pause_navigation_stack.sh, /home/ubuntu/resume_navigation_stack.sh
+Cmnd_Alias JETROVER_WEBCTL_RESTART = /usr/bin/systemctl restart start_app_node.service, /usr/bin/systemctl restart webctl.service, /usr/bin/systemctl restart jetson-agent.service, /usr/bin/systemctl restart snack-butler.service, /usr/bin/systemctl restart explorer-agent.service, /usr/bin/systemctl restart exploration-nav.service, /usr/bin/systemctl restart nav-safety.service, /usr/bin/systemctl restart lidar-watchdog.service, /usr/bin/systemctl restart webrtc-agent.service, /usr/bin/systemctl restart llm-agent.service, /home/ubuntu/enable_desktop.sh, /home/ubuntu/disable_desktop.sh, /home/ubuntu/pause_navigation_stack.sh, /home/ubuntu/resume_navigation_stack.sh
 $USER_ ALL=(root) NOPASSWD: JETROVER_WEBCTL_RESTART
 EOF
 sudo chmod 440 /etc/sudoers.d/jetrover-webctl

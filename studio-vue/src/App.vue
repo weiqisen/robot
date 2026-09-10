@@ -54,7 +54,7 @@ const MENU = [
   { key: 'system', icon: ApartmentOutlined, label: '节点 · 服务', comp: markRaw(SystemView) },
   { key: 'topics', icon: UnorderedListOutlined, label: '话题总览', comp: markRaw(Topics) },
   { key: 'explorer', icon: SearchOutlined, label: '话题浏览器', comp: markRaw(Explorer) },
-  { key: 'logs', icon: FileTextOutlined, label: '运行日志', comp: markRaw(Logs) },
+  { key: 'logs', icon: FileTextOutlined, label: '运维面板', comp: markRaw(Logs) },
   { key: 'docs', icon: FileTextOutlined, label: '项目文档', comp: markRaw(Docs) },
   { group: '操作' },
   { key: 'control', icon: ControlOutlined, label: '实时控制', comp: markRaw(Control), full: true },
