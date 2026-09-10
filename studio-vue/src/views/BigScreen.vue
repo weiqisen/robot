@@ -409,7 +409,7 @@ onUnmounted(() => {
           <div class="scene-head"><span>数字孪生</span><b>实时姿态</b></div>
           <div v-if="!actionPanelCollapsed" class="scene-action-card">
             <div><small>动作组</small><b>{{ actionRunning ? `执行中 · ${actionStep}/${actionTotal}` : '工具台快捷执行' }}</b></div>
-            <div class="scene-action-grid"><button v-for="g in actionGroups" :key="g" :class="{ selected: actionGroup === g, running: actionGroup === g && actionRunning }" :title="g" @click="actionGroup=g"><span>{{ actionLabel(g) }}</span><i @click.stop="actionGroup=g;runActionGroup()">▶</i></button></div>
+            <div class="scene-action-grid"><button v-for="g in actionGroups" :key="g" :class="{ selected: actionGroup === g, running: actionGroup === g && actionRunning }" :title="`${actionLabel(g)} · 点击执行`" @click="actionGroup=g;runActionGroup()"><span>{{ actionLabel(g) }}</span><i>▶</i></button></div>
             <div class="scene-action-buttons"><button v-if="actionRunning" class="stop" @click="stopActionGroup">停止</button><button v-else :disabled="!actionGroups.length" @click="runAllActionGroups">一键执行全部</button><button @click="loadActionGroups">刷新</button></div>
           </div>
           <div class="scene-status">

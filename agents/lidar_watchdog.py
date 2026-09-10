@@ -2,7 +2,6 @@
 """观察雷达 USB/scan 状态；雷达可由操作者物理关闭，不能因此重启整套 ROS。"""
 import os
 import glob
-import subprocess
 import time
 
 import rclpy
