@@ -1123,6 +1123,8 @@ function animateServoPose(pulses, durationMs = 1000) {
     const id = [1, 2, 3, 4, 5, 10][k]
     const mp = SERVO_MAP.find(m => m.id === id), j = mp && robot?.joints?.[mp.joint]
     if (!mp || !j) return null
+    // 取消正在追赶旧回报的插值，动作组轨迹在本次时长内独占该关节。
+    feedbackAnim.set(mp.joint, (feedbackAnim.get(mp.joint) || 0) + 1)
     const token = (jointAnim.get(id) || 0) + 1
     jointAnim.set(id, token)
     const target = angleForServo(mp, j, pulse)

@@ -92,8 +92,10 @@ const actionStep = ref(0), actionTotal = ref(0)
 const actionLabel = name => actionGroupLabel(name, actionGroups.value)
 async function loadActionGroups() { try { const r = await fetch(ACTION_API, { cache:'no-store' }); const j = await r.json(); if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`); actionGroups.value = j.groups || [] } catch (e) { message.error(`动作组读取失败：${e.message}`) } }
 function playActionRow(row, ms) {
-  // 工作台孪生严格跟随真实关节反馈，不在浏览器里预演尚未发生的目标姿态。
   actions.setServosCtl([1, 2, 3, 4, 5, 10].map((id, k) => ({ id, position: row.servos[k] })), ms / 1000)
+  // 与真实控制器使用相同的行时长，只驱动当前这一具模型；没有额外目标模型/预演层。
+  try { twinRef.value?.animateServoPose(row.servos, ms) }
+  catch (e) { console.warn('数字孪生动作动画失败，不影响机械臂执行', e) }
 }
 async function runActionGroup() {
   if (!actionGroup.value) return message.warning('请先点击选择一个动作组')
