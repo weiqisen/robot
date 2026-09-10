@@ -90,15 +90,19 @@ const actionStep = ref(0), actionTotal = ref(0)
 const actionLabel = name => ({ camera_up:'相机上抬', init:'初始化', pick:'抓取', place:'放置', horizontal:'水平姿态' }[name] || `动作组 ${actionGroups.value.indexOf(name) + 1}`)
 async function loadActionGroups() { try { const r = await fetch('/api/actions', { cache:'no-store' }); const j = await r.json(); if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`); actionGroups.value = j.groups || [] } catch (e) { message.error(`动作组读取失败：${e.message}`) } }
 async function runActionGroup() {
-  if (!actionGroup.value || !state.connected || actionRunning.value) return
+  if (!actionGroup.value) return message.warning('请先点击选择一个动作组')
+  if (!state.connected) return message.error('ROS 未连接，动作组未执行')
+  if (actionRunning.value) return
   let r, j
   try { r = await fetch(`/api/actions/${encodeURIComponent(actionGroup.value)}`, { cache:'no-store' }); j = await r.json() } catch (e) { return message.error(`动作组读取失败：${e.message}`) }
   if (!r.ok || !j.rows?.length) return message.error(j.error || '动作组读取失败或为空')
-  actionRunning.value = true; actionStep.value = 0; actionTotal.value = j.rows.length
+  actionRunning.value = true; actionStep.value = 0; actionTotal.value = j.rows.length; message.success(`开始执行：${actionLabel(actionGroup.value)}`)
   try { for (let i=0; i<j.rows.length && actionRunning.value; i++) { const row=j.rows[i], ms=row.time||1000; actionStep.value=i+1; row.servos.forEach((pulse,k) => twinRef.value?.animateJointByServoId([1,2,3,4,5,10][k], pulse, ms)); actions.setServosCtl([1,2,3,4,5,10].map((id,k)=>({id,position:row.servos[k]})),ms/1000); await new Promise(res=>setTimeout(res,ms)) } } finally { actionRunning.value=false }
 }
 async function runAllActionGroups() {
-  if (actionRunning.value || !actionGroups.value.length) return
+  if (!actionGroups.value.length) return message.warning('动作组列表为空，请先刷新')
+  if (!state.connected) return message.error('ROS 未连接，动作组未执行')
+  if (actionRunning.value) return
   actionRunning.value = true
   try { for (const name of actionGroups.value) { if (!actionRunning.value) break; actionGroup.value = name; const r = await fetch(`/api/actions/${encodeURIComponent(name)}`, { cache:'no-store' }); const j = await r.json(); if (!r.ok) { message.error(j.error || `动作组读取失败：${name}`); continue } actionTotal.value=j.rows?.length||0; for (let i=0;i<(j.rows||[]).length && actionRunning.value;i++){const row=j.rows[i],ms=row.time||1000;actionStep.value=i+1;row.servos.forEach((pulse,k)=>twinRef.value?.animateJointByServoId([1,2,3,4,5,10][k],pulse,ms));actions.setServosCtl([1,2,3,4,5,10].map((id,k)=>({id,position:row.servos[k]})),ms/1000);await new Promise(res=>setTimeout(res,ms))} } } finally { actionRunning.value=false }
 }
@@ -405,7 +409,7 @@ onUnmounted(() => {
           <div v-if="!actionPanelCollapsed" class="scene-action-card">
             <div><small>动作组</small><b>{{ actionRunning ? `执行中 · ${actionStep}/${actionTotal}` : '工具台快捷执行' }}</b></div>
             <div class="scene-action-grid"><button v-for="g in actionGroups" :key="g" :class="{ selected: actionGroup === g, running: actionGroup === g && actionRunning }" :title="g" @click="actionGroup=g"><span>{{ actionLabel(g) }}</span><i @click.stop="actionGroup=g;runActionGroup()">▶</i></button></div>
-            <div class="scene-action-buttons"><button v-if="actionRunning" class="stop" @click="stopActionGroup">停止</button><button v-else :disabled="!state.connected || !actionGroups.length" @click="runAllActionGroups">一键执行全部</button><button @click="loadActionGroups">刷新</button></div>
+            <div class="scene-action-buttons"><button v-if="actionRunning" class="stop" @click="stopActionGroup">停止</button><button v-else :disabled="!actionGroups.length" @click="runAllActionGroups">一键执行全部</button><button @click="loadActionGroups">刷新</button></div>
           </div>
           <div class="scene-status">
             <div><small>线速度</small><b>{{ vx.toFixed(2) }} <em>m/s</em></b></div>
