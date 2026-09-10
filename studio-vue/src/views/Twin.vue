@@ -1042,26 +1042,26 @@ const jval = reactive({ 1: 500, 2: 500, 3: 500, 4: 500, 5: 500, 10: 500 })
 let sq = {}, st = null
 function sendServo(id, pos) { sq[id] = pos; if (st) return; st = setTimeout(() => { st = null; const position = Object.entries(sq).map(([i, p]) => ({ id: +i, position: +p })); sq = {}; actions.setServosCtl(position, 0.8) }, 60) }
 function onSlider(id, v) { jval[id] = v; sendServo(id, v); driveModelJoint(SERVO_MAP.find(m => m.id === id).joint, v) }
-function driveModelJoint(name, pulse) {
-  if (!robot || !robot.joints[name]) return
-  const j = robot.joints[name]; let lo = -1.57, hi = 1.57
+function angleForServo(mp, j, pulse) {
+  let lo = -1.57, hi = 1.57
   if (j.limit && +j.limit.lower !== +j.limit.upper) { lo = +j.limit.lower; hi = +j.limit.upper }
-  const mp = SERVO_MAP.find(m => m.joint === name)
-  let angle
   if (mp && mp.id !== 10) {
-    // 与机器人端 ServoMap 完全同口径：pulse = center + dir * angle * 238.732。
-    const sm = state.snack?.servo_map
-    const idx = mp.id - 1
+    const sm = state.snack?.servo_map, idx = mp.id - 1
     const dir = Number(sm?.dirs?.[idx]) || 1
     const center = Number.isFinite(+sm?.centers?.[idx]) ? +sm.centers[idx] : 500
-    angle = (pulse - center) / (dir * (1000 / (Math.PI * 240 / 180)))
-  } else {
-    angle = lo + (pulse / 1000) * (hi - lo)
+    return Math.max(lo, Math.min(hi, (pulse - center) / (dir * (1000 / (Math.PI * 240 / 180)))))
   }
-  angle = Math.max(lo, Math.min(hi, angle))
+  return lo + (pulse / 1000) * (hi - lo)
+}
+function driveModelJoint(name, pulse) {
+  if (!robot || !robot.joints[name]) return
+  const j = robot.joints[name]
+  const mp = SERVO_MAP.find(m => m.joint === name)
+  const angle = angleForServo(mp, j, pulse)
   robot.setJointValue(name, angle)
   jointPreview.set(name, { angle, expires: Date.now() + 3200 })
   updateJointAngles()     // 本地拖动也要刷标签，别等回传
+  return angle
 }
 function syncArm() { actions.once('/controller_manager/servo_states', 'servo_controller_msgs/msg/ServoStateList', m => { (m.servo_state || []).forEach(s => { if (jval[s.id] != null) { jval[s.id] = s.position; const mp = SERVO_MAP.find(x => x.id === s.id); if (mp) driveModelJoint(mp.joint, s.position) } }) }) }
 
@@ -1077,9 +1077,7 @@ function animateJointByServoId(id, pulse, durationMs = 1000) {
   if (!mp || !j) return setJointByServoId(id, pulse)
   const token = (jointAnim.get(id) || 0) + 1; jointAnim.set(id, token)
   const from = j.angle || 0
-  driveModelJoint(mp.joint, pulse)
-  const target = j.angle || from
-  j.angle = from
+  const target = angleForServo(mp, j, pulse)
   const started = performance.now(), ms = Math.max(80, Number(durationMs) || 1000)
   const frame = now => {
     if (jointAnim.get(id) !== token || !robot) return
