@@ -1079,6 +1079,9 @@ function animateJointByServoId(id, pulse, durationMs = 1000) {
   const from = j.angle || 0
   const target = angleForServo(mp, j, pulse)
   const started = performance.now(), ms = Math.max(80, Number(durationMs) || 1000)
+  // 动作组动画与 /joint_states 是两套写入源。动画期锁住实时回传，
+  // 否则旧反馈会把模型拉回旧姿态，下一帧动画再拉到新姿态，形成“幻影”。
+  jointPreview.set(mp.joint, { angle: target, expires: Date.now() + ms + 1000 })
   const frame = now => {
     if (jointAnim.get(id) !== token || !robot) return
     const t = Math.min(1, (now - started) / ms), eased = t * t * (3 - 2 * t)
