@@ -2569,8 +2569,8 @@ onBeforeUnmount(() => {
         <button v-for="t in [['lidar','雷达'],['grid','网格'],['points','点云'],['tags','关节标注'],['ik','IK'],
           ['workspace','工作区'],['selfbody','遮挡区'],['dimensions','尺寸'],['axes','坐标轴'],['detections','识别目标'],['intent','动作意图']]"
           :key="t[0]" :class="{ on: tools[t[0]] }" @click="toggleTool(t[0])">{{ t[1] }}</button>
+        <button :class="{ on: props.actionGroupOpen }" @click="emit('toggle-action-group')">动作组矩阵</button>
       </div>
-      <div class="sp-actions"><button :class="{ on: props.actionGroupOpen }" @click="emit('toggle-action-group')">动作组矩阵</button></div>
     </div>
     <div v-if="sceneMenu === 'view'" class="scene-pop glass">
       <div class="sp-title">镜头视角 <button @click="sceneMenu = ''">×</button></div>
@@ -2853,7 +2853,8 @@ onBeforeUnmount(() => {
   border-bottom:1px solid rgba(148,163,184,.12); margin-bottom:8px; }
 .sp-title button { margin-left:auto; font-size:17px; color:#64748B; padding:0 3px; }
 .sp-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:5px; }
-.sp-grid button,.sp-actions button { padding:8px 6px; border-color:rgba(148,163,184,.12); }
+.sp-grid button,.sp-actions button { padding:8px 6px; border-color:rgba(148,163,184,.12); background:rgba(15,23,42,.5); color:#CBD5E1; }
+.sp-grid button:hover,.sp-grid button.on { color:#A5F3FC; border-color:rgba(34,211,238,.48); background:linear-gradient(180deg,rgba(8,145,178,.24),rgba(14,116,144,.13)); }
 .sp-actions button { background:rgba(15,23,42,.5); color:#CBD5E1; }
 .sp-actions button:hover { color:#F1F5F9; border-color:rgba(103,232,249,.4); background:rgba(14,116,144,.16); }
 .sp-actions button.on { color:#A5F3FC; border-color:rgba(34,211,238,.48);
