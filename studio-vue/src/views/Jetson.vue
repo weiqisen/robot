@@ -247,7 +247,7 @@ onMounted(refreshDesktop)
     <a-empty v-if="!sysinfo.length" description="无数据" />
   </a-card>
   <a-modal v-model:open="inspectOpen" :title="inspectKind==='cpu'?'CPU 占用明细':inspectKind==='memory'?'内存占用明细':'磁盘空间明细'" :footer="null" width="880px" :body-style="{ maxHeight:'calc(100vh - 180px)', overflow:'hidden' }">
-    <a-spin :spinning="inspecting"><template v-if="inspectKind==='disk'"><p v-if="inspectFs" class="detail-note">根分区：已用 {{fmtGb(inspectFs.used)}} / {{fmtGb(inspectFs.total)}}，剩余 {{fmtGb(inspectFs.free)}}</p><a-table :data-source="inspectRows" :pagination="{pageSize:12}" :scroll="{ y:'calc(100vh - 360px)' }" size="small" row-key="path"><a-table-column title="目录" data-index="path"/><a-table-column title="占用空间" data-index="bytes"><template #default="{text}">{{fmtGb(text)}}</template></a-table-column></a-table></template><template v-else><p class="detail-note">按 {{inspectKind==='cpu'?'CPU':'内存'}} 从高到低排列；RSS 是进程实际驻留内存。</p><a-table :data-source="inspectRows" :pagination="{pageSize:12}" :scroll="{ y:'calc(100vh - 360px)', x:680 }" size="small" row-key="pid"><a-table-column title="进程" data-index="name" width="110" ellipsis/><a-table-column title="PID" data-index="pid" width="58"/><a-table-column title="CPU" data-index="cpu" width="68"><template #default="{text}">{{text}} %</template></a-table-column><a-table-column title="内存" data-index="rss_mb" width="78"><template #default="{text}">{{text}} MB</template></a-table-column><a-table-column title="命令" data-index="cmd" ellipsis/></a-table></template></a-spin>
+    <a-spin :spinning="inspecting"><template v-if="inspectKind==='disk'"><p v-if="inspectFs" class="detail-note">根分区：已用 {{fmtGb(inspectFs.used)}} / {{fmtGb(inspectFs.total)}}，剩余 {{fmtGb(inspectFs.free)}}</p><a-table :data-source="inspectRows" :pagination="{pageSize:12}" :scroll="{ y:'calc(100vh - 360px)' }" size="small" row-key="path"><a-table-column title="目录" data-index="path"/><a-table-column title="占用空间" data-index="bytes"><template #default="{text}">{{fmtGb(text)}}</template></a-table-column></a-table></template><template v-else><p class="detail-note">按 {{inspectKind==='cpu'?'CPU':'内存'}} 从高到低排列；RSS 是进程实际驻留内存。</p><a-table class="task-process-table" :data-source="inspectRows" :pagination="{pageSize:12}" :scroll="{ y:'calc(100vh - 360px)' }" :table-layout="'fixed'" size="small" row-key="pid"><a-table-column title="进程" data-index="name" :width="92" ellipsis/><a-table-column title="PID" data-index="pid" :width="54"/><a-table-column title="CPU" data-index="cpu" :width="58"><template #default="{text}">{{text}} %</template></a-table-column><a-table-column title="内存" data-index="rss_mb" :width="72"><template #default="{text}">{{text}} MB</template></a-table-column><a-table-column title="命令" data-index="cmd" ellipsis/></a-table></template></a-spin>
   </a-modal>
 </template>
 
@@ -299,6 +299,7 @@ onMounted(refreshDesktop)
 .sv { font-size: 14px; color: var(--text-1); font-family: var(--font-code);
   word-break: break-all; margin-top: 2px; }
 .detail-note{color:var(--text-3);font-size:12px}
+:deep(.task-process-table .ant-table-content > table) { table-layout:fixed !important; width:100% !important; }
 
 @media (max-width: 1200px) {
   .hero { grid-template-columns: 1fr; }
