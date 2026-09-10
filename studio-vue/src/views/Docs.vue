@@ -3,14 +3,17 @@ import { computed, ref, watch } from 'vue'
 import { marked } from 'marked'
 
 const docs = [
-  { key: 'README.md', label: '项目说明' },
-  { key: 'AGENTS.md', label: '会话指南' },
+  { key: 'README.md', label: '项目概览' },
+  { key: 'docs/GETTING_STARTED.md', label: '快速开始' },
   { key: 'docs/ARCHITECTURE.md', label: '架构与代码地图' },
-  { key: 'docs/DEPLOYMENT.md', label: '部署与运维' },
+  { key: 'WEB_PROJECT_GUIDE.md', label: 'Web 开发者指南' },
+  { key: 'docs/DEPLOYMENT.md', label: '部署指南' },
   { key: 'docs/OPERATIONS_RUNBOOK.md', label: '运维手册' },
   { key: 'docs/SNACK_BUTLER.md', label: '视觉抓取' },
   { key: 'docs/AUTONOMOUS_EXPLORATION.md', label: '自主探索' },
   { key: 'docs/POWER_AND_USB.md', label: '供电与 USB' },
+  { key: 'docs/LOCAL_SIMULATOR.md', label: '本地模拟器' },
+  { key: 'docs/HIGH_AVAILABILITY_ROADMAP.md', label: '高可用路线' },
 ]
 const selected = ref(docs[0].key)
 const raw = ref('')
@@ -18,25 +21,6 @@ const loading = ref(false)
 const error = ref('')
 const title = computed(() => docs.find(d => d.key === selected.value)?.label || selected.value)
 
-/* Markdown is rendered with GFM support so tables and task lists remain readable. */
-function renderMarkdown(text) {
-  const lines = text.replace(/\r/g, '').split('\n'), out = []
-  let inCode = false, code = [], list = false
-  const closeList = () => { if (list) { out.push('</ul>'); list = false } }
-  for (const line of lines) {
-    if (line.startsWith('```')) { if (inCode) { out.push(`<pre><code>${escapeHtml(code.join('\n'))}</code></pre>`); code=[] } inCode=!inCode; continue }
-    if (inCode) { code.push(line); continue }
-    if (!line.trim()) { closeList(); continue }
-    const h = line.match(/^(#{1,3})\s+(.*)$/)
-    if (h) { closeList(); out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`); continue }
-    const li = line.match(/^\s*[-*]\s+(.*)$/)
-    if (li) { if (!list) { out.push('<ul>'); list=true } out.push(`<li>${inline(li[1])}</li>`); continue }
-    closeList(); out.push(`<p>${inline(line)}</p>`)
-  }
-  if (inCode) out.push(`<pre><code>${escapeHtml(code.join('\n'))}</code></pre>`)
-  closeList(); return out.join('')
-}
-function inline(s) { return escapeHtml(s).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>') }
 marked.setOptions({ gfm: true, breaks: false })
 const html = computed(() => marked.parse(raw.value))
 async function load() {

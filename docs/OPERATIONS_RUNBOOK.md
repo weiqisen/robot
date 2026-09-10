@@ -1,117 +1,104 @@
-# 机器人运维手册
+# 运维手册
 
-本手册用于日常排障。先观察、记录，再进行最小范围的恢复；**机器人正在移动、机械臂正在执行时，禁止重启 ROS、相机或导航服务**。需要重启时，先停止任务并确认安全闸门锁定。
+“运维面板”是 JetRover 的日常入口：它将受管 systemd 服务以工作负载卡片展示，保留实时事件日志，并把可执行操作限制为明确、可追溯的命令。先看状态和日志，再处理故障；不要用猜测性的重启覆盖根因。
 
-## 0. 排障原则
+## 面板怎么读
 
-1. 先在「运行日志」查看服务状态、最近日志和重启次数，再登录机器人。
-2. 一次只处理一个服务；重启后至少观察 30 秒，确认现象是否消失。
-3. `start_app_node.service` 是底层 ROS/传感器启动器，重启影响雷达、相机、底盘和导航；它不是常规的“刷新相机”按钮。
-4. 不要连续反复重启。若两次最小恢复无效，保留日志并转向硬件、供电、USB 或配置排查。
+| 区域 | 含义 | 操作原则 |
+| --- | --- | --- |
+| 顶部紧凑状态 | 图形桌面、自主导航待机、基础 ROS bringup 等全局模式 | 这些是资源/依赖级操作，先阅读悬浮说明 |
+| WORKLOADS 服务 / Pod | 项目受管服务的 PID、内存、存活状态 | 悬浮卡片可看职责与最终命令；复制图标仅复制，不执行 |
+| 重启/停止图标 | 调用服务白名单中的 systemd 操作 | 重启优先；停止只用于你确认暂时不需要的非安全组件 |
+| 实时事件日志 | journal、rosout 与服务状态变化 | 按时间、来源和级别定位第一次异常，而非最后一条连锁报错 |
 
-## 1. 快速健康检查
+`webctl` 不允许从网页停止，避免把当前管理入口一起关掉。`nav-safety` 是速度安全边界，正常情况下也不应停止。
 
-在 Mac 终端执行（将 `<机器人IP>` 换为实际地址）：
+## 快速健康检查
 
-```bash
-ssh ubuntu@<机器人IP> 'systemctl --no-pager --full status webctl snack-butler explorer-agent exploration-nav nav-safety lidar-watchdog jetson-agent webrtc-agent'
-curl -I http://<机器人IP>:8000/
-curl http://<机器人IP>:8091/health
+每次上车或异常后，按以下顺序判断：
+
+1. **电源与网络**：电压没有告警，网页仍能响应。
+2. **基础 ROS**：`start_app_node` 运行，且相机/底盘等基础话题有更新。
+3. **业务服务**：`snack-butler`、视频服务、导航服务是否按当前任务模式运行。
+4. **实际数据**：相机必须有帧率，ROS 话题必须有新时间戳；“端口可连接”不足以证明正常。
+5. **安全状态**：底盘驱动在非任务状态应锁定；机械臂附近保持清场。
+
+## 服务恢复决策树
+
+```text
+页面异常或数据缺失
+  ├─ 网页打不开？
+  │   └─ 检查/重启 webctl；确认 :8000 与网络
+  ├─ 某个业务卡片离线？
+  │   └─ 看该服务最近日志 → 重启该单一服务 → 观察是否恢复
+  ├─ 相机黑屏或帧率为 0？
+  │   ├─ 看 WebRTC 与 MJPEG/视觉流是否真的有帧
+  │   ├─ 先恢复 vision-video / webrtc-agent
+  │   ├─ 再恢复 snack-butler（标注图/检测异常）
+  │   └─ 上游相机话题仍为 0 时，最后才重启 start_app_node
+  ├─ 导航异常？
+  │   └─ 先确认雷达、TF、地图和 nav-safety；再看 exploration-nav/explorer-agent
+  └─ 多个基础话题同时消失？
+      └─ 记录日志后检查并恢复 start_app_node
 ```
 
-重点关注：服务是否 `active (running)`、`NRestarts` 是否持续增加、底盘电压是否足够、ROS 是否已连接。`llm-agent` 未配置密钥时不运行是正常的。
+每次操作后给服务一个完整启动窗口，再判断结果。反复点击重启会掩盖启动失败、触发 systemd 限速，也会让日志失去连续性。
 
-## 2. 运行日志空白
+## 视频链路与黑屏
 
-### 表现
+实时画面优先 WebRTC，以降低延迟；MJPEG 是兼容和诊断回退。页面旁的传输标签、帧率和服务卡片应结合看：
 
-「运行日志」显示服务正常，但终端区域没有任何日志。
+| 现象 | 更可能的层 | 首选处理 |
+| --- | --- | --- |
+| WebRTC 黑屏，MJPEG 有帧 | WebRTC 信令/浏览器媒体层 | 刷新页面，再重启 `webrtc-agent` |
+| 两条路径都无帧，视觉服务仍在线 | 视觉转发订阅/编码层 | 重启 `vision-video`，观察帧率 |
+| 标注图无更新但原始画面正常 | 抓取检测层 | 查看并重启 `snack-butler` |
+| RGB/深度话题都停 | 基础相机 bringup | 记录首个错误后重启 `start_app_node` |
 
-### 处理顺序
+`vision-stream-guard` 会自动监测连续无 JPEG：先尝试恢复视频桥；若恢复后上游仍无帧，才升级为重启 `start_app_node`。该恢复链不发送底盘或机械臂运动命令。
 
-1. 刷新网页，等待最多 15 秒；页面会展示服务启动快照，机器人端也会补发服务启动与心跳事件。
-2. 检查遥测代理：
+## 资源管理
 
-```bash
-ssh ubuntu@<机器人IP> 'sudo systemctl status jetson-agent --no-pager; sudo journalctl -u jetson-agent -n 100 --no-pager'
-```
+### 图形桌面
 
-3. 仅在 `jetson-agent` 异常时重启它：
+图形桌面会占用明显 CPU/内存，特别是 `gnome-shell`。在只通过网页远程操作时，可从运维面板关闭“图形桌面”；这会停止显示管理器并切换到无桌面启动。需要使用 7 英寸触摸屏或本地图形程序时再开启。
 
-```bash
-ssh ubuntu@<机器人IP> 'sudo systemctl restart jetson-agent'
-```
+这不是卸载桌面。开关恢复后桌面仍可用；如果只是查看网页，优先用浏览器远程访问而不是长期保持本地桌面。
 
-4. 若网页其他 ROS 数据也离线，再检查 `rosbridge` 的 9090 端口；不要因此重启全部 ROS。
+### 自主导航待机
 
-## 3. 抓取页相机无画面
+导航待机会释放 SLAM/Nav2 与探索调度占用的内存和 CPU，适合以视觉抓取为主的场景。待机状态下：
 
-### 区分故障层
+- 停止 `explorer-agent` 和在线导航栈。
+- 保留相机、抓取、雷达守护、底盘安全闸门与网页。
+- 不应尝试探索、返航或依赖 Nav2 的移动任务。
 
-| 检查结果 | 含义 | 下一步 |
-|---|---|---|
-| `snack-butler` 未运行 | 视觉处理服务故障 | 仅重启 `snack-butler` |
-| `/snack_butler/image_result` 无帧 | 原始 RGB 相机或 ROS 图像链路故障 | 检查 RGB 话题和相机驱动 |
-| 原始图像有帧、页面无画面 | 网页/MJPEG/WebRTC 链路故障 | 检查 `web_video_server`、浏览器网络与 `webrtc-agent` |
-| 相机驱动已识别设备但长期无帧 | 常见为 USB 带宽、供电、线材或相机固件问题 | 停止任务，做物理检查；不要循环重启 |
+恢复后应等待地图/TF/雷达状态稳定，再发起导航任务。
 
-### 安全检查命令
+### 任务管理器
 
-```bash
-ssh ubuntu@<机器人IP> 'source ~/.zshrc; ros2 topic list | grep -E "depth_cam/rgb/image_raw|snack_butler/image_result"'
-ssh ubuntu@<机器人IP> 'source ~/.zshrc; timeout 8 ros2 topic hz /depth_cam/rgb/image_raw --qos-reliability best_effort'
-ssh ubuntu@<机器人IP> 'curl -I "http://127.0.0.1:8080/stream?topic=/snack_butler/image_result&type=mjpeg"'
-ssh ubuntu@<机器人IP> 'sudo journalctl -u snack-butler -n 120 --no-pager'
-```
+Jetson 页面中 CPU、内存、磁盘卡片可打开明细：CPU/内存按进程占用排序，磁盘展示目录占用。高内存并不自动意味着泄漏：视觉、WebRTC、SLAM/Nav2 和 ROS bridge 都会保留图像/地图/队列。先对比一段时间内的趋势与具体命令，再决定是否进入导航待机或恢复单个服务。
 
-相机图像通常采用 best-effort QoS，未带 `--qos-reliability best_effort` 的 `ros2 topic hz` 结果不能作为“无帧”的结论。
+## 常见日志解释
 
-### 恢复边界
+| 日志 | 含义与优先级 |
+| --- | --- |
+| `Failed to meet update rate` | 节点本次循环超过目标周期。持续出现时检查 CPU、传感器输出频率和运行中的导航/桌面负载。 |
+| `Timed out waiting for transform` / `frame does not exist` | TF 或定位链路尚未就绪。确认雷达、SLAM/Nav2、时间戳和当前是否处于导航待机。 |
+| 端口在线但画面 0 FPS | 进程在，不代表有上游帧。按视频链路逐层排查。 |
+| `IK 无解` / 目标不可达 | 安全判断阻止抓取。重新放置目标或调整观察位，不能靠重启解决。 |
 
-- 仅 `snack-butler` 异常：确认任务停止后重启 `sudo systemctl restart snack-butler`。
-- 相机驱动本身无帧：先确认底盘静止、探索已停止、安全闸门锁定；最多一次重启 `start_app_node.service`，随后观察。
-- 若仍无帧，检查 USB 线缆、接口、供电与 USB 速率。两台 Orbbec 相机降到 USB 2.0（`480`）时，同时开启 RGB、深度、IR 容易带宽不足；应优先恢复 USB 3.x 连接，而不是继续重启软件。
+## CLI 对照（高级使用者）
 
-查看 USB 链路：
+网页的操作最终落在受限的 systemd 命令。需要 SSH 排障时，优先使用只读命令：
 
 ```bash
-ssh ubuntu@<机器人IP> 'for f in /sys/bus/usb/devices/*/speed; do printf "%s " "$f"; cat "$f"; done'
-ssh ubuntu@<机器人IP> 'sudo dmesg | tail -n 160 | grep -iE "orbbec|uvc|usb"'
+systemctl status snack-butler start_app_node webrtc-agent vision-video --no-pager
+journalctl -u snack-butler -u start_app_node -n 120 --no-pager
 ```
 
-## 4. 服务异常、反复重启
+确认范围后再用 `sudo systemctl restart <受影响服务>`，一次只恢复一层。不要使用 `pkill`、`kill -9` 或在不理解依赖时批量重启。
 
-```bash
-ssh ubuntu@<机器人IP> 'sudo systemctl show snack-butler -p ActiveState -p SubState -p NRestarts -p ExecMainStatus'
-ssh ubuntu@<机器人IP> 'sudo journalctl -u snack-butler -n 150 --no-pager'
-```
+## 升级与记录
 
-先处理日志中的第一条明确错误（依赖、ROS 环境、端口、配置），不要只看最后一次重启。单服务恢复命令：
-
-```bash
-ssh ubuntu@<机器人IP> 'sudo systemctl restart <服务名>'
-```
-
-推荐的最小影响顺序：`webctl` → `jetson-agent` / `webrtc-agent` → `snack-butler` / `explorer-agent`。`exploration-nav` 与 `start_app_node` 会影响移动能力，必须在停止任务后操作。
-
-## 5. 探索不能走、返航无反应
-
-1. 先看页面是否提示安全闸门、Nav2、雷达、地图和返航原点状态。
-2. 查看 `explorer-agent`、`exploration-nav`、`nav-safety` 的最近日志。
-3. 近障急停连续发生时，不应连续点击探索；先清理车身周围障碍，检查机械臂是否处于收纳/观察位。
-4. 没有返航原点时，先在安全开阔区域重新开始一次探索，让系统记录原点；紧急情况优先手动接管。
-
-```bash
-ssh ubuntu@<机器人IP> 'sudo journalctl -u explorer-agent -u exploration-nav -u nav-safety -n 160 --no-pager'
-```
-
-## 6. 部署后自检与回滚
-
-部署完成后先验证网页、服务和相机，不要立即下发抓取或探索任务。
-
-```bash
-curl -I http://<机器人IP>:8000/
-ssh ubuntu@<机器人IP> 'systemctl is-active webctl snack-butler explorer-agent exploration-nav nav-safety jetson-agent webrtc-agent'
-```
-
-需要回滚时，开发机切换到已知 Git 提交，重新部署；`snack_butler_config.json` 是独立标定数据，代码回滚不会回退它。详见 [部署与运维](DEPLOYMENT.md)。
+故障恢复后，请记录：最先出现的现象、首条相关日志、执行过的服务操作、是否恢复、当时的电压/资源/雷达状态。随后按[部署指南](DEPLOYMENT.md)更新到已验证版本；部署脚本会统一重建网页、文档和服务定义，避免远端手工修改造成漂移。

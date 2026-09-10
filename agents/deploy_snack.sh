@@ -41,7 +41,7 @@ echo "== 推送网页"
 # 把项目文档一起放入静态包，后台「项目文档」页直接读取这些原始 Markdown。
 rm -rf "$HERE/studio-vue/dist/project-docs"
 mkdir -p "$HERE/studio-vue/dist/project-docs/docs"
-cp "$HERE/README.md" "$HERE/AGENTS.md" "$HERE/studio-vue/dist/project-docs/"
+cp "$HERE/README.md" "$HERE/AGENTS.md" "$HERE/WEB_PROJECT_GUIDE.md" "$HERE/studio-vue/dist/project-docs/"
 cp "$HERE"/docs/*.md "$HERE/studio-vue/dist/project-docs/docs/"
 # macOS 会把 com.apple.* 扩展属性写进 tar，Linux 解包时刷几十行无意义警告。
 COPYFILE_DISABLE=1 tar -C "$HERE/studio-vue/dist" -czf /tmp/webctl.tgz .

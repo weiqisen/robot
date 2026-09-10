@@ -1,177 +1,108 @@
-# 部署与运维
+# 部署指南
+
+本指南用于把仓库更新安全地部署到 JetRover。正式入口只有一个：`agents/deploy_snack.sh`。它会构建网页、连同项目文档一起打包，推送机器人端脚本，并更新/重启受管服务。
 
 ## 部署模型
 
-开发机负责构建 Vue 静态文件，再通过 SSH/SCP 复制到机器人。生产文件位于 `/home/ubuntu/web_control`，Python agents 位于 `/home/ubuntu`，服务由 systemd 常驻。
-
-默认值：
-
 ```text
-机器人地址  192.168.3.63
-SSH 用户    ubuntu
-网页地址    http://<机器人IP>:8000
+开发机仓库
+  └─ agents/deploy_snack.sh
+       ├─ npm run build → studio-vue/dist
+       ├─ 复制 README 与 docs → dist/project-docs
+       ├─ SCP 网页与 agents 到 /home/ubuntu/
+       ├─ 更新 webctl / snack-butler / 相关 systemd 单元
+       └─ 重启已安装的守护服务，输出服务状态
 ```
 
-## 前置条件
+不要直接修改 `studio-vue/dist`：下一次构建会覆盖它。机器人上的标定配置 `/home/ubuntu/snack_butler_config.json` 是机器专属文件，脚本只会在缺失时创建空文件，不会覆盖现有标定。
 
-开发机需要 Node.js/npm、`ssh`、`scp`、`tar`、`nc`。使用密码自动登录时还需要 `sshpass`；更推荐配置 SSH key。
+## 环境要求
 
-项目根目录可放置本地 `.robot.env`，部署脚本会自动读取。该文件匹配 `.gitignore` 的 `*.env`，不会提交到 Git：
+### 开发机
 
-```bash
-ROBOT="${ROBOT:-192.168.3.63}"
-ROBOT_USER="${ROBOT_USER:-ubuntu}"
-ROBOT_PASS="${ROBOT_PASS:-你的密码}"
-```
+- macOS 或 Linux，具备 `bash`、`ssh`、`scp`、`tar` 和 Node.js/npm。
+- 能通过 SSH 访问机器人；建议配置 SSH key。需要密码时，通过本地环境变量传给脚本，绝不写入仓库。
+- 前端依赖安装完成：`npm --prefix studio-vue ci`。
 
-外部传入的同名环境变量仍然优先，方便临时部署另一台机器人。
+### 机器人
 
-机器人应已具备厂商 ROS 2 环境，以及 rosbridge `:9090`、web_video_server `:8080`。完整功能还可能需要：
+- Ubuntu + ROS 2 Humble 与厂商 ROS 环境；真实环境变量由 `/home/ubuntu/.zshrc` 提供。
+- 默认 IP 是 `192.168.3.63`，网页端口是 `8000`。
+- 已具备基础硬件与 ROS bringup 依赖；首次装机还需按本项目 systemd 单元要求安装 `jetson-agent` 与 `webrtc-agent`。
+- systemd 可使用 `sudo` 管理项目服务；部署脚本会安装所需单元和雷达 udev 规则。
 
-- `websocket-client`：`jetson_agent.py` 和 `llm_agent.py`。
-- `numpy`、OpenCV、`rclpy` 及厂商消息包：`snack_butler.py`。
-- `aiohttp`、`aiortc`、`av`、OpenCV：`webrtc_agent.py`。
-- `anthropic`：`llm_agent.py`。
+## 首次部署
 
-这些 ROS/硬件依赖与 JetPack、厂商镜像绑定，不建议在开发机的普通 Python 环境中模拟安装。
-
-## 日常部署
-
-在仓库根目录执行：
+1. 确认机器人已开机、接入网络，并能 SSH 登录。
+2. 在开发机根目录执行：
 
 ```bash
+npm --prefix studio-vue ci
 ./agents/deploy_snack.sh
 ```
 
-脚本默认持续等待 SSH 端口上线，适合机器人断电后“蹲守”部署。可用环境变量：
+3. 脚本默认会等待 SSH 上线，适合机器人刚开机或电池恢复后部署。
+4. 打开 `http://<机器人IP>:8000`，进入“运维面板”确认核心服务与事件日志正常。
+5. 第一次让底盘或机械臂动作前，执行下面的验证，并遵循专项文档的空跑步骤。
 
-| 变量 | 默认 | 作用 |
-|---|---|---|
-| `ROBOT` | `192.168.3.63` | 机器人 IP/主机名 |
-| `ROBOT_USER` | `ubuntu` | SSH 用户 |
-| `ROBOT_PASS` | 空 | 配合本机 `sshpass` 免交互登录；不要写入仓库 |
-| `NO_WAIT` | 空 | 非空时跳过在线等待 |
-| `WEB_ONLY` | 空 | 非空时只部署网页和 `webctl` |
-
-示例：
+## 日常更新
 
 ```bash
-ROBOT=192.168.3.99 NO_WAIT=1 ./agents/deploy_snack.sh
-WEB_ONLY=1 ./agents/deploy_snack.sh
+# 机器人已经在线，不再等待
+NO_WAIT=1 ./agents/deploy_snack.sh
+
+# 仅更新网页与项目文档；不推 agents、不触碰硬件服务
+WEB_ONLY=1 NO_WAIT=1 ./agents/deploy_snack.sh
+
+# 指向临时或另一台测试机器人
+ROBOT=192.168.3.99 ROBOT_USER=ubuntu NO_WAIT=1 ./agents/deploy_snack.sh
 ```
 
-脚本会：
+可在本机创建已被 Git 忽略的 `.robot.env` 保存非敏感默认项，例如 `ROBOT`、`ROBOT_USER`。密码、API key、标定文件与 `.llm_agent.env` 不应进入 Git。
 
-1. 在 `studio-vue/` 运行 `npm run build`。
-2. 打包 `dist/`，清理机器人旧的 hash assets 后解压到 `~/web_control`。
-3. 更新 `webctl_server.py` 并安装/重启 `webctl.service`。
-4. 非 `WEB_ONLY` 时复制 agents，并保留已有 `~/snack_butler_config.json`。
-5. 重启已经安装的 `jetson-agent`、`webrtc-agent`。
-6. 用 `web_bringup.launch.py` 配置精简的 `start_app_node`，只保留网页所需硬件、
-   rosbridge 和视频节点，不再常驻巡线、手势、AR、目标追踪等厂商演示应用。
-7. 安装/重启 `snack-butler`、`lidar-watchdog`、`nav-safety`、`exploration-nav` 和 `explorer-agent`；存在 `~/.llm_agent.env` 时启用 `llm-agent.service`。
-
-`snack-butler`、`explorer-agent` 和 `nav-safety` 使用 systemd 原生 watchdog：各 agent 每 5 秒由 ROS
-事件循环发送心跳，事件循环卡死或启动超时会被 systemd 终止并按重启策略恢复。可用
-`systemctl show <服务> -p WatchdogUSec -p NRestarts` 查看配置与累计重启次数。
-
-注意：这是部署脚本，不是完整的机器人镜像初始化器。它不会安装 rosbridge、web_video_server、x11vnc，也不会首次创建 `jetson-agent.service` 和 `webrtc-agent.service`。
-
-## 全新机器的一次性补充
-
-先执行一次日常部署，把脚本复制到机器人。然后按实际 Python 路径和依赖安装下面两个服务：
-
-```ini
-# /etc/systemd/system/jetson-agent.service
-[Unit]
-Description=JetRover Jetson telemetry agent
-After=network-online.target
-
-[Service]
-User=ubuntu
-WorkingDirectory=/home/ubuntu
-ExecStart=/usr/bin/python3 /home/ubuntu/jetson_agent.py
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```ini
-# /etc/systemd/system/webrtc-agent.service
-[Unit]
-Description=JetRover WebRTC video agent
-After=network-online.target
-
-[Service]
-User=ubuntu
-WorkingDirectory=/home/ubuntu
-ExecStart=/usr/bin/python3 /home/ubuntu/webrtc_agent.py
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
+## 部署后验证
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now jetson-agent webrtc-agent
+npm --prefix studio-vue run build
+python3 agents/test_kinematics.py
+python3 agents/test_vision.py
+python3 agents/test_nav_safety.py
+python3 agents/test_webctl_bridge.py
 ```
 
-若 `webrtc-agent` 使用虚拟环境，请把 `ExecStart` 改为该环境的 Python。安装前先用 `python3 /home/ubuntu/webrtc_agent.py` 暂时运行，确认依赖无误。
+真机检查顺序：
 
-### 自然语言服务
+1. 网页 `:8000` 可打开，项目文档页能加载最新 Markdown。
+2. 运维面板中 `webctl`、`jetson-agent`、`snack-butler`、`start_app_node` 为运行状态。
+3. 相机画面有帧率；出现黑屏时先验证 WebRTC/MJPEG 实际是否有帧。
+4. 驱动默认保持锁定，且导航/抓取在空场前不执行真实动作。
 
-机器人端创建仅自己可读的环境文件：
+## 服务与启动模式
 
-```bash
-printf 'ANTHROPIC_API_KEY=你的密钥\n' > ~/.llm_agent.env
-chmod 600 ~/.llm_agent.env
-sudo systemctl enable --now llm-agent
-```
+### 图形桌面
 
-还可在该文件设置 `ROSBRIDGE_URL`、`LLM_AGENT_PORT`、`LLM_MODEL`、`LLM_EFFORT`。不要把环境文件或密钥提交到 Git。
+为节省 Jetson CPU/内存，机器人可在无桌面模式运行。运维面板提供“图形桌面”开关：开启会恢复 graphical target 与显示管理器，关闭会回到 multi-user target。它影响触摸屏/本地图形界面，不影响网页工作台。
 
-## 部署后检查
+等价脚本在机器人 `/home/ubuntu/enable_desktop.sh` 与 `/home/ubuntu/disable_desktop.sh`。桌面状态改变后，等待系统完成切换再判断资源占用。
 
-```bash
-curl -I http://<机器人IP>:8000/
-curl http://<机器人IP>:8091/health
-curl http://<机器人IP>:8092/health
+### 自主导航待机
 
-ssh ubuntu@<机器人IP> 'systemctl --no-pager --full status webctl snack-butler lidar-watchdog nav-safety exploration-nav explorer-agent jetson-agent webrtc-agent llm-agent'
-```
+运维面板的“自主导航待机”会停止探索与在线 SLAM/Nav2 资源，保留相机、抓取、雷达守护和速度安全闸门。需要恢复导航时使用同一开关。部署会重装并启用导航相关服务，因此计划长时间待机时，应在部署完成后再切回待机。
 
-`llm-agent` 未配置时不运行是正常的。还应在浏览器检查：顶部 ROS 状态在线、Jetson 页面有遥测、相机画面可用、运行日志有数据。
+### 基础 ROS bringup
 
-常用日志：
+`start_app_node` 是最底层的项目 bringup，托管相机、雷达、底盘、IMU、机械臂与基础 ROS 组件。重启它会短暂中断依赖节点；只应在确认上游话题/硬件已经异常且视频层、视觉节点层恢复无效后执行。
 
-```bash
-sudo journalctl -u webctl -n 100 --no-pager
-sudo journalctl -u snack-butler -n 100 --no-pager
-sudo journalctl -u explorer-agent -n 100 --no-pager
-sudo journalctl -u exploration-nav -n 100 --no-pager
-sudo journalctl -u nav-safety -n 100 --no-pager
-sudo journalctl -u lidar-watchdog -n 100 --no-pager
-sudo journalctl -u jetson-agent -n 100 --no-pager
-sudo journalctl -u webrtc-agent -n 100 --no-pager
-sudo journalctl -u llm-agent -n 100 --no-pager
-```
+## 回退与失败处理
 
-## 常见问题
+- **网页显示旧版本**：浏览器强制刷新后再试。`webctl` 会以无缓存方式服务入口和带 hash 的 assets；不要手工修改远端 `assets/`。
+- **部署中断**：重新执行同一条部署命令即可。网页包采用整体解压，agent 与 systemd 单元会被重新写入。
+- **某个功能异常**：先在运维面板查看服务卡片和事件日志，按[运维手册](OPERATIONS_RUNBOOK.md)的影响范围逐层恢复。
+- **要回到上一版本**：在开发机切换到已验证的 Git 提交，再运行部署脚本。不要用远端手工复制旧文件拼凑回退。
 
-| 现象 | 检查 |
-|---|---|
-| 部署后页面仍是旧版 | 确认访问 `:8000`，检查 `webctl` 是否重启及 `index.html` 修改时间；不要改 `dist` |
-| 页面打开但全部 ROS 数据离线 | 检查 `:9090`、rosbridge/rosapi，以及浏览器是否能直达机器人端口 |
-| Jetson/服务/日志页面空白 | `jetson-agent.service` 可能未安装、缺 `websocket-client` 或连不上本机 rosbridge |
-| 相机只有 MJPEG 没有 WebRTC | 检查 `:8091/health` 和 aiortc/av/OpenCV 依赖；MJPEG 回退仍可用 |
-| `snack-butler` 报 ROS 环境错误 | systemd 必须用 zsh source `/home/ubuntu/.zshrc`，以加载厂商 `need_compile/HOST/MASTER` 配置 |
-| `llm-agent` 不启动 | 检查 `~/.llm_agent.env` 权限、API key、外网和 Python 依赖 |
-| 机器人反复掉线 | 先检查电池；3S 电池接近 9V 时可能欠压重启 |
+## 不应做的事
 
-## 回滚
-
-仓库没有制品仓库或自动回滚。安全做法是在部署前保留上一份 Git commit/tag；需要回滚时切到已知版本并重新运行部署脚本。`snack_butler_config.json` 不会被脚本覆盖，因此代码回滚与标定配置回滚是两件事；若需要回退标定，应事先单独备份机器人上的该文件。
+- 不要用 `kill -9` 或直接删除 systemd 单元处理普通页面故障。
+- 不要把 `snack_butler_config.json`、密码、token 或设备专属标定提交进仓库。
+- 不要为“让车动起来”绕过 `nav_safety_guard.py`。
+- 不要在未空跑验证的情况下修改机械臂几何与抓取参数。
