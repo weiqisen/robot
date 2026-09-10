@@ -23,11 +23,17 @@ def launch_setup(_context):
         controller_path = '/home/ubuntu/ros2_ws/src/driver/controller'
         peripherals_path = '/home/ubuntu/ros2_ws/src/peripherals'
 
-    include = lambda path: IncludeLaunchDescription(PythonLaunchDescriptionSource(path))
+    include = lambda path, arguments=None: IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(path), launch_arguments=(arguments or {}).items())
     return [
         Node(package='bringup', executable='startup_check', output='screen'),
         include(os.path.join(controller_path, 'launch/controller.launch.py')),
-        include(os.path.join(peripherals_path, 'launch/depth_camera.launch.py')),
+        # 抓取与深度流都是 16:9 的 640×360；原先 RGB 以 1080p 采集后又在
+        # snack_butler 中缩到 640，徒增 USB/DDS/JPEG/CPU 负担与显示延迟。
+        # 直接从相机输出 640×360，保留 30fps 和原始几何比例。
+        include(os.path.join(peripherals_path, 'launch/depth_camera.launch.py'), {
+            'color_width': '640', 'color_height': '360', 'color_fps': '30',
+        }),
         include(os.path.join(peripherals_path, 'launch/lidar.launch.py')),
         ExecuteProcess(
             cmd=['ros2', 'launch', 'rosbridge_server', 'rosbridge_websocket_launch.xml'],
