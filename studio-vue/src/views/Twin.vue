@@ -16,7 +16,7 @@ const props = defineProps({
   actionGroupOpen: { type: Boolean, default: false },
 })
 const emit = defineEmits(['focus', 'toggle-action-group'])
-const { state, actions, HOST, VISION_VIDEO_PORT } = useRos()
+const { state, actions, HOST, VISION_VIDEO_PORT, WEBRTC_PORT } = useRos()
 
 const host = ref(null)
 const loading = ref(true), loadErr = ref('')
@@ -118,6 +118,8 @@ const matOpen = ref(false)
 // 关掉时必须把 src 清空：MJPEG 是永不结束的长连接，挂着会占满浏览器并发额度。
 const detFeedStamp = ref(0)
 const detFeedImg = ref(null)
+const detFeedVideo = ref(null)
+const detRtcActive = ref(false)
 const detFeedBox = ref(null)
 const DET_FEED_DEFAULT = { width: 208, height: 202 }
 const detFeedSize = reactive((() => {
@@ -158,7 +160,7 @@ function resetDetFeedSize() {
   Object.assign(detFeedSize, DET_FEED_DEFAULT)
   try { localStorage.removeItem('twin.detFeedSize.v1') } catch {}
 }
-const detFeedSrc = computed(() => (tools.detectionFeed
+const detFeedSrc = computed(() => (tools.detectionFeed && !detRtcActive.value
   ? videoUrl(HOST, VISION_VIDEO_PORT, '/snack_butler/image_result', detFeedStamp.value) : ''))
 const detFeedStat = computed(() => {
   const sb = state.snack
@@ -171,10 +173,42 @@ const detFeedStat = computed(() => {
   return `${n} 个目标 · ${sb.state || '—'}`
 })
 function reloadDetFeed() { detFeedStamp.value = Date.now() }
+let detRtcPc = null, detRtcFallback = null
+function stopDetRtc() {
+  if (detRtcFallback) { clearTimeout(detRtcFallback); detRtcFallback = null }
+  if (detRtcPc) { try { detRtcPc.close() } catch {} detRtcPc = null }
+  detRtcActive.value = false
+  if (detFeedVideo.value) detFeedVideo.value.srcObject = null
+}
+async function startDetRtc() {
+  stopDetRtc()
+  if (!tools.detectionFeed) return
+  try {
+    detRtcPc = new RTCPeerConnection({ iceServers:[] })
+    detRtcPc.addTransceiver('video', { direction:'recvonly' })
+    detRtcPc.ontrack = e => { if (detFeedVideo.value) detFeedVideo.value.srcObject = e.streams[0] }
+    detRtcPc.onconnectionstatechange = () => {
+      if (!detRtcPc) return
+      if (detRtcPc.connectionState === 'connected') detRtcActive.value = true
+      else if (['failed','disconnected','closed'].includes(detRtcPc.connectionState)) stopDetRtc()
+    }
+    const offer = await detRtcPc.createOffer(); await detRtcPc.setLocalDescription(offer)
+    await new Promise(resolve => {
+      if (detRtcPc.iceGatheringState === 'complete') return resolve()
+      const done = () => { if (detRtcPc?.iceGatheringState === 'complete') { detRtcPc.removeEventListener('icegatheringstatechange', done); resolve() } }
+      detRtcPc.addEventListener('icegatheringstatechange', done); setTimeout(resolve, 1200)
+    })
+    const response = await fetch(`http://${HOST}:${WEBRTC_PORT}/offer`, { method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ sdp:detRtcPc.localDescription.sdp, type:detRtcPc.localDescription.type, topic:'/snack_butler/image_result' }) })
+    if (!response.ok) throw new Error('WebRTC 信令失败')
+    await detRtcPc.setRemoteDescription(await response.json())
+    detRtcFallback = setTimeout(() => { if (!detRtcActive.value) stopDetRtc() }, 4500)
+  } catch { stopDetRtc() }
+}
 // MJPEG 卡死时 <img> 不会报 error，只是不再更新 —— 靠采样比对发现。
 // 这是「识别流经常不显示」的主因：onerror 只覆盖连不上，覆盖不了半死连接。
-useStreamWatch(() => (tools.detectionFeed ? detFeedImg.value : null), reloadDetFeed)
-watch(() => tools.detectionFeed, v => { if (v) reloadDetFeed() })
+useStreamWatch(() => (tools.detectionFeed && !detRtcActive.value ? detFeedImg.value : null), reloadDetFeed)
+watch(() => tools.detectionFeed, v => { if (v) { reloadDetFeed(); startDetRtc() } else stopDetRtc() })
 const matGroups = {}          // 档位名 -> 这一档下所有 material，改参数时批量刷
 let hemiL = null, keyL = null, fillL = null, rimL = null
 let robotReady = false
@@ -2570,18 +2604,21 @@ onMounted(() => {
   renderer.domElement.addEventListener('pointerleave', ptrLeave)
   renderer.domElement.addEventListener('dblclick', onSceneDoubleClick)
   window.addEventListener('pointerup', ptrUp)
+  startDetRtc()
 })
 onDeactivated(() => {
   pageActive = false; pollSeq++
   if (screenTimer) { clearInterval(screenTimer); screenTimer = null }
   if (raf) { cancelAnimationFrame(raf); raf = null }
   if (detectionSyncRaf != null) { cancelAnimationFrame(detectionSyncRaf); detectionSyncRaf = null }
+  stopDetRtc()
 })
 onActivated(() => {
   pageActive = true
   if (renderer && !raf) loop()
   scheduleDetections()
   if (screenMesh) { startPolling(); restartScreenTimer() }
+  startDetRtc()
 })
 onBeforeUnmount(() => {
   pageActive = false; pollSeq++
@@ -2595,6 +2632,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('fullscreenchange', onFsChange)
   if (screenTimer) clearInterval(screenTimer)
   if (targetClickTimer) clearTimeout(targetClickTimer)
+  stopDetRtc()
   if (screenMesh) { screenMesh.geometry.dispose(); screenMesh.material.dispose() }
   if (screenTex) screenTex.dispose()
   renderer && renderer.dispose()
@@ -2667,7 +2705,8 @@ onBeforeUnmount(() => {
         <span class="df-close" title="关闭" @click="tools.detectionFeed = false">✕</span>
       </div>
       <div class="df-stage" @mouseleave="hoverVisionTrack(null)">
-        <img ref="detFeedImg" class="df-img" :src="detFeedSrc" alt="" @error="reloadDetFeed" />
+        <img v-show="!detRtcActive" ref="detFeedImg" class="df-img" :src="detFeedSrc" alt="" @error="reloadDetFeed" />
+        <video v-show="detRtcActive" ref="detFeedVideo" class="df-img" autoplay muted playsinline />
         <svg class="df-boxes" :viewBox="`0 0 ${visionSize.w} ${visionSize.h}`" preserveAspectRatio="xMidYMid meet">
           <g v-for="box in visionBoxes" :key="box.id" :data-track="box.id"
             :class="{ hot:hoveredTrackId===box.id }" @mouseenter="hoverVisionTrack(box.id)" @click="requestTargetInspection((state.snack?.detections||[]).find(d=>d.track_id===box.id))">
