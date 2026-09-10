@@ -160,7 +160,7 @@ function resetDetFeedSize() {
   Object.assign(detFeedSize, DET_FEED_DEFAULT)
   try { localStorage.removeItem('twin.detFeedSize.v1') } catch {}
 }
-const detFeedSrc = computed(() => (tools.detectionFeed && !detRtcActive.value
+const detFeedSrc = computed(() => (tools.detectionFeed
   ? videoUrl(HOST, VISION_VIDEO_PORT, '/snack_butler/image_result', detFeedStamp.value) : ''))
 const detFeedStat = computed(() => {
   const sb = state.snack
@@ -173,21 +173,59 @@ const detFeedStat = computed(() => {
   return `${n} 个目标 · ${sb.state || '—'}`
 })
 function reloadDetFeed() { detFeedStamp.value = Date.now() }
-let detRtcPc = null, detRtcFallback = null
+let detRtcPc = null, detRtcFallback = null, detRtcWatch = null, detRtcLastFrame = 0
 function stopDetRtc() {
   if (detRtcFallback) { clearTimeout(detRtcFallback); detRtcFallback = null }
+  if (detRtcWatch) { clearInterval(detRtcWatch); detRtcWatch = null }
   if (detRtcPc) { try { detRtcPc.close() } catch {} detRtcPc = null }
   detRtcActive.value = false
+  detRtcLastFrame = 0
   if (detFeedVideo.value) detFeedVideo.value.srcObject = null
 }
+function onDetRtcFrame() {
+  // `connected` 只说明协商完成，不代表媒体已经抵达。以浏览器实际解码的第一帧
+  // 作为切流条件，MJPEG 因而永远是可见的保底画面。
+  if (!detRtcPc || !detFeedVideo.value?.videoWidth) return
+  detRtcLastFrame = Date.now()
+  if (!detRtcActive.value) {
+    detRtcActive.value = true
+    if (detRtcFallback) { clearTimeout(detRtcFallback); detRtcFallback = null }
+    detRtcWatch = setInterval(() => {
+      if (detRtcLastFrame && Date.now() - detRtcLastFrame > 3000) stopDetRtc()
+    }, 1000)
+  }
+}
 async function startDetRtc() {
-  // 大屏优先保证「有画面」：WebRTC 的连接状态不代表浏览器已经收到首帧，
-  // 曾在首帧缺失时切走 MJPEG，留下黑屏。待首帧检测补齐前固定使用独立 MJPEG。
   stopDetRtc()
+  if (!tools.detectionFeed) return
+  try {
+    detRtcPc = new RTCPeerConnection({ iceServers:[] })
+    detRtcPc.addTransceiver('video', { direction:'recvonly' })
+    detRtcPc.ontrack = e => {
+      if (!detFeedVideo.value) return
+      detFeedVideo.value.srcObject = e.streams[0]
+      detFeedVideo.value.play().catch(() => {})
+    }
+    detRtcPc.onconnectionstatechange = () => {
+      if (!detRtcPc) return
+      if (['failed','disconnected','closed'].includes(detRtcPc.connectionState)) stopDetRtc()
+    }
+    const offer = await detRtcPc.createOffer(); await detRtcPc.setLocalDescription(offer)
+    await new Promise(resolve => {
+      if (detRtcPc.iceGatheringState === 'complete') return resolve()
+      const done = () => { if (detRtcPc?.iceGatheringState === 'complete') { detRtcPc.removeEventListener('icegatheringstatechange', done); resolve() } }
+      detRtcPc.addEventListener('icegatheringstatechange', done); setTimeout(resolve, 1200)
+    })
+    const response = await fetch(`http://${HOST}:${WEBRTC_PORT}/offer`, { method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ sdp:detRtcPc.localDescription.sdp, type:detRtcPc.localDescription.type, topic:'/snack_butler/image_result' }) })
+    if (!response.ok) throw new Error('WebRTC 信令失败')
+    await detRtcPc.setRemoteDescription(await response.json())
+    detRtcFallback = setTimeout(() => { if (!detRtcActive.value) stopDetRtc() }, 4500)
+  } catch { stopDetRtc() }
 }
 // MJPEG 卡死时 <img> 不会报 error，只是不再更新 —— 靠采样比对发现。
 // 这是「识别流经常不显示」的主因：onerror 只覆盖连不上，覆盖不了半死连接。
-useStreamWatch(() => (tools.detectionFeed && !detRtcActive.value ? detFeedImg.value : null), reloadDetFeed)
+useStreamWatch(() => (tools.detectionFeed ? detFeedImg.value : null), reloadDetFeed)
 watch(() => tools.detectionFeed, v => { if (v) { reloadDetFeed(); startDetRtc() } else stopDetRtc() })
 const matGroups = {}          // 档位名 -> 这一档下所有 material，改参数时批量刷
 let hemiL = null, keyL = null, fillL = null, rimL = null
@@ -2685,8 +2723,9 @@ onBeforeUnmount(() => {
         <span class="df-close" title="关闭" @click="tools.detectionFeed = false">✕</span>
       </div>
       <div class="df-stage" @mouseleave="hoverVisionTrack(null)">
-        <img v-show="!detRtcActive" ref="detFeedImg" class="df-img" :src="detFeedSrc" alt="" @error="reloadDetFeed" />
-        <video v-show="detRtcActive" ref="detFeedVideo" class="df-img" autoplay muted playsinline />
+        <img ref="detFeedImg" class="df-img" :src="detFeedSrc" alt="" @error="reloadDetFeed" />
+        <video ref="detFeedVideo" :class="['df-img','df-rtc',{ ready:detRtcActive }]" autoplay muted playsinline
+          @loadeddata="onDetRtcFrame" @timeupdate="onDetRtcFrame" />
         <svg class="df-boxes" :viewBox="`0 0 ${visionSize.w} ${visionSize.h}`" preserveAspectRatio="xMidYMid meet">
           <g v-for="box in visionBoxes" :key="box.id" :data-track="box.id"
             :class="{ hot:hoveredTrackId===box.id }" @mouseenter="hoverVisionTrack(box.id)" @click="requestTargetInspection((state.snack?.detections||[]).find(d=>d.track_id===box.id))">
@@ -2949,7 +2988,7 @@ onBeforeUnmount(() => {
 .df-head b { color: #E2E8F0; font-size: 11px; letter-spacing: .4px; }
 .df-close { color: #64748B; font-size: 13px; line-height: 1; cursor: pointer; padding: 0 2px; }
 .df-close:hover { color: #CBD5E1; }
-.df-stage{position:relative;min-height:0;flex:1;background:#000;overflow:hidden}.df-img{display:block;width:100%;height:100%;object-fit:contain;background:#000}.df-boxes{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}.df-boxes g{pointer-events:all;cursor:crosshair}.df-boxes rect{fill:rgba(34,211,238,.025);stroke:rgba(103,232,249,.72);stroke-width:2;vector-effect:non-scaling-stroke;transition:.14s}.df-boxes text{opacity:1;fill:#a5f3fc;font:700 12px ui-monospace;paint-order:stroke;stroke:#031018;stroke-width:2;transition:.14s}.df-boxes g.hot rect{fill:rgba(34,211,238,.12);stroke:#67e8f9;stroke-width:3;filter:drop-shadow(0 0 5px #22d3ee)}.df-boxes g.hot text{fill:#fff}
+.df-stage{position:relative;min-height:0;flex:1;background:#000;overflow:hidden}.df-img{display:block;width:100%;height:100%;object-fit:contain;background:#000}.df-rtc{position:absolute;inset:0;opacity:0;pointer-events:none;transition:opacity .12s}.df-rtc.ready{opacity:1}.df-boxes{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}.df-boxes g{pointer-events:all;cursor:crosshair}.df-boxes rect{fill:rgba(34,211,238,.025);stroke:rgba(103,232,249,.72);stroke-width:2;vector-effect:non-scaling-stroke;transition:.14s}.df-boxes text{opacity:1;fill:#a5f3fc;font:700 12px ui-monospace;paint-order:stroke;stroke:#031018;stroke-width:2;transition:.14s}.df-boxes g.hot rect{fill:rgba(34,211,238,.12);stroke:#67e8f9;stroke-width:3;filter:drop-shadow(0 0 5px #22d3ee)}.df-boxes g.hot text{fill:#fff}
 .df-stat { min-height:22px; padding: 4px 9px; font-size: 9px; color: #94A3B8; text-align: right;
   background: rgba(15,23,42,.4); display:flex; align-items:center; justify-content:flex-end; gap:7px; }
 .df-stat button { border:1px solid rgba(56,189,248,.35); border-radius:4px; padding:2px 6px;
