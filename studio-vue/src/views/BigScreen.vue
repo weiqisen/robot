@@ -85,6 +85,7 @@ function toggleTopPanel(name) { topPanel.value = topPanel.value === name ? '' : 
 const drivePadCollapsed = ref(true)
 const armPanelCollapsed = ref(true)
 const actionGroups = ref([]), actionGroup = ref(''), actionRunning = ref(false)
+const actionPanelCollapsed = ref(true)
 const actionStep = ref(0), actionTotal = ref(0)
 const actionLabel = name => ({ camera_up:'相机上抬', init:'初始化', pick:'抓取', place:'放置', horizontal:'水平姿态' }[name] || `动作组 ${actionGroups.value.indexOf(name) + 1}`)
 async function loadActionGroups() { try { const r = await fetch(`http://${location.hostname}:8000/api/actions`, { cache:'no-store' }); actionGroups.value = (await r.json()).groups || [] } catch {} }
@@ -94,6 +95,11 @@ async function runActionGroup() {
   if (!r.ok || !j.rows?.length) return message.error('动作组读取失败或为空')
   actionRunning.value = true; actionStep.value = 0; actionTotal.value = j.rows.length
   try { for (let i=0; i<j.rows.length && actionRunning.value; i++) { const row=j.rows[i]; actionStep.value=i+1; row.servos.forEach((pulse,k) => twinRef.value?.setJointByServoId([1,2,3,4,5,10][k], pulse)); actions.setServosCtl([1,2,3,4,5,10].map((id,k)=>({id,position:row.servos[k]})),(row.time||1000)/1000); await new Promise(res=>setTimeout(res,row.time||1000)) } } finally { actionRunning.value=false }
+}
+async function runAllActionGroups() {
+  if (actionRunning.value || !actionGroups.value.length) return
+  actionRunning.value = true
+  try { for (const name of actionGroups.value) { if (!actionRunning.value) break; actionGroup.value = name; const r = await fetch(`http://${location.hostname}:8000/api/actions/${name}`, { cache:'no-store' }); const j = await r.json(); if (!r.ok) continue; actionTotal.value=j.rows?.length||0; for (let i=0;i<(j.rows||[]).length && actionRunning.value;i++){const row=j.rows[i];actionStep.value=i+1;row.servos.forEach((pulse,k)=>twinRef.value?.setJointByServoId([1,2,3,4,5,10][k],pulse));actions.setServosCtl([1,2,3,4,5,10].map((id,k)=>({id,position:row.servos[k]})),(row.time||1000)/1000);await new Promise(res=>setTimeout(res,row.time||1000))} } } finally { actionRunning.value=false }
 }
 function stopActionGroup() { actionRunning.value=false }
 loadActionGroups()
@@ -392,13 +398,13 @@ onUnmounted(() => {
       <!-- 中央 3D 孪生。不加标题字，画面自己说明自己。 -->
       <div class="col center">
         <div class="viewport">
-          <Twin ref="twinRef" :bare="true" :focus="focusMode" :arm-panel-open="!armPanelCollapsed"
-            @focus="v => focusMode = v" />
+          <Twin ref="twinRef" :bare="true" :focus="focusMode" :arm-panel-open="!armPanelCollapsed" :action-group-open="!actionPanelCollapsed"
+            @focus="v => focusMode = v" @toggle-action-group="actionPanelCollapsed = !actionPanelCollapsed" />
           <div class="scene-head"><span>数字孪生</span><b>实时姿态</b></div>
-          <div class="scene-action-card">
+          <div v-if="!actionPanelCollapsed" class="scene-action-card">
             <div><small>动作组</small><b>{{ actionRunning ? `执行中 · ${actionStep}/${actionTotal}` : '工具台快捷执行' }}</b></div>
             <div class="scene-action-grid"><button v-for="g in actionGroups" :key="g" :class="{ selected: actionGroup === g, running: actionGroup === g && actionRunning }" :title="g" @click="actionGroup=g"><span>{{ actionLabel(g) }}</span><i @click.stop="actionGroup=g;runActionGroup()">▶</i></button></div>
-            <div class="scene-action-buttons"><button v-if="actionRunning" class="stop" @click="stopActionGroup">停止</button><button v-else @click="loadActionGroups">刷新动作组</button></div>
+            <div class="scene-action-buttons"><button v-if="actionRunning" class="stop" @click="stopActionGroup">停止</button><button v-else :disabled="!state.connected || !actionGroups.length" @click="runAllActionGroups">一键执行全部</button><button @click="loadActionGroups">刷新</button></div>
           </div>
           <div class="scene-status">
             <div><small>线速度</small><b>{{ vx.toFixed(2) }} <em>m/s</em></b></div>

@@ -13,8 +13,9 @@ const props = defineProps({
   bare: { type: Boolean, default: false },
   focus: { type: Boolean, default: false },
   armPanelOpen: { type: Boolean, default: false },
+  actionGroupOpen: { type: Boolean, default: false },
 })
-const emit = defineEmits(['focus'])
+const emit = defineEmits(['focus', 'toggle-action-group'])
 const { state, actions, HOST, VISION_VIDEO_PORT } = useRos()
 
 const host = ref(null)
@@ -2550,6 +2551,7 @@ onBeforeUnmount(() => {
           ['workspace','工作区'],['selfbody','遮挡区'],['dimensions','尺寸'],['axes','坐标轴'],['detections','识别目标'],['intent','动作意图']]"
           :key="t[0]" :class="{ on: tools[t[0]] }" @click="toggleTool(t[0])">{{ t[1] }}</button>
       </div>
+      <div class="sp-actions"><button :class="{ on: props.actionGroupOpen }" @click="emit('toggle-action-group')">动作组矩阵</button></div>
     </div>
     <div v-if="sceneMenu === 'view'" class="scene-pop glass">
       <div class="sp-title">镜头视角 <button @click="sceneMenu = ''">×</button></div>
