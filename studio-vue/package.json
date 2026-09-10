@@ -13,6 +13,7 @@
     "@ant-design/icons-vue": "^7.0.1",
     "@novnc/novnc": "^1.7.0",
     "ant-design-vue": "^4.2.6",
+    "marked": "^15.0.12",
     "roslib": "^1.4.1",
     "three": "^0.169.0",
     "urdf-loader": "^0.12.4",
