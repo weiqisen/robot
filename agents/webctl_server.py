@@ -70,7 +70,7 @@ SERVICE_UNITS = {
     'exploration-nav', 'nav-safety', 'lidar-watchdog',
     'webrtc-agent', 'llm-agent', 'start_app_node',
 }
-SERVICE_RESTART_PATH = re.compile(r'^/api/services/([a-z0-9_-]+)/restart$')
+SERVICE_ACTION_PATH = re.compile(r'^/api/services/([a-z0-9_-]+)/(restart|stop)$')
 
 
 # 抓取图像链路的每一环。fix 是这一环坏了该重启谁（None = 只能人工处理），
@@ -228,19 +228,19 @@ GB_STOP = os.environ.get('GPU_BENCH_STOP') or os.path.expanduser('~/gpu_bench.st
 GB_SCRIPT = os.path.expanduser('~/gpu_bench.py')
 
 
-def restart_service_later(name):
-    """先回 HTTP 202；否则 webctl 重启自己会截断当前响应。"""
+def service_action_later(name, action):
+    """先回 HTTP 202；否则 webctl 重启自身会截断当前响应。"""
     time.sleep(0.8)
     try:
         r = subprocess.run(
-            ['sudo', '-n', '/usr/bin/systemctl', 'restart', name + '.service'],
+            ['sudo', '-n', '/usr/bin/systemctl', action, name + '.service'],
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=30)
         if r.returncode:
-            print('[webctl] restart %s failed: %s' % (name, r.stderr.strip()), flush=True)
+            print('[webctl] %s %s failed: %s' % (action, name, r.stderr.strip()), flush=True)
         else:
-            print('[webctl] restarted %s' % name, flush=True)
+            print('[webctl] %sed %s' % (action, name), flush=True)
     except Exception as e:
-        print('[webctl] restart %s failed: %s' % (name, e), flush=True)
+        print('[webctl] %s %s failed: %s' % (action, name, e), flush=True)
 
 
 def act_path(name):
@@ -690,13 +690,16 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(200, {'ok': True, **navigation_stack_status()})
             except Exception as e:
                 return self._json(500, {'error': str(e)})
-        match = SERVICE_RESTART_PATH.fullmatch(path)
+        match = SERVICE_ACTION_PATH.fullmatch(path)
         if match:
-            name = match.group(1)
+            name, action = match.groups()
             if name not in SERVICE_UNITS:
-                return self._json(403, {'error': 'service is not in restart allowlist'})
-            threading.Thread(target=restart_service_later, args=(name,), daemon=True).start()
-            return self._json(202, {'ok': True, 'service': name, 'status': 'restarting'})
+                return self._json(403, {'error': 'service is not in action allowlist'})
+            if action == 'stop' and name == 'webctl':
+                return self._json(403, {'error': 'webctl cannot stop itself from the web UI'})
+            threading.Thread(target=service_action_later, args=(name, action), daemon=True).start()
+            return self._json(202, {'ok': True, 'service': name,
+                                    'status': 'restarting' if action == 'restart' else 'stopping'})
         if path.startswith('/api/actions/'):
             try:
                 n = int(self.headers.get('Content-Length') or 0)
