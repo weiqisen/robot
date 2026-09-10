@@ -996,6 +996,10 @@ watch(() => state.joints, m => {
     const name = m.name[i], p = m.position[i]
     const j = robot.joints[name]
     if (!j || !Number.isFinite(p) || dragging) continue
+    // 动作组的本地轨迹正在逐帧写这个关节时，真实回报只作状态记录。
+    // 绝不能再启动第二个反馈插值，否则两个 RAF 会相互抢位置而抽搐。
+    const servo = SERVO_MAP.find(x => x.joint === name)
+    if (servo && jointAnim.has(servo.id)) { n++; continue }
     const preview = jointPreview.get(name)
     if (preview) {
       // 反馈进入约 2° 容差才交还实时跟随；超时则以反馈为准，避免模型永久假装到位。
