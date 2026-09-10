@@ -84,7 +84,28 @@ $SSH "$USER_@$ROBOT" 'chmod 755 ~/run_exploration_nav.sh ~/run_x11vnc.sh'
 # 配置文件已存在就不覆盖——上面标定出来的参数在里面
 $SSH "$USER_@$ROBOT" 'test -f ~/snack_butler_config.json || echo "{}" > ~/snack_butler_config.json'
 
-# 装过的才重启；没装的不在这儿建单元，只提示一声，免得掩盖「这台车压根没部署过」
+# 装过的才重启；没装的不在这儿建单元，只提示一声，免得掩盖「这台车压根没部署过」。
+# WebRTC 的标注图现直接订阅 ROS，因此已存在的服务必须 source ROS 环境。
+if $SSH "$USER_@$ROBOT" "systemctl list-unit-files webrtc-agent.service --no-legend | grep -q ." ; then
+  $SSH "$USER_@$ROBOT" "sudo tee /etc/systemd/system/webrtc-agent.service >/dev/null <<'EOF'
+[Unit]
+Description=JetRover WebRTC Video
+After=network-online.target start_app_node.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$USER_
+WorkingDirectory=/home/$USER_
+ExecStart=/usr/bin/zsh -c 'source /home/$USER_/.zshrc; exec /usr/bin/python3 /home/$USER_/webrtc_agent.py'
+Restart=always
+RestartSec=4
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload"
+fi
 for unit in jetson-agent webrtc-agent; do
   if $SSH "$USER_@$ROBOT" "systemctl list-unit-files $unit.service --no-legend | grep -q ." ; then
     $SSH "$USER_@$ROBOT" "sudo systemctl restart $unit"
