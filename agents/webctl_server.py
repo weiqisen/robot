@@ -301,6 +301,50 @@ def act_write(name, rows):
         con.close()
     os.replace(tmp, p)
     return None
+
+
+def system_processes(sort_by='cpu'):
+    """只读任务管理器快照；按需调用，避免遥测线程每秒跑 ps。"""
+    order = '-%mem' if sort_by == 'memory' else '-%cpu'
+    out = subprocess.run(['ps', '-eo', 'pid=,pcpu=,pmem=,rss=,comm=,args=', '--sort=' + order],
+                         capture_output=True, text=True, timeout=4).stdout
+    rows = []
+    for line in out.splitlines()[:30]:
+        p = line.strip().split(None, 5)
+        if len(p) < 5:
+            continue
+        try:
+            rows.append({'pid': int(p[0]), 'cpu': float(p[1]), 'mem': float(p[2]),
+                         'rss_mb': round(int(p[3]) / 1024, 1), 'name': p[4],
+                         'cmd': p[5] if len(p) > 5 else p[4]})
+        except ValueError:
+            continue
+    return {'sort': sort_by, 'rows': rows, 'at': time.time()}
+
+
+def system_storage():
+    """根分区和固定一级目录占用；不接收路径参数，避免 API 成为任意文件探针。"""
+    fs = []
+    for line in subprocess.run(['df', '-B1', '-x', 'tmpfs', '-x', 'devtmpfs'], capture_output=True,
+                               text=True, timeout=4).stdout.splitlines()[1:]:
+        p = line.split()
+        if len(p) >= 6 and p[5] == '/':
+            fs.append({'mount': p[5], 'total': int(p[1]), 'used': int(p[2]), 'free': int(p[3])})
+    roots = ['/home/ubuntu', '/var', '/usr', '/opt']
+    rows = []
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        try:
+            out = subprocess.run(['du', '-x', '-B1', '-d', '1', root], capture_output=True,
+                                 text=True, timeout=12).stdout.splitlines()
+            for line in out:
+                p = line.split('\t', 1)
+                if len(p) == 2 and p[1] != root:
+                    rows.append({'path': p[1], 'bytes': int(p[0])})
+        except Exception:
+            pass
+    return {'filesystems': fs, 'rows': sorted(rows, key=lambda x: x['bytes'], reverse=True)[:32], 'at': time.time()}
 WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
 _cam = {'ts': 0.0, 'jpg': None}
 _cam_lock = threading.Lock()
@@ -468,6 +512,16 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split('?', 1)[0]
+        if path == '/api/system/processes':
+            try:
+                return self._json(200, system_processes('memory' if 'sort=memory' in self.path else 'cpu'))
+            except Exception as e:
+                return self._json(500, {'error': str(e)})
+        if path == '/api/system/storage':
+            try:
+                return self._json(200, system_storage())
+            except Exception as e:
+                return self._json(500, {'error': str(e)})
         if path == '/api/vision/health':
             return self._json(200, vision_health())
         if path == '/api/gpu_bench':

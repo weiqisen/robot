@@ -1,9 +1,21 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
+import { message } from 'ant-design-vue'
 import { useRos } from '../composables/useRos'
 import MiniChart from '../components/MiniChart.vue'
-const { state } = useRos()
+const { state, HOST } = useRos()
 const j = computed(() => state.jetson)
+const inspectOpen = ref(false), inspectKind = ref(''), inspectRows = ref([]), inspectFs = ref(null), inspecting = ref(false)
+const fmtGb = n => n == null ? '—' : (n / 1e9).toFixed(1) + ' GB'
+async function inspect(kind) {
+  inspectKind.value = kind; inspectOpen.value = true; inspecting.value = true; inspectRows.value = []; inspectFs.value = null
+  try {
+    const endpoint = kind === 'disk' ? '/api/system/storage' : `/api/system/processes?sort=${kind === 'memory' ? 'memory' : 'cpu'}`
+    const r = await fetch(`http://${HOST}:8000${endpoint}`, { cache:'no-store' }); const d = await r.json()
+    if (!r.ok) throw Error(d.error || r.status)
+    inspectRows.value = d.rows || []; inspectFs.value = d.filesystems?.[0] || null
+  } catch (e) { message.error('读取系统明细失败：' + e.message) } finally { inspecting.value = false }
+}
 
 // 用 antd 的字面色值，不用我们自己的 token —— token 里的 --ok 是青绿 #0d9488、
 // --warn 是暗黄 #ca8a04，跟这一页原来那套（antd 绿/琥珀/红）观感差很多。
@@ -122,7 +134,7 @@ const sysinfo = computed(() => {
   <a-card size="small" :body-style="{ padding: '4px 0 0' }">
     <div class="hero">
       <div class="heads">
-        <div v-for="h in heads" :key="h.l" class="head">
+          <div v-for="h in heads" :key="h.l" :class="['head',{ clickable:h.l==='CPU 负载' }]" @click="h.l==='CPU 负载' && inspect('cpu')">
           <div class="lbl">{{ h.l }}</div>
           <div class="num" :style="{ color: h.c }">
             {{ h.v == null ? '--' : h.v.toFixed(h.dp) }}<i class="unit">{{ h.u }}</i>
@@ -133,7 +145,7 @@ const sysinfo = computed(() => {
 
       <div class="side">
         <div class="caps">
-          <div v-for="c in caps" :key="c.l" class="cap">
+          <div v-for="c in caps" :key="c.l" :class="['cap',{ clickable:c.l==='内存'||c.l==='磁盘' }]" @click="c.l==='内存' ? inspect('memory') : c.l==='磁盘' && inspect('disk')">
             <div class="cap-h">
               <span class="lbl">{{ c.l }}</span>
               <b>{{ c.used ?? '--' }}<em> / {{ c.total }} {{ c.u }}</em></b>
@@ -202,12 +214,15 @@ const sysinfo = computed(() => {
     </div>
     <a-empty v-if="!sysinfo.length" description="无数据" />
   </a-card>
+  <a-modal v-model:open="inspectOpen" :title="inspectKind==='cpu'?'CPU 占用明细':inspectKind==='memory'?'内存占用明细':'磁盘空间明细'" :footer="null" width="880px">
+    <a-spin :spinning="inspecting"><template v-if="inspectKind==='disk'"><p v-if="inspectFs" class="detail-note">根分区：已用 {{fmtGb(inspectFs.used)}} / {{fmtGb(inspectFs.total)}}，剩余 {{fmtGb(inspectFs.free)}}</p><a-table :data-source="inspectRows" :pagination="{pageSize:12}" size="small" row-key="path"><a-table-column title="目录" data-index="path"/><a-table-column title="占用空间" data-index="bytes"><template #default="{text}">{{fmtGb(text)}}</template></a-table-column></a-table></template><template v-else><p class="detail-note">按 {{inspectKind==='cpu'?'CPU':'内存'}} 从高到低排列；RSS 是进程实际驻留内存。</p><a-table :data-source="inspectRows" :pagination="{pageSize:12}" size="small" row-key="pid"><a-table-column title="进程" data-index="name"/><a-table-column title="PID" data-index="pid" width="75"/><a-table-column title="CPU" data-index="cpu" width="80"><template #default="{text}">{{text}} %</template></a-table-column><a-table-column title="内存" data-index="rss_mb" width="90"><template #default="{text}">{{text}} MB</template></a-table-column><a-table-column title="命令" data-index="cmd" ellipsis/></a-table></template></a-spin>
+  </a-modal>
 </template>
 
 <style scoped>
 .hero { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); }
 .heads { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
-.head { padding: 12px 16px 10px; border-right: 1px solid var(--divider); }
+.head { padding: 12px 16px 10px; border-right: 1px solid var(--divider); }.clickable{cursor:pointer}.clickable:hover{background:var(--accent-soft)}
 .head:last-child { border-right: 0; }
 .lbl { font-size: 12px; color: var(--text-3); }
 .num { font-size: 30px; font-weight: 600; line-height: 1.15; margin: 2px 0 4px;
@@ -249,6 +264,7 @@ const sysinfo = computed(() => {
 .si { border-bottom: 1px solid var(--divider); padding-bottom: 8px; }
 .sv { font-size: 14px; color: var(--text-1); font-family: var(--font-code);
   word-break: break-all; margin-top: 2px; }
+.detail-note{color:var(--text-3);font-size:12px}
 
 @media (max-width: 1200px) {
   .hero { grid-template-columns: 1fr; }
