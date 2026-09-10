@@ -2723,22 +2723,20 @@ onBeforeUnmount(() => {
           <span v-else>{{ targetInspection?.error || '正在读取最新切图…' }}</span>
         </div>
         <div class="confirm-meta">
-          <h3>{{ targetInspection?.label || selectedTarget?.label || '目标' }} <small>#{{ selectedTrackId }}</small></h3>
-          <p>识别：{{ detectorName }} · {{ targetInspection?.confidence == null ? '无置信度' : (targetInspection.confidence * 100).toFixed(1) + '%' }}</p>
-          <p>坐标：{{ fmtTargetXYZ }} m</p>
-          <p>状态：{{ targetInspection?.reachable ? '垂直夹爪 IK 可达' : '当前不可达' }}</p>
-          <div class="quality-line"><b>{{ targetQuality?.score ?? '—' }}</b><span>抓取评分</span>
-            <small>{{ targetQuality?.summary || '等待评估' }}</small></div>
-          <div class="permit-grid">
-            <div v-for="check in safetyPermits.checks" :key="check.id" :class="{ ok:check.ok, warn:check.id === 'depth' && !check.ok }">
-              <i>{{ check.ok ? '✓' : check.id === 'depth' ? '!' : '×' }}</i><span>{{ check.label }}</span><small>{{ check.detail }}</small>
-            </div>
-            <div :class="{ ok:targetInspection?.reachable }"><i>{{ targetInspection?.reachable ? '✓' : '×' }}</i>
-              <span>目标 IK</span><small>{{ targetInspection?.reachable ? `余量 ${targetQuality?.ik_margin_deg ?? '—'}°` : '不可达' }}</small></div>
+          <div class="confirm-head">
+            <h3>{{ targetInspection?.label || selectedTarget?.label || '目标' }} <small>#{{ selectedTrackId }}</small></h3>
+            <b :class="targetInspection?.reachable ? 'ok' : 'bad'">{{ targetInspection?.reachable ? '可抓取' : '当前不可达' }}</b>
           </div>
-          <a-alert v-if="!inspectionFresh" type="warning" show-icon message="目标信息已过期，请重新扫描后再抓取" />
-          <a-alert v-else-if="!safetyPermits.allowed" type="error" show-icon :message="safetyPermits.summary || '安全许可未通过'" />
-          <a-alert v-else type="info" show-icon message="青色幽灵机械臂是 IK 预演；确认后仍会重新识别，匹配失败不会动作。" />
+          <div class="confirm-facts">
+            <span>识别 <b>{{ detectorName }} · {{ targetInspection?.confidence == null ? '—' : (targetInspection.confidence * 100).toFixed(0) + '%' }}</b></span>
+            <span>坐标 <b>{{ fmtTargetXYZ }} m</b></span>
+          </div>
+          <div class="quality-line" :class="{ bad:!targetInspection?.reachable }"><b>{{ targetQuality?.score ?? '—' }}</b><span>抓取评分</span>
+            <small>{{ targetQuality?.summary || '等待评估' }}</small></div>
+          <div v-if="!inspectionFresh" class="confirm-notice warn"><i>!</i><span>目标信息已过期，请重新扫描。</span></div>
+          <div v-else-if="!targetInspection?.reachable" class="confirm-notice bad"><i>×</i><span>此坐标超出垂直夹爪工作区。请重新扫描或调整目标位置。</span></div>
+          <div v-else-if="!safetyPermits.allowed" class="confirm-notice bad"><i>×</i><span>{{ safetyPermits.summary || '安全许可未通过' }}</span></div>
+          <div v-else class="confirm-notice ok"><i>✓</i><span>目标与安全条件已就绪；执行前仍会重新校验。</span></div>
         </div>
       </div>
       <div class="confirm-actions">
@@ -2967,30 +2965,39 @@ onBeforeUnmount(() => {
 :global(.target-confirm-modal .ant-modal-content) { background:#101820; border:1px solid rgba(56,189,248,.25); }
 :global(.target-confirm-modal .ant-modal-title) { color:#e2e8f0; }
 :global(.target-confirm-modal .ant-modal-close) { color:#94a3b8; }
-:global(.target-confirm-modal .confirm-target) { display:grid; grid-template-columns:240px 1fr; gap:16px; }
+:global(.target-confirm-modal .ant-modal-body) { padding-top:14px; }
+:global(.target-confirm-modal .confirm-target) { display:grid; grid-template-columns:210px 1fr; gap:14px; align-items:stretch; }
 :global(.target-confirm-modal .confirm-crop) { min-height:190px; display:flex; align-items:center;
   justify-content:center; overflow:hidden; border-radius:9px; background:#020609; color:#64748b; }
-:global(.target-confirm-modal .confirm-crop img) { width:100%; height:210px; object-fit:contain; }
-:global(.target-confirm-modal .confirm-meta h3) { color:#e2e8f0; margin:4px 0 12px; }
+:global(.target-confirm-modal .confirm-crop img) { width:100%; height:190px; object-fit:contain; }
+:global(.target-confirm-modal .confirm-head) { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+:global(.target-confirm-modal .confirm-meta h3) { color:#e2e8f0; margin:0; font-size:17px; }
 :global(.target-confirm-modal .confirm-meta h3 small) { color:#38bdf8; font-family:ui-monospace,monospace; }
-:global(.target-confirm-modal .confirm-meta p) { color:#94a3b8; margin:7px 0; font-size:12px; }
+:global(.target-confirm-modal .confirm-head>b) { border-radius:999px; padding:4px 8px; font-size:10px; white-space:nowrap; }
+:global(.target-confirm-modal .confirm-head>b.ok) { background:rgba(6,78,59,.45); color:#6ee7b7; }
+:global(.target-confirm-modal .confirm-head>b.bad) { background:rgba(127,29,29,.4); color:#fda4af; }
+:global(.target-confirm-modal .confirm-facts) { display:grid; gap:5px; margin:12px 0 9px; }
+:global(.target-confirm-modal .confirm-facts span) { display:flex; justify-content:space-between; gap:10px; color:#64748b; font-size:10px; }
+:global(.target-confirm-modal .confirm-facts b) { color:#cbd5e1; font:600 10px ui-monospace,monospace; text-align:right; }
 :global(.target-confirm-modal .quality-line) { display:grid; grid-template-columns:52px 1fr; align-items:center;
-  margin:10px 0; padding:8px 10px; border:1px solid rgba(56,189,248,.2); border-radius:8px; background:rgba(2,132,199,.08); }
+  margin:9px 0; padding:8px 10px; border:1px solid rgba(56,189,248,.2); border-radius:8px; background:rgba(2,132,199,.08); }
 :global(.target-confirm-modal .quality-line b) { grid-row:1/3; color:#67e8f9; font:700 23px/1 ui-monospace,monospace; }
 :global(.target-confirm-modal .quality-line span) { color:#cbd5e1; font-size:10px; }
 :global(.target-confirm-modal .quality-line small) { color:#64748b; font-size:9px; }
-:global(.target-confirm-modal .permit-grid) { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:5px; margin:9px 0; }
-:global(.target-confirm-modal .permit-grid > div) { display:grid; grid-template-columns:18px 1fr; padding:6px 7px;
-  border:1px solid rgba(251,113,133,.22); border-radius:6px; background:rgba(127,29,29,.08); }
-:global(.target-confirm-modal .permit-grid i) { grid-row:1/3; color:#fb7185; font-style:normal; }
-:global(.target-confirm-modal .permit-grid span) { color:#cbd5e1; font-size:9px; }
-:global(.target-confirm-modal .permit-grid small) { color:#64748b; font-size:8px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-:global(.target-confirm-modal .permit-grid > div.ok) { border-color:rgba(52,211,153,.18); background:rgba(6,78,59,.08); }
-:global(.target-confirm-modal .permit-grid > div.ok i) { color:#34d399; }
-:global(.target-confirm-modal .permit-grid > div.warn i) { color:#fbbf24; }
-:global(.target-confirm-modal .confirm-meta .ant-alert) { margin-top:14px; }
+:global(.target-confirm-modal .quality-line.bad) { border-color:rgba(251,113,133,.28); background:rgba(127,29,29,.12); }
+:global(.target-confirm-modal .quality-line.bad b) { color:#fda4af; }
+:global(.target-confirm-modal .confirm-notice) { display:flex; align-items:flex-start; gap:7px; min-height:36px; padding:8px 9px;
+  border-radius:7px; font-size:10px; line-height:1.45; }
+:global(.target-confirm-modal .confirm-notice i) { font-style:normal; font-weight:800; }
+:global(.target-confirm-modal .confirm-notice.ok) { color:#a7f3d0; background:rgba(6,78,59,.22); }
+:global(.target-confirm-modal .confirm-notice.warn) { color:#fde68a; background:rgba(120,53,15,.25); }
+:global(.target-confirm-modal .confirm-notice.bad) { color:#fecdd3; background:rgba(127,29,29,.25); }
 :global(.target-confirm-modal .confirm-actions) { display:flex; justify-content:flex-end; gap:8px;
-  margin-top:18px; padding-top:14px; border-top:1px solid rgba(148,163,184,.15); }
+  margin-top:14px; padding-top:12px; border-top:1px solid rgba(148,163,184,.15); }
+:global(.target-confirm-modal .ant-btn) { background:rgba(15,23,42,.8); border-color:rgba(148,163,184,.28); color:#cbd5e1; box-shadow:none; }
+:global(.target-confirm-modal .ant-btn:hover) { color:#e0f2fe; border-color:rgba(56,189,248,.62); background:rgba(14,116,144,.2); }
+:global(.target-confirm-modal .ant-btn-primary.ant-btn-dangerous) { background:#be123c; border-color:#fb7185; color:white; }
+:global(.target-confirm-modal .ant-btn-primary.ant-btn-dangerous:disabled) { background:rgba(127,29,29,.3); border-color:rgba(251,113,133,.18); color:rgba(254,205,211,.42); }
 @media(max-width:640px) { .target-card { right:7px; }.tc-body { grid-template-columns:112px 1fr; }
   .tc-info { gap:6px; padding:8px; }.tc-actions { flex-wrap:wrap; }.tc-actions button { min-width:30%; }
   :global(.target-confirm-modal .confirm-target) { grid-template-columns:1fr; }
