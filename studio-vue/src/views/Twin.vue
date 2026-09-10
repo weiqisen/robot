@@ -181,31 +181,9 @@ function stopDetRtc() {
   if (detFeedVideo.value) detFeedVideo.value.srcObject = null
 }
 async function startDetRtc() {
+  // 大屏优先保证「有画面」：WebRTC 的连接状态不代表浏览器已经收到首帧，
+  // 曾在首帧缺失时切走 MJPEG，留下黑屏。待首帧检测补齐前固定使用独立 MJPEG。
   stopDetRtc()
-  if (!tools.detectionFeed) return
-  try {
-    detRtcPc = new RTCPeerConnection({ iceServers:[] })
-    detRtcPc.addTransceiver('video', { direction:'recvonly' })
-    detRtcPc.ontrack = e => { if (detFeedVideo.value) detFeedVideo.value.srcObject = e.streams[0] }
-    detRtcPc.onconnectionstatechange = () => {
-      if (!detRtcPc) return
-      if (detRtcPc.connectionState === 'connected') detRtcActive.value = true
-      else if (['failed','disconnected','closed'].includes(detRtcPc.connectionState)) stopDetRtc()
-    }
-    const offer = await detRtcPc.createOffer(); await detRtcPc.setLocalDescription(offer)
-    await new Promise(resolve => {
-      if (detRtcPc.iceGatheringState === 'complete') return resolve()
-      const done = () => { if (detRtcPc?.iceGatheringState === 'complete') { detRtcPc.removeEventListener('icegatheringstatechange', done); resolve() } }
-      detRtcPc.addEventListener('icegatheringstatechange', done); setTimeout(resolve, 1200)
-    })
-    const response = await fetch(`http://${HOST}:${WEBRTC_PORT}/offer`, { method:'POST', headers:{'Content-Type':'application/json'},
-      // 先走已验证的标注图直连；原始 RGB 高帧率链路需在拿到首帧后才允许切换，
-      // 不能让一次失败的协商遮住备用画面。
-      body:JSON.stringify({ sdp:detRtcPc.localDescription.sdp, type:detRtcPc.localDescription.type, topic:'/snack_butler/image_result' }) })
-    if (!response.ok) throw new Error('WebRTC 信令失败')
-    await detRtcPc.setRemoteDescription(await response.json())
-    detRtcFallback = setTimeout(() => { if (!detRtcActive.value) stopDetRtc() }, 4500)
-  } catch { stopDetRtc() }
 }
 // MJPEG 卡死时 <img> 不会报 error，只是不再更新 —— 靠采样比对发现。
 // 这是「识别流经常不显示」的主因：onerror 只覆盖连不上，覆盖不了半死连接。
