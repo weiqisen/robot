@@ -20,6 +20,8 @@ class Bridge(Node):
     def __init__(self):
         super().__init__('vision_stream_server')
         self.lock, self.jpeg = threading.Lock(), None
+        self.frame_ready = threading.Condition(self.lock)
+        self.frame_seq = 0
         self.frames = 0
         self.seen = 0
         # snack_butler publishes reliably; match it exactly.  Some DDS versions
@@ -38,7 +40,10 @@ class Bridge(Node):
             img = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, 3)
             ok, data = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 75])
             if ok:
-                with self.lock: self.jpeg = data.tobytes()
+                with self.frame_ready:
+                    self.jpeg = data.tobytes()
+                    self.frame_seq += 1
+                    self.frame_ready.notify_all()
                 self.frames += 1
                 if self.frames == 1 or self.frames % 90 == 0:
                     self.get_logger().info('encoded frame #%d (%d bytes)' % (self.frames, len(self.jpeg)))
@@ -52,12 +57,17 @@ def main():
         def do_GET(self):
             if self.path.split('?', 1)[0] != '/stream': self.send_error(404); return
             self.send_response(200); self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame'); self.end_headers()
+            last_seq = -1
             try:
                 while rclpy.ok():
-                    with bridge.lock: frame = bridge.jpeg
+                    # 不按固定时钟重复旧 JPEG。等待新帧能同时避免浏览器端积压，
+                    # 让每个客户端都只拿到最新画面，端到端延迟由相机帧率决定。
+                    with bridge.frame_ready:
+                        bridge.frame_ready.wait_for(
+                            lambda: bridge.frame_seq != last_seq or not rclpy.ok(), timeout=1.0)
+                        frame, last_seq = bridge.jpeg, bridge.frame_seq
                     if frame:
                         self.wfile.write(b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ' + str(len(frame)).encode() + b'\r\n\r\n' + frame + b'\r\n')
-                    threading.Event().wait(1 / 3)
             except (BrokenPipeError, ConnectionResetError): pass
     server = VideoHTTPServer(('0.0.0.0', PORT), Handler)
     def stop(*_):

@@ -362,6 +362,9 @@ DEFAULT_CONFIG = {
     # 解码限速：相机 12~15 fps，但识别只在"到观察位之后拍几帧"时用，
     # 标注图也只发 5 Hz。每来一帧就解一次纯属白烧 CPU。
     "proc_fps": 6,
+    # 显示流与识别解耦：识别仍按 proc_fps 节流，避免 YOLO/深度计算抢占控制；
+    # 但网页应尽可能跟上相机。此值只限制 JPEG 解码和标注图刷新，不触发推理。
+    "display_fps": 10,
     # 在观察位空闲时持续刷新检测结果；只做视觉计算，不触发机械臂。
     "idle_detect_hz": 2.0,  # 空闲时持续识别频率（Hz）；0 = 禁用
     # 探索收臂后，YOLO/深度命中这些低矮或大体积物时也作为前向禁行区。
@@ -436,6 +439,8 @@ class SnackButler(Node):
         self.calib_samples = []
         self.cam_w = 0              # 相机原始宽度（用来算降采样比例）
         self._last_dec = 0.0        # 上次解码时刻，用于限速
+        self._last_display_dec = 0.0
+        self.display_rgb = None     # 最新显示帧；不等待低频识别结果
         self._last_idle_scan = 0.0  # 观察位后台识别节流
         self._last_idle_count = None
         self._last_idle_signature = None
@@ -516,7 +521,8 @@ class SnackButler(Node):
         self.create_timer(0.05, self._tx_drain)     # 下发队列 20Hz，见 _tx_push
         self.create_timer(0.05, self.tick)          # 状态机 20Hz
         self.create_timer(0.2, self.publish_state)  # 状态播报 5Hz
-        self.create_timer(1.0 / 3.0, self.publish_image)  # 标注图 3Hz，兼顾首帧可靠性与 CPU
+        # 独立视频桥只推送新帧；这里跟随相机显示上限，不能再把实时画面人为锁在 3 fps。
+        self.create_timer(1.0 / 10.0, self.publish_image)
         self.create_timer(5.0, self.watchdog_tick)
         self.get_logger().info('视觉抓取已启动。发 /snack_butler/cmd 开工。')
         self._vision_worker.start()
@@ -814,13 +820,13 @@ class SnackButler(Node):
 
     # ---------------- 订阅回调 ----------------
     def on_rgb_compressed(self, msg):
-        # 限速：超过 proc_fps 的帧直接丢，连解码都不做。
-        # 这是这个节点最省 CPU 的一刀 —— JPEG 解码本身比后面的 HSV 贵得多。
         now = time.time()
-        fps = float(self.cfg.get('proc_fps') or 0)
-        if fps > 0 and now - self._last_dec < 1.0 / fps:
+        # 先给网页保留接近相机频率的最新小图；视觉计算仍使用下方 proc_fps 节流。
+        # 两个订阅（compressed/raw）共用时钟，避免同一物理帧被解两次。
+        display_fps = float(self.cfg.get('display_fps') or 10)
+        if display_fps > 0 and now - self._last_display_dec < 1.0 / display_fps:
             return
-        self._last_dec = now
+        self._last_display_dec = now
         try:
             buf = np.frombuffer(msg.data, dtype=np.uint8)
             pw = int(self.cfg.get('proc_width') or 640)
@@ -837,23 +843,31 @@ class SnackButler(Node):
                 return
             img = self.shrink(img)
             with self.lock:
-                self.rgb = img
+                self.display_rgb = img
+                proc_fps = float(self.cfg.get('proc_fps') or 0)
+                if proc_fps <= 0 or now - self._last_dec >= 1.0 / proc_fps:
+                    self._last_dec = now
+                    self.rgb = img
         except Exception:
             pass
 
     def on_rgb_raw(self, msg):
         """compressed 话题不可用时，从原始 RGB 话题取得标注流输入。"""
         now = time.time()
-        fps = float(self.cfg.get('proc_fps') or 0)
-        if fps > 0 and now - self._last_dec < 1.0 / fps:
+        display_fps = float(self.cfg.get('display_fps') or 10)
+        if display_fps > 0 and now - self._last_display_dec < 1.0 / display_fps:
             return
-        self._last_dec = now
+        self._last_display_dec = now
         img = self.imgmsg_to_cv(msg)
         if img is None:
             return
         img = self.shrink(img)
         with self.lock:
-            self.rgb = img
+            self.display_rgb = img
+            proc_fps = float(self.cfg.get('proc_fps') or 0)
+            if proc_fps <= 0 or now - self._last_dec >= 1.0 / proc_fps:
+                self._last_dec = now
+                self.rgb = img
 
     def on_depth(self, msg):
         d = self.imgmsg_to_cv(msg, depth=True)
@@ -2700,7 +2714,7 @@ class SnackButler(Node):
         # 始终发布一条低频标注流。web_video_server 会在首帧前放弃临时订阅；若此处
         # 反过来等待订阅者，会形成“双方都等对方”的死锁，页面便会永久显示“连接中”。
         with self.lock:
-            img = None if self.rgb is None else self.rgb.copy()
+            img = None if self.display_rgb is None else self.display_rgb.copy()
         if img is None:
             return
         for d in self.detections:
