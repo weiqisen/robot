@@ -120,6 +120,8 @@ const detFeedStamp = ref(0)
 const detFeedImg = ref(null)
 const detFeedVideo = ref(null)
 const detRtcActive = ref(false)
+const detDisplayedFps = ref(0)
+const detTransport = computed(() => detRtcActive.value ? 'WebRTC' : 'MJPEG')
 const detFeedBox = ref(null)
 const DET_FEED_DEFAULT = { width: 208, height: 202 }
 const detFeedSize = reactive((() => {
@@ -173,13 +175,40 @@ const detFeedStat = computed(() => {
   return `${n} 个目标 · ${sb.state || '—'}`
 })
 function reloadDetFeed() { detFeedStamp.value = Date.now() }
-let detRtcPc = null, detRtcFallback = null, detRtcWatch = null, detRtcLastFrame = 0
+let detRtcPc = null, detRtcFallback = null, detRtcWatch = null, detRtcLastFrame = 0, detRtcFrameRequest = null
+let detFrameTimes = []
+function recordDetFrame() {
+  const now = performance.now()
+  detFrameTimes.push(now)
+  while (detFrameTimes.length && now - detFrameTimes[0] > 1000) detFrameTimes.shift()
+  detDisplayedFps.value = detFrameTimes.length
+}
+function onMjpegFrame() {
+  if (!detRtcActive.value) recordDetFrame()
+}
+function watchDetRtcFrames() {
+  const video = detFeedVideo.value
+  if (!video || !detRtcPc) return
+  if (typeof video.requestVideoFrameCallback !== 'function') return
+  const next = () => {
+    if (!detRtcPc || !detRtcActive.value) return
+    detRtcLastFrame = Date.now()
+    recordDetFrame()
+    detRtcFrameRequest = video.requestVideoFrameCallback(next)
+  }
+  detRtcFrameRequest = video.requestVideoFrameCallback(next)
+}
 function stopDetRtc() {
   if (detRtcFallback) { clearTimeout(detRtcFallback); detRtcFallback = null }
   if (detRtcWatch) { clearInterval(detRtcWatch); detRtcWatch = null }
+  if (detRtcFrameRequest != null && detFeedVideo.value?.cancelVideoFrameCallback) {
+    detFeedVideo.value.cancelVideoFrameCallback(detRtcFrameRequest)
+  }
+  detRtcFrameRequest = null
   if (detRtcPc) { try { detRtcPc.close() } catch {} detRtcPc = null }
   detRtcActive.value = false
   detRtcLastFrame = 0
+  detFrameTimes = []; detDisplayedFps.value = 0
   if (detFeedVideo.value) detFeedVideo.value.srcObject = null
 }
 function onDetRtcFrame() {
@@ -187,12 +216,14 @@ function onDetRtcFrame() {
   // 作为切流条件，MJPEG 因而永远是可见的保底画面。
   if (!detRtcPc || !detFeedVideo.value?.videoWidth) return
   detRtcLastFrame = Date.now()
+  recordDetFrame()
   if (!detRtcActive.value) {
     detRtcActive.value = true
     if (detRtcFallback) { clearTimeout(detRtcFallback); detRtcFallback = null }
     detRtcWatch = setInterval(() => {
       if (detRtcLastFrame && Date.now() - detRtcLastFrame > 3000) stopDetRtc()
     }, 1000)
+    watchDetRtcFrames()
   }
 }
 async function startDetRtc() {
@@ -2720,12 +2751,13 @@ onBeforeUnmount(() => {
     <div v-if="tools.detectionFeed" ref="detFeedBox" class="det-feed" :style="detFeedStyle">
       <div class="df-head">
         <b>实时识别</b>
+        <span :class="['df-source',{ rtc:detRtcActive }]">{{ detTransport }} · {{ detDisplayedFps || '—' }} FPS</span>
         <span class="df-close" title="关闭" @click="tools.detectionFeed = false">✕</span>
       </div>
       <div class="df-stage" @mouseleave="hoverVisionTrack(null)">
-        <img ref="detFeedImg" class="df-img" :src="detFeedSrc" alt="" @error="reloadDetFeed" />
+        <img ref="detFeedImg" class="df-img" :src="detFeedSrc" alt="" @load="onMjpegFrame" @error="reloadDetFeed" />
         <video ref="detFeedVideo" :class="['df-img','df-rtc',{ ready:detRtcActive }]" autoplay muted playsinline
-          @loadeddata="onDetRtcFrame" @timeupdate="onDetRtcFrame" />
+          @loadeddata="onDetRtcFrame" />
         <svg class="df-boxes" :viewBox="`0 0 ${visionSize.w} ${visionSize.h}`" preserveAspectRatio="xMidYMid meet">
           <g v-for="box in visionBoxes" :key="box.id" :data-track="box.id"
             :class="{ hot:hoveredTrackId===box.id }" @mouseenter="hoverVisionTrack(box.id)" @click="requestTargetInspection((state.snack?.detections||[]).find(d=>d.track_id===box.id))">
@@ -2986,6 +3018,9 @@ onBeforeUnmount(() => {
 .df-head { display: flex; align-items: center; justify-content: space-between;
   padding: 5px 9px; background: rgba(15,23,42,.55); }
 .df-head b { color: #E2E8F0; font-size: 11px; letter-spacing: .4px; }
+.df-source { margin-left:7px; margin-right:auto; padding-left:7px; border-left:1px solid rgba(148,163,184,.32);
+  color:#94A3B8; font:600 8px ui-monospace,monospace; letter-spacing:0; }
+.df-source.rtc { color:#67E8F9; }
 .df-close { color: #64748B; font-size: 13px; line-height: 1; cursor: pointer; padding: 0 2px; }
 .df-close:hover { color: #CBD5E1; }
 .df-stage{position:relative;min-height:0;flex:1;background:#000;overflow:hidden}.df-img{display:block;width:100%;height:100%;object-fit:contain;background:#000}.df-rtc{position:absolute;inset:0;opacity:0;pointer-events:none;transition:opacity .12s}.df-rtc.ready{opacity:1}.df-boxes{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}.df-boxes g{pointer-events:all;cursor:crosshair}.df-boxes rect{fill:rgba(34,211,238,.025);stroke:rgba(103,232,249,.72);stroke-width:2;vector-effect:non-scaling-stroke;transition:.14s}.df-boxes text{opacity:1;fill:#a5f3fc;font:700 12px ui-monospace;paint-order:stroke;stroke:#031018;stroke-width:2;transition:.14s}.df-boxes g.hot rect{fill:rgba(34,211,238,.12);stroke:#67e8f9;stroke-width:3;filter:drop-shadow(0 0 5px #22d3ee)}.df-boxes g.hot text{fill:#fff}
