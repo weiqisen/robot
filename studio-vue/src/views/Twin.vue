@@ -1071,7 +1071,26 @@ function setJointByServoId(id, pulse) {
   const mp = SERVO_MAP.find(m => m.id === +id)
   if (mp) driveModelJoint(mp.joint, +pulse)
 }
-defineExpose({ setJointByServoId })
+const jointAnim = new Map()
+function animateJointByServoId(id, pulse, durationMs = 1000) {
+  const mp = SERVO_MAP.find(m => m.id === +id), j = mp && robot?.joints?.[mp.joint]
+  if (!mp || !j) return setJointByServoId(id, pulse)
+  const token = (jointAnim.get(id) || 0) + 1; jointAnim.set(id, token)
+  const from = j.angle || 0
+  driveModelJoint(mp.joint, pulse)
+  const target = j.angle || from
+  j.angle = from
+  const started = performance.now(), ms = Math.max(80, Number(durationMs) || 1000)
+  const frame = now => {
+    if (jointAnim.get(id) !== token || !robot) return
+    const t = Math.min(1, (now - started) / ms), eased = t * t * (3 - 2 * t)
+    robot.setJointValue(mp.joint, from + (target - from) * eased)
+    updateJointAngles()
+    if (t < 1) requestAnimationFrame(frame); else jointAnim.delete(id)
+  }
+  requestAnimationFrame(frame)
+}
+defineExpose({ setJointByServoId, animateJointByServoId })
 
 // ---- CCD IK ----
 const IK_CHAIN = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5']

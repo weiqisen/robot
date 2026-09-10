@@ -94,12 +94,12 @@ async function runActionGroup() {
   const r = await fetch(`http://${location.hostname}:8000/api/actions/${actionGroup.value}`, { cache:'no-store' }); const j = await r.json()
   if (!r.ok || !j.rows?.length) return message.error('动作组读取失败或为空')
   actionRunning.value = true; actionStep.value = 0; actionTotal.value = j.rows.length
-  try { for (let i=0; i<j.rows.length && actionRunning.value; i++) { const row=j.rows[i]; actionStep.value=i+1; row.servos.forEach((pulse,k) => twinRef.value?.setJointByServoId([1,2,3,4,5,10][k], pulse)); actions.setServosCtl([1,2,3,4,5,10].map((id,k)=>({id,position:row.servos[k]})),(row.time||1000)/1000); await new Promise(res=>setTimeout(res,row.time||1000)) } } finally { actionRunning.value=false }
+  try { for (let i=0; i<j.rows.length && actionRunning.value; i++) { const row=j.rows[i], ms=row.time||1000; actionStep.value=i+1; row.servos.forEach((pulse,k) => twinRef.value?.animateJointByServoId([1,2,3,4,5,10][k], pulse, ms)); actions.setServosCtl([1,2,3,4,5,10].map((id,k)=>({id,position:row.servos[k]})),ms/1000); await new Promise(res=>setTimeout(res,ms)) } } finally { actionRunning.value=false }
 }
 async function runAllActionGroups() {
   if (actionRunning.value || !actionGroups.value.length) return
   actionRunning.value = true
-  try { for (const name of actionGroups.value) { if (!actionRunning.value) break; actionGroup.value = name; const r = await fetch(`http://${location.hostname}:8000/api/actions/${name}`, { cache:'no-store' }); const j = await r.json(); if (!r.ok) continue; actionTotal.value=j.rows?.length||0; for (let i=0;i<(j.rows||[]).length && actionRunning.value;i++){const row=j.rows[i];actionStep.value=i+1;row.servos.forEach((pulse,k)=>twinRef.value?.setJointByServoId([1,2,3,4,5,10][k],pulse));actions.setServosCtl([1,2,3,4,5,10].map((id,k)=>({id,position:row.servos[k]})),(row.time||1000)/1000);await new Promise(res=>setTimeout(res,row.time||1000))} } } finally { actionRunning.value=false }
+  try { for (const name of actionGroups.value) { if (!actionRunning.value) break; actionGroup.value = name; const r = await fetch(`http://${location.hostname}:8000/api/actions/${name}`, { cache:'no-store' }); const j = await r.json(); if (!r.ok) continue; actionTotal.value=j.rows?.length||0; for (let i=0;i<(j.rows||[]).length && actionRunning.value;i++){const row=j.rows[i],ms=row.time||1000;actionStep.value=i+1;row.servos.forEach((pulse,k)=>twinRef.value?.animateJointByServoId([1,2,3,4,5,10][k],pulse,ms));actions.setServosCtl([1,2,3,4,5,10].map((id,k)=>({id,position:row.servos[k]})),ms/1000);await new Promise(res=>setTimeout(res,ms))} } } finally { actionRunning.value=false }
 }
 function stopActionGroup() { actionRunning.value=false }
 loadActionGroups()
