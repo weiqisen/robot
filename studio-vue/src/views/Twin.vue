@@ -1072,6 +1072,7 @@ function setJointByServoId(id, pulse) {
   if (mp) driveModelJoint(mp.joint, +pulse)
 }
 const jointAnim = new Map()
+let poseAnimToken = 0
 function animateJointByServoId(id, pulse, durationMs = 1000) {
   const mp = SERVO_MAP.find(m => m.id === +id), j = mp && robot?.joints?.[mp.joint]
   if (!mp || !j) return setJointByServoId(id, pulse)
@@ -1091,7 +1092,36 @@ function animateJointByServoId(id, pulse, durationMs = 1000) {
   }
   requestAnimationFrame(frame)
 }
-defineExpose({ setJointByServoId, animateJointByServoId })
+// 动作组必须整臂同帧更新，不能给 6 个关节各开一个 RAF：GLTF 骨架在中间状态
+// 重算时会短暂显示不完整的父子变换，视觉上就是“幻影”。
+function animateServoPose(pulses, durationMs = 1000) {
+  if (!Array.isArray(pulses)) return
+  const moves = pulses.map((pulse, k) => {
+    const id = [1, 2, 3, 4, 5, 10][k]
+    const mp = SERVO_MAP.find(m => m.id === id), j = mp && robot?.joints?.[mp.joint]
+    if (!mp || !j) return null
+    const token = (jointAnim.get(id) || 0) + 1
+    jointAnim.set(id, token)
+    const target = angleForServo(mp, j, pulse)
+    jointPreview.set(mp.joint, { angle: target, expires: Date.now() + Math.max(80, Number(durationMs) || 1000) + 1000 })
+    return { id, token, name: mp.joint, from: j.angle || 0, target }
+  }).filter(Boolean)
+  if (!moves.length) return
+  const poseToken = ++poseAnimToken, started = performance.now(), ms = Math.max(80, Number(durationMs) || 1000)
+  const frame = now => {
+    if (poseAnimToken !== poseToken || !robot) return
+    const t = Math.min(1, (now - started) / ms), eased = t * t * (3 - 2 * t)
+    for (const move of moves) {
+      if (jointAnim.get(move.id) === move.token) robot.setJointValue(move.name, move.from + (move.target - move.from) * eased)
+    }
+    robot.updateMatrixWorld(true)
+    updateJointAngles()
+    if (t < 1) requestAnimationFrame(frame)
+    else moves.forEach(move => { if (jointAnim.get(move.id) === move.token) jointAnim.delete(move.id) })
+  }
+  requestAnimationFrame(frame)
+}
+defineExpose({ setJointByServoId, animateJointByServoId, animateServoPose })
 
 // ---- CCD IK ----
 const IK_CHAIN = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5']

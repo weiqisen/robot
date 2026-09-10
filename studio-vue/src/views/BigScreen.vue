@@ -93,7 +93,7 @@ const actionLabel = name => actionGroupLabel(name, actionGroups.value)
 async function loadActionGroups() { try { const r = await fetch(ACTION_API, { cache:'no-store' }); const j = await r.json(); if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`); actionGroups.value = j.groups || [] } catch (e) { message.error(`动作组读取失败：${e.message}`) } }
 function playActionRow(row, ms) {
   // 孪生只是预览：它的渲染异常绝不能阻断真实动作下发。
-  try { row.servos.forEach((pulse, k) => twinRef.value?.animateJointByServoId([1, 2, 3, 4, 5, 10][k], pulse, ms)) }
+  try { twinRef.value?.animateServoPose(row.servos, ms) }
   catch (e) { console.warn('数字孪生动作预览失败，不影响机械臂执行', e) }
   actions.setServosCtl([1, 2, 3, 4, 5, 10].map((id, k) => ({ id, position: row.servos[k] })), ms / 1000)
 }
