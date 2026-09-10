@@ -9,6 +9,7 @@ import { ref, reactive, computed, onBeforeUnmount } from 'vue'
 import { message } from 'ant-design-vue'
 import { useRos } from '../composables/useRos'
 import InfoNote from '../components/InfoNote.vue'
+import { actionGroupLabel } from '../utils/actionGroups'
 
 const { state, actions, HOST } = useRos()
 const API = `http://${HOST}:8000/api/actions`
@@ -148,8 +149,7 @@ function runXYZ() {
 }
 const sbPitch = computed(() => (state.snack && state.snack.ee ? state.snack.ee.pitch_deg : null))
 
-// 动作组中英文映射：幻尔预设动作的常见名称
-const ACTION_NAMES = {
+/* const ACTION_NAMES = {
   // 基础动作
   'stand': '立正',
   'relax': '放松',
@@ -194,7 +194,7 @@ const ACTION_NAMES = {
   'patrol': '巡逻',
   'search': '搜索',
 }
-function actionLabel(name) {
+function oldActionLabel(name) {
   if (ACTION_NAMES[name]) return ACTION_NAMES[name]
   const s = String(name).toLowerCase().replace(/[ _-]+/g, '')
   const rules = [
@@ -211,7 +211,8 @@ function actionLabel(name) {
   const label = [...new Set(words.map(w => cn[w]))].join(' · ')
   const n = groups.value.indexOf(name) + 1
   return label || (n > 0 ? `动作组 ${n}` : '动作组')
-}
+} */
+const actionLabel = name => actionGroupLabel(name, groups.value)
 async function previewGroup(name) { group.value = name; await openGroup() }
 async function runNamedGroup(name) {
   await previewGroup(name)

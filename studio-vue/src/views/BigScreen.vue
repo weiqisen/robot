@@ -5,6 +5,7 @@ import { useRos, imuEuler, deg, battPct, BATT_WARN } from '../composables/useRos
 import Twin from './Twin.vue'
 import RingGauge from '../components/RingGauge.vue'
 import MiniChart from '../components/MiniChart.vue'
+import { actionGroupLabel } from '../utils/actionGroups'
 const emit = defineEmits(['open-admin'])
 const { state, actions, HOST } = useRos()
 const ACTION_API = `http://${HOST}:8000/api/actions`
@@ -88,7 +89,7 @@ const armPanelCollapsed = ref(true)
 const actionGroups = ref([]), actionGroup = ref(''), actionRunning = ref(false)
 const actionPanelCollapsed = ref(true)
 const actionStep = ref(0), actionTotal = ref(0)
-const actionLabel = name => ({ camera_up:'相机上抬', init:'初始化', pick:'抓取', place:'放置', horizontal:'水平姿态' }[name] || `动作组 ${actionGroups.value.indexOf(name) + 1}`)
+const actionLabel = name => actionGroupLabel(name, actionGroups.value)
 async function loadActionGroups() { try { const r = await fetch(ACTION_API, { cache:'no-store' }); const j = await r.json(); if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`); actionGroups.value = j.groups || [] } catch (e) { message.error(`动作组读取失败：${e.message}`) } }
 function playActionRow(row, ms) {
   // 孪生只是预览：它的渲染异常绝不能阻断真实动作下发。
