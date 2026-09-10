@@ -973,6 +973,22 @@ function loop() {
 // 网页刚下发的关节目标。驱动的 joint_states 在舵机运动期间仍会短暂回报旧角度；
 // 在反馈真正追上目标前，不能让旧值把本地预览立即拉回原位。
 const jointPreview = new Map()
+const feedbackAnim = new Map()
+function animateFeedbackJoint(name, target) {
+  const j = robot?.joints?.[name]
+  if (!j) return
+  const token = (feedbackAnim.get(name) || 0) + 1
+  feedbackAnim.set(name, token)
+  const from = j.angle || 0, started = performance.now(), ms = 140
+  const frame = now => {
+    if (feedbackAnim.get(name) !== token || !robot) return
+    const t = Math.min(1, (now - started) / ms), eased = t * t * (3 - 2 * t)
+    robot.setJointValue(name, from + (target - from) * eased)
+    if (t < 1) requestAnimationFrame(frame)
+    else feedbackAnim.delete(name)
+  }
+  requestAnimationFrame(frame)
+}
 watch(() => state.joints, m => {
   if (!robot || !m) return
   let n = 0
@@ -992,7 +1008,8 @@ watch(() => state.joints, m => {
     }
     let lo = -Math.PI, hi = Math.PI
     if (j.limit && +j.limit.lower !== +j.limit.upper) { lo = +j.limit.lower; hi = +j.limit.upper }
-    robot.setJointValue(name, Math.max(lo, Math.min(hi, p)))
+    // 只平滑已经抵达浏览器的真实反馈，绝不使用动作组的未来目标。
+    animateFeedbackJoint(name, Math.max(lo, Math.min(hi, p)))
     n++
   }
   info.jointN = n + ' 关节实时'
