@@ -26,7 +26,7 @@ const BOOT_STEPS = ['载入数字车体','连接激光雷达','同步深度视�
 // 尺寸标注（dimensions）对调试抓取高度有用，默认开着。
 const tools = reactive({ lidar: true, grid: true, points: false, ik: false, tags: false,
   workspace: false, selfbody: false, dimensions: false, angles: false, cameraFov: false,
-  axes: false, detections: true, intent: true, detectionFeed: true })
+  axes: false, detections: true, intent: false, detectionFeed: true })
 const sceneMenu = ref('')
 function toggleSceneMenu(name) { sceneMenu.value = sceneMenu.value === name ? '' : name }
 
@@ -544,7 +544,7 @@ function init() {
     for (const [k, g] of [['workspace', workspaceGroup], ['selfbody', selfbodyGroup],
                           ['dimensions', dimensionsGroup], ['angles', anglesGroup],
                           ['cameraFov', cameraFovGroup], ['axes', axesGroup],
-                          ['detections', detectGroup], ['intent', intentGroup]]) g.visible = tools[k]
+                          ['detections', detectGroup], ['intent', intentGroup], ['ik', previewGroup]]) g.visible = tools[k]
     syncDetections()      // 首帧就把已有的检测结果画出来
     syncMotionIntent()
     syncTargetPreview()
@@ -2158,19 +2158,8 @@ function syncMotionIntent() {
     intentGroup.add(tag); detectionLabels.push(tag)
     if (current) intentMarker = dot
   })
-  const last = waypoints[waypoints.length - 1]
-  if (last?.xyz) {
-    const ghost = new THREE.Group()
-    const palm = new THREE.Mesh(new THREE.BoxGeometry(.032,.052,.012),
-      new THREE.MeshBasicMaterial({ color:0x67e8f9, wireframe:true, transparent:true, opacity:.8 }))
-    ghost.add(palm)
-    for (const y of [-.021,.021]) {
-      const finger = new THREE.Mesh(new THREE.BoxGeometry(.009,.008,.055), palm.material)
-      finger.position.set(0,y,-.030); ghost.add(finger)
-    }
-    ghost.position.set(...last.xyz); ghost.position.z += .04
-    ghost.userData.helperLayer = true; intentGroup.add(ghost)
-  }
+  // 不绘制末端“目标夹爪”幻影：态势中心默认是实时孪生，
+  // 未来目标应以路径/路点表达，不能看起来像提前到位的机械臂。
 }
 watch(() => state.snack?.motion_intent, syncMotionIntent, { deep:true, flush:'post' })
 
@@ -2442,7 +2431,7 @@ function toggleTool(k) {
   if (k === 'grid') grid.visible = tools.grid
   if (k === 'lidar' && lidarPoints) lidarPoints.visible = tools.lidar
   if (k === 'tags') setTagsVisible(tools.tags)
-  if (k === 'ik') { if (tools.ik) { if (!ikTarget) makeTarget(); ikTarget.visible = true; ikTarget.position.copy(eeWorld()) } else if (ikTarget) ikTarget.visible = false }
+  if (k === 'ik') { if (previewGroup) previewGroup.visible = tools.ik; if (tools.ik) { if (!ikTarget) makeTarget(); ikTarget.visible = true; ikTarget.position.copy(eeWorld()) } else if (ikTarget) ikTarget.visible = false }
   if (k === 'workspace' && workspaceGroup) workspaceGroup.visible = tools.workspace
   if (k === 'selfbody' && selfbodyGroup) selfbodyGroup.visible = tools.selfbody
   if (k === 'dimensions' && dimensionsGroup) dimensionsGroup.visible = tools.dimensions
