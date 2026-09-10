@@ -351,6 +351,16 @@ def desktop_status():
     target = subprocess.run(['systemctl', 'get-default'], capture_output=True, text=True, timeout=3).stdout.strip()
     active = subprocess.run(['systemctl', 'is-active', 'gdm.service'], capture_output=True, text=True, timeout=3).stdout.strip()
     return {'enabled': target == 'graphical.target', 'target': target, 'gdm': active}
+
+
+def navigation_stack_status():
+    """导航重服务的状态；不能据此改变 nav-safety 的常驻安全职责。"""
+    def unit(name):
+        active = subprocess.run(['systemctl', 'is-active', name], capture_output=True, text=True, timeout=3).stdout.strip()
+        enabled = subprocess.run(['systemctl', 'is-enabled', name], capture_output=True, text=True, timeout=3).stdout.strip()
+        return {'active': active == 'active', 'enabled': enabled == 'enabled'}
+    nav, explorer = unit('exploration-nav.service'), unit('explorer-agent.service')
+    return {'running': nav['active'] and explorer['active'], 'navigation': nav, 'explorer': explorer}
 WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
 _cam = {'ts': 0.0, 'jpg': None}
 _cam_lock = threading.Lock()
@@ -523,6 +533,11 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(200, desktop_status())
             except Exception as e:
                 return self._json(500, {'error': str(e)})
+        if path == '/api/system/navigation-stack':
+            try:
+                return self._json(200, navigation_stack_status())
+            except Exception as e:
+                return self._json(500, {'error': str(e)})
         if path == '/api/system/processes':
             try:
                 return self._json(200, system_processes('memory' if 'sort=memory' in self.path else 'cpu'))
@@ -664,6 +679,15 @@ class Handler(SimpleHTTPRequestHandler):
                 if r.returncode:
                     return self._json(500, {'error': r.stderr.strip() or 'desktop switch failed'})
                 return self._json(200, {'ok': True, **desktop_status()})
+            except Exception as e:
+                return self._json(500, {'error': str(e)})
+        if path in ('/api/system/navigation-stack/resume', '/api/system/navigation-stack/pause'):
+            script = '/home/ubuntu/' + ('resume_navigation_stack.sh' if path.endswith('/resume') else 'pause_navigation_stack.sh')
+            try:
+                r = subprocess.run(['sudo', '-n', script], capture_output=True, text=True, timeout=25)
+                if r.returncode:
+                    return self._json(500, {'error': r.stderr.strip() or 'navigation stack switch failed'})
+                return self._json(200, {'ok': True, **navigation_stack_status()})
             except Exception as e:
                 return self._json(500, {'error': str(e)})
         match = SERVICE_RESTART_PATH.fullmatch(path)

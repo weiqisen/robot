@@ -7,6 +7,7 @@ const { state, HOST } = useRos()
 const j = computed(() => state.jetson)
 const inspectOpen = ref(false), inspectKind = ref(''), inspectRows = ref([]), inspectFs = ref(null), inspecting = ref(false)
 const desktop = ref(null), desktopBusy = ref(false)
+const navigationStack = ref(null), navigationBusy = ref(false)
 const fmtGb = n => n == null ? '—' : (n / 1e9).toFixed(1) + ' GB'
 async function refreshDesktop() {
   try {
@@ -14,6 +15,32 @@ async function refreshDesktop() {
     const d = await r.json(); if (!r.ok) throw Error(d.error || r.status)
     desktop.value = d
   } catch (e) { desktop.value = { error: e.message } }
+}
+async function refreshNavigationStack() {
+  try {
+    const r = await fetch(`http://${HOST}:8000/api/system/navigation-stack`, { cache: 'no-store' })
+    const d = await r.json(); if (!r.ok) throw Error(d.error || r.status)
+    navigationStack.value = d
+  } catch (e) { navigationStack.value = { error: e.message } }
+}
+function toggleNavigationStack(run) {
+  Modal.confirm({
+    title: run ? '恢复自主导航？' : '开启导航待机？',
+    content: run
+      ? '会恢复 SLAM、Nav2 与自主探索。'
+      : '会停止 SLAM、Nav2 与自主探索，预计释放约 1 GB 内存。相机、抓取、WebRTC、雷达看门狗和速度安全闸门继续运行；自主探索与返航不可用。',
+    okText: run ? '恢复导航' : '进入待机', cancelText: '取消', okButtonProps: run ? {} : { danger: true },
+    async onOk() {
+      navigationBusy.value = true
+      try {
+        const r = await fetch(`http://${HOST}:8000/api/system/navigation-stack/${run ? 'resume' : 'pause'}`, { method: 'PUT' })
+        const d = await r.json(); if (!r.ok) throw Error(d.error || r.status)
+        navigationStack.value = d
+        message.success(run ? '自主导航已恢复' : '导航已待机，资源将在下一轮遥测中更新')
+      } catch (e) { message.error('切换失败：' + e.message) }
+      finally { navigationBusy.value = false }
+    },
+  })
 }
 function toggleDesktop(enable) {
   Modal.confirm({
@@ -150,7 +177,7 @@ const sysinfo = computed(() => {
     ['主机名', v.hostname], ['IP 地址', v.ip], ['Wi-Fi SSID', v.wifi_ssid],
   ].filter(([, x]) => x != null && x !== '')
 })
-onMounted(refreshDesktop)
+onMounted(() => { refreshDesktop(); refreshNavigationStack() })
 </script>
 
 <template>
@@ -163,6 +190,10 @@ onMounted(refreshDesktop)
     <div class="desktop-control">
       <div><b>图形桌面</b><span v-if="desktop?.error">状态读取失败</span><span v-else>{{ desktop?.enabled ? '已开启 · GNOME 正在运行' : '已关闭 · 无桌面启动' }}</span></div>
       <a-switch :checked="!!desktop?.enabled" :loading="desktopBusy" checked-children="开" un-checked-children="关" @change="toggleDesktop" />
+    </div>
+    <div class="desktop-control navigation-control">
+      <div><b>自主导航</b><span v-if="navigationStack?.error">状态读取失败</span><span v-else>{{ navigationStack?.running ? '运行中 · SLAM / Nav2 / 探索' : '待机 · 已释放导航资源' }}</span></div>
+      <a-switch :checked="!!navigationStack?.running" :loading="navigationBusy" checked-children="运行" un-checked-children="待机" @change="toggleNavigationStack" />
     </div>
     <div class="hero">
       <div class="heads">
@@ -255,6 +286,7 @@ onMounted(refreshDesktop)
 .hero { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); }
 .desktop-control { display:flex; align-items:center; justify-content:space-between; padding:8px 16px; border-bottom:1px solid var(--divider); background:var(--surface-2); }
 .desktop-control b { font-size:13px; margin-right:9px; }.desktop-control span { color:var(--text-3); font-size:12px; }
+.navigation-control { background:var(--surface); }
 .heads { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
 .head { padding: 12px 16px 10px; border-right: 1px solid var(--divider); }.clickable{cursor:pointer}.clickable:hover{background:var(--accent-soft)}
 .head:last-child { border-right: 0; }
