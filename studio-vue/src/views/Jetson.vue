@@ -1,66 +1,12 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
-import { message, Modal } from 'ant-design-vue'
+import { computed, ref } from 'vue'
+import { message } from 'ant-design-vue'
 import { useRos } from '../composables/useRos'
 import MiniChart from '../components/MiniChart.vue'
 const { state, HOST } = useRos()
 const j = computed(() => state.jetson)
 const inspectOpen = ref(false), inspectKind = ref(''), inspectRows = ref([]), inspectFs = ref(null), inspecting = ref(false)
-const desktop = ref(null), desktopBusy = ref(false)
-const navigationStack = ref(null), navigationBusy = ref(false)
 const fmtGb = n => n == null ? '—' : (n / 1e9).toFixed(1) + ' GB'
-async function refreshDesktop() {
-  try {
-    const r = await fetch(`http://${HOST}:8000/api/system/desktop`, { cache: 'no-store' })
-    const d = await r.json(); if (!r.ok) throw Error(d.error || r.status)
-    desktop.value = d
-  } catch (e) { desktop.value = { error: e.message } }
-}
-async function refreshNavigationStack() {
-  try {
-    const r = await fetch(`http://${HOST}:8000/api/system/navigation-stack`, { cache: 'no-store' })
-    const d = await r.json(); if (!r.ok) throw Error(d.error || r.status)
-    navigationStack.value = d
-  } catch (e) { navigationStack.value = { error: e.message } }
-}
-function toggleNavigationStack(run) {
-  Modal.confirm({
-    title: run ? '恢复自主导航？' : '开启导航待机？',
-    content: run
-      ? '会恢复 SLAM、Nav2 与自主探索。'
-      : '会停止 SLAM、Nav2 与自主探索，预计释放约 1 GB 内存。相机、抓取、WebRTC、雷达看门狗和速度安全闸门继续运行；自主探索与返航不可用。',
-    okText: run ? '恢复导航' : '进入待机', cancelText: '取消', okButtonProps: run ? {} : { danger: true },
-    async onOk() {
-      navigationBusy.value = true
-      try {
-        const r = await fetch(`http://${HOST}:8000/api/system/navigation-stack/${run ? 'resume' : 'pause'}`, { method: 'PUT' })
-        const d = await r.json(); if (!r.ok) throw Error(d.error || r.status)
-        navigationStack.value = d
-        message.success(run ? '自主导航已恢复' : '导航已待机，资源将在下一轮遥测中更新')
-      } catch (e) { message.error('切换失败：' + e.message) }
-      finally { navigationBusy.value = false }
-    },
-  })
-}
-function toggleDesktop(enable) {
-  Modal.confirm({
-    title: enable ? '开启图形桌面？' : '关闭图形桌面？',
-    content: enable
-      ? '会启动 7 英寸触摸屏的 GNOME 桌面；下次开机也会进入桌面。'
-      : '会立即关闭 7 英寸触摸屏桌面，并在以后无桌面启动，以释放 CPU 和内存。网页、SSH、ROS 与机器人控制不会停止。',
-    okText: enable ? '开启桌面' : '关闭桌面', cancelText: '取消', okButtonProps: enable ? {} : { danger: true },
-    async onOk() {
-      desktopBusy.value = true
-      try {
-        const r = await fetch(`http://${HOST}:8000/api/system/desktop/${enable ? 'enable' : 'disable'}`, { method: 'PUT' })
-        const d = await r.json(); if (!r.ok) throw Error(d.error || r.status)
-        desktop.value = d
-        message.success(enable ? '图形桌面已开启' : '图形桌面已关闭，资源将在下一轮遥测中更新')
-      } catch (e) { message.error('切换失败：' + e.message) }
-      finally { desktopBusy.value = false }
-    },
-  })
-}
 async function inspect(kind) {
   inspectKind.value = kind; inspectOpen.value = true; inspecting.value = true; inspectRows.value = []; inspectFs.value = null
   try {
@@ -177,7 +123,6 @@ const sysinfo = computed(() => {
     ['主机名', v.hostname], ['IP 地址', v.ip], ['Wi-Fi SSID', v.wifi_ssid],
   ].filter(([, x]) => x != null && x !== '')
 })
-onMounted(() => { refreshDesktop(); refreshNavigationStack() })
 </script>
 
 <template>
@@ -186,15 +131,7 @@ onMounted(() => { refreshDesktop(); refreshNavigationStack() })
     description="需在机器人上运行 jetson_agent（解析 tegrastats + 读系统信息）。开机自动部署已包含：sudo systemctl status jetson-agent" />
 
   <!-- 头部合成一块：四个主指标（自带 120 秒曲线）+ 容量三条 + 其余压成键值列 -->
-  <a-card size="small" :body-style="{ padding: '4px 0 0' }">
-    <div class="desktop-control">
-      <div><b>图形桌面</b><span v-if="desktop?.error">状态读取失败</span><span v-else>{{ desktop?.enabled ? '已开启 · GNOME 正在运行' : '已关闭 · 无桌面启动' }}</span></div>
-      <a-switch :checked="!!desktop?.enabled" :loading="desktopBusy" checked-children="开" un-checked-children="关" @change="toggleDesktop" />
-    </div>
-    <div class="desktop-control navigation-control">
-      <div><b>自主导航</b><span v-if="navigationStack?.error">状态读取失败</span><span v-else>{{ navigationStack?.running ? '运行中 · SLAM / Nav2 / 探索' : '待机 · 已释放导航资源' }}</span></div>
-      <a-switch :checked="!!navigationStack?.running" :loading="navigationBusy" checked-children="运行" un-checked-children="待机" @change="toggleNavigationStack" />
-    </div>
+  <a-card size="small" :body-style="{ padding: '0' }">
     <div class="hero">
       <div class="heads">
           <div v-for="h in heads" :key="h.l" :class="['head',{ clickable:h.l==='CPU 负载' }]" @click="h.l==='CPU 负载' && inspect('cpu')">
@@ -284,9 +221,6 @@ onMounted(() => { refreshDesktop(); refreshNavigationStack() })
 
 <style scoped>
 .hero { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); }
-.desktop-control { display:flex; align-items:center; justify-content:space-between; padding:8px 16px; border-bottom:1px solid var(--divider); background:var(--surface-2); }
-.desktop-control b { font-size:13px; margin-right:9px; }.desktop-control span { color:var(--text-3); font-size:12px; }
-.navigation-control { background:var(--surface); }
 .heads { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
 .head { padding: 12px 16px 10px; border-right: 1px solid var(--divider); }.clickable{cursor:pointer}.clickable:hover{background:var(--accent-soft)}
 .head:last-child { border-right: 0; }
