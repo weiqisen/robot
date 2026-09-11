@@ -111,7 +111,8 @@ const loadText = value => value == null ? '--' : `${value}%`
 <template>
   <a-config-provider :theme="antdTheme">
   <!-- 工作台：全屏大屏视图，无侧栏 -->
-  <BigScreen key="bigscreen-root" v-show="current === 'bigscreen'" @open-admin="current = 'overview'" />
+  <!-- 工作台包含数字孪生屏幕；离开工作台时卸载，停止其中的桌面/相机轮询。 -->
+  <BigScreen v-if="current === 'bigscreen'" key="bigscreen-root" @open-admin="current = 'overview'" />
 
   <!-- 管理系统外壳 -->
   <a-layout key="admin-root" v-show="current !== 'bigscreen'" class="shell">
