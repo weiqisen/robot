@@ -319,7 +319,7 @@ DEFAULT_CONFIG = {
     # 观察位下相机会看到自己的底盘（绿色顶板 + 麦轮），HSV 一抓一个准。
     # 它在 base_link 里位置固定，跟臂怎么动无关，所以直接用 base_link 盒子排除。
     # 地面上的零食 z≈-0.09（桌面 -0.116 + 物高），底盘顶板 z≈0，不会误伤。
-    "self_body_boxes": [[0.05, 0.21, -0.17, 0.17, -0.045, 0.08]],
+    "self_body_boxes": [[0.05, 0.17, -0.17, 0.17, -0.045, 0.08]],
 
     # 点画面抓：光标离已识别目标超过这么多像素，就不吸附了，直接抓你点的那个位置
     "pick_radius_px": 70,
@@ -670,6 +670,14 @@ class SnackButler(Node):
         try:
             if os.path.exists(CONFIG_PATH):
                 deep_update(self.cfg, json.load(open(CONFIG_PATH)))
+            # 旧默认禁区把前方额外 4cm 也当作底盘，正前方物体会被误判为不可抓。
+            # 仅迁移完全等于旧默认值的配置；人工标定过的盒子一律保留。
+            if self.cfg.get('self_body_boxes') == [[0.05, 0.21, -0.17, 0.17, -0.045, 0.08]]:
+                self.cfg['self_body_boxes'] = [[0.05, 0.17, -0.17, 0.17, -0.045, 0.08]]
+                tmp = CONFIG_PATH + '.tmp'
+                with open(tmp, 'w') as f:
+                    json.dump(self.cfg, f, indent=2, ensure_ascii=False)
+                os.replace(tmp, CONFIG_PATH)
         except Exception as e:
             print('配置读取失败，用默认值:', e)
 
@@ -1240,11 +1248,20 @@ class SnackButler(Node):
             d['xyz'] = None if p is None else [round(v, 4) for v in p]
             d['depth_src'] = how
             d['reachable'] = False
+            if p is not None:
+                in_body = any(b[0] <= p[0] <= b[1] and b[2] <= p[1] <= b[3] and b[4] <= p[2] <= b[5]
+                              for b in cfg.get('self_body_boxes') or [])
+                if in_body:
+                    d['reachability_reason'] = '目标落在车身禁区'
+                elif not self._in_workspace_cfg(p, cfg):
+                    d['reachability_reason'] = '目标超出工作区'
             if p is not None and self._in_workspace_cfg(p, cfg):
                 gx, gy, gz = self._grasp_pose_cfg(p, cfg)
                 q = ik_best(gx, gy, gz, GRASP_PITCH,
                             tool=cfg['tool_len'])
                 d['reachable'] = q is not None
+                if q is None:
+                    d['reachability_reason'] = '垂直夹爪 IK 无解'
                 d['pitch_deg'] = 180.0 if q is not None else None
                 d['_grasp_q'] = q
             if p is not None:
@@ -1277,7 +1294,7 @@ class SnackButler(Node):
             score = round(100.0 * (.28*conf_score + .24*depth_score + .32*ik_score + .16*spacing_score))
             blockers, cautions = [], []
             if not xyz: blockers.append('缺少三维坐标')
-            elif not det.get('reachable'): blockers.append('垂直夹爪 IK 无解')
+            elif not det.get('reachable'): blockers.append(det.get('reachability_reason') or '垂直夹爪 IK 无解')
             if depth_score < .8: cautions.append('深度使用平面估计')
             if nearest < .045: cautions.append('邻近物体过近')
             if q and ik_margin < math.radians(12): cautions.append('关节接近限位')
