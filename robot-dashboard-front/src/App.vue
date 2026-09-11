@@ -60,7 +60,7 @@ const MENU = [
   { group: '操作' },
   { key: 'control', icon: ControlOutlined, label: '实时控制', comp: markRaw(Control), full: true },
   { key: 'armstudio', icon: BuildOutlined, label: '动作组编辑器', comp: markRaw(ArmStudio), full: true },
-  { key: 'robotdance', icon: FundProjectionScreenOutlined, label: '机械舞', comp: markRaw(RobotDance), full: true },
+  { key: 'robotdance', icon: FundProjectionScreenOutlined, label: '机械舞', comp: markRaw(RobotDance) },
   { key: 'remote', icon: DesktopOutlined, label: '远程桌面', comp: markRaw(Remote), full: true },
 ]
 const items = MENU.filter(m => m.key)
