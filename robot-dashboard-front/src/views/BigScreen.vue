@@ -324,7 +324,6 @@ onUnmounted(() => {
     <div class="bg-grid" />
     <!-- 顶栏：远距离也能一眼读懂任务和安全状态 -->
     <header class="topbar">
-      <div class="brand"><span class="brand-mark">JR</span><div><b>JETROVER</b><small>工具台态势中心</small></div></div>
       <button :class="['top-state', { active: topPanel === 'health' }]" @click="toggleTopPanel('health')"><span :class="['ldot', { on: state.connected }]" /><div><small>通信链路</small><b>{{ state.connected ? '在线' : '离线' }}</b></div></button>
       <button :class="['top-state', { active: topPanel === 'safety' }]" @click="toggleTopPanel('safety')"><span :class="['mode-icon', { armed: driveArmed }]">{{ driveArmed ? '●' : '◆' }}</span><div><small>安全状态</small><b :class="{ dangerText: driveArmed }">{{ driveMode }}</b></div></button>
       <button :class="['top-state', { active: topPanel === 'task' }]" @click="toggleTopPanel('task')"><span class="mode-icon">◎</span><div><small>任务模式</small><b>{{ taskMode }}</b></div></button>
@@ -711,11 +710,8 @@ onUnmounted(() => {
 
 /* 态势大屏增强层：覆盖原有紧凑控制台样式 */
 .topbar { height:64px; gap:22px; }
-.brand { display:flex; align-items:center; gap:10px; min-width:160px; }
-.brand-mark { display:grid; place-items:center; width:34px; height:34px; border:1px solid rgba(56,189,248,.55); border-radius:8px; color:#7DD3FC; font:700 12px/1 Inter; box-shadow:inset 0 0 16px rgba(56,189,248,.08); }
-.brand div,.top-state div { display:flex; flex-direction:column; gap:3px; }
-.brand b { font:700 13px/1 Inter; letter-spacing:1.8px; }
-.brand small,.top-state small { color:#64748B; font-size:9px; letter-spacing:.8px; }
+.top-state div { display:flex; flex-direction:column; gap:3px; }
+.top-state small { color:#64748B; font-size:9px; letter-spacing:.8px; }
 .top-state { display:flex; align-items:center; gap:8px; min-width:88px; padding:5px 7px;
   border:1px solid transparent; border-radius:7px; background:transparent; color:inherit;
   font-family:inherit; text-align:left; cursor:pointer; transition:.16s; }
@@ -829,11 +825,9 @@ onUnmounted(() => {
 .all-clear small { color:#64748B; margin-top:7px; font-size:10px; }
 .cbtn:disabled { opacity:.3; cursor:not-allowed; border-color:rgba(255,255,255,.08); color:#64748B; background:transparent; }
 @media (max-width:1280px) {
-  .brand { min-width:auto; } .brand small { display:none; }
   .top-state { min-width:auto; } .top-state:nth-of-type(3) { display:none; }
 }
 @media (max-width:820px) {
-  .brand { display:none; }
   .top-state { flex:1; } .top-state:nth-of-type(4) { display:none; }
   .scene-status { left:16px; bottom:16px; }
   .scene-status>div { min-width:70px; padding:8px; }
@@ -857,8 +851,6 @@ onUnmounted(() => {
   .viewport { flex: 1; height: auto; min-height: 0; }
 
   .topbar { height: 48px; padding: 0 12px; gap: 12px; }
-  .brand { min-width: 0; }
-  .brand small { display: none; }
   /* 顶栏状态卡片：平板上只留「通信链路」和「电池」，藏掉「安全状态」和「任务模式」 */
   .top-state { min-width: 0; gap: 6px; }
   .top-state small { display: none; }
@@ -874,8 +866,6 @@ onUnmounted(() => {
    顶栏换行，浮窗压到最小可用尺寸；仍然不让 body 滚。 */
 @media (max-width: 640px) {
   .topbar { flex-wrap: wrap; height: auto; min-height: 44px; padding: 6px 8px; gap: 8px; }
-  .brand b { font-size: 11px; letter-spacing: 1px; }
-  .brand-mark { width: 26px; height: 26px; }
   .top-state b { font-size: 11px; }
   .top-state.battery b { font-size: 15px; }
   .focus-btn { padding: 5px 10px; font-size: 10px; }
