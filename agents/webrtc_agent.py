@@ -36,6 +36,25 @@ pcs = set()
 vision_bridge = None
 
 
+def compress_highlights(frame):
+    """Tone-map only the delivery image; inference keeps the untouched ROS frame.
+
+    The overhead camera sees glossy tableware and labels.  JPEG/WebRTC used to
+    preserve their clipped 255 values, making the browser preview look much
+    brighter than the physical scene.  Compress just the high end of HSV value
+    so text, bounding-box colours and shadows stay legible.
+    """
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    value = hsv[..., 2]
+    highlight = value > 160
+    if np.any(highlight):
+        mapped = 160 + ((value[highlight].astype(np.float32) - 160.0) * 0.55)
+        value = value.copy()
+        value[highlight] = mapped.astype(np.uint8)
+        hsv[..., 2] = value
+    return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+
+
 class RosVisionBridge(Node):
     """缓存最新的标注图和 RGB 图，不让慢客户端把 ROS 图像队列堆起来。"""
     def __init__(self):
@@ -58,6 +77,9 @@ class RosVisionBridge(Node):
             frame = raw.reshape(msg.height, msg.width, 3).copy()
             if str(msg.encoding).lower() == 'rgb8':
                 frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            # Only presentation is tone-mapped.  snack_butler has already run
+            # detection against the original camera frame before publishing.
+            frame = compress_highlights(frame)
             with self.cv:
                 self.frames[channel] = frame
                 self.seqs[channel] += 1

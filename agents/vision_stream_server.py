@@ -13,6 +13,19 @@ from sensor_msgs.msg import Image
 PORT = 8082
 
 
+def compress_highlights(img):
+    """Prevent clipped reflections from washing out the browser MJPEG feed."""
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    value = hsv[..., 2]
+    highlight = value > 160
+    if np.any(highlight):
+        value = value.copy()
+        value[highlight] = (160 +
+                            (value[highlight].astype(np.float32) - 160.0) * 0.55).astype(np.uint8)
+        hsv[..., 2] = value
+    return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+
+
 class VideoHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -38,6 +51,7 @@ class Bridge(Node):
             if self.seen == 1:
                 self.get_logger().info('received first image (%dx%d %s)' % (msg.width, msg.height, msg.encoding))
             img = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, 3)
+            img = compress_highlights(img)
             ok, data = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 75])
             if ok:
                 with self.frame_ready:
