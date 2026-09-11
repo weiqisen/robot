@@ -2757,7 +2757,8 @@ onBeforeUnmount(() => {
         <img ref="detFeedImg" class="df-img" :src="detFeedSrc" alt="" @load="onMjpegFrame" @error="reloadDetFeed" />
         <video ref="detFeedVideo" :class="['df-img','df-rtc',{ ready:detRtcActive }]" autoplay muted playsinline
           @loadeddata="onDetRtcFrame" />
-        <svg class="df-boxes" :viewBox="`0 0 ${visionSize.w} ${visionSize.h}`" preserveAspectRatio="xMidYMid meet">
+        <!-- image_result 已在机器人端按同一帧绘制框；不要再叠加异步 state 的 bbox，否则视频与状态错帧会出现漂移/双框。 -->
+        <svg v-if="false" class="df-boxes" :viewBox="`0 0 ${visionSize.w} ${visionSize.h}`" preserveAspectRatio="xMidYMid meet">
           <g v-for="box in visionBoxes" :key="box.id" :data-track="box.id"
             :class="{ hot:hoveredTrackId===box.id }" @mouseenter="hoverVisionTrack(box.id)" @click="requestTargetInspection((state.snack?.detections||[]).find(d=>d.track_id===box.id))">
             <rect :x="box.bbox[0]" :y="box.bbox[1]" :width="box.bbox[2]" :height="box.bbox[3]" />
