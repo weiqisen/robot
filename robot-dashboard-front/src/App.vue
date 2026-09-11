@@ -121,7 +121,7 @@ const loadText = value => value == null ? '--' : `${value}%`
       theme="dark" :width="224" :class="['sider', { mobile: isMobile }]">
       <div class="brand">
         <robot-outlined style="color:#4096ff;font-size:20px;flex-shrink:0" />
-        <span v-if="!collapsed" class="brand-txt">Robot <b>控制台</b></span>
+        <span v-if="!collapsed" class="brand-txt">Robot <b>Dashboard</b></span>
       </div>
       <a-menu theme="dark" mode="inline" v-model:selectedKeys="selectedKeys" :items="menuItems"
         @click="onMenuClick">
