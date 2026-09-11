@@ -900,6 +900,8 @@ onUnmounted(() => {
   .clock { font-size: 12px; margin-left: auto; }
 
   .drive-pad { right: 8px; bottom: 8px; width: 138px; padding: 8px 9px; }
+  /* 动作组贴在折叠的手动驾驶卡上方；避免留出大块空白或盖住解锁入口。 */
+  .scene-action-card { right: 8px; bottom: 100px; }
   .dp-joy { width: 108px; height: 108px; }
   .dp-hint { display: none; }
   .scene-arm { left: 8px; bottom: 8px; width: 176px; padding: 8px 9px; }
