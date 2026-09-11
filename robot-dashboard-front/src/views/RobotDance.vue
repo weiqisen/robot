@@ -13,6 +13,11 @@ const cache = new Map(); let timer = null, runId = 0
 async function loadGroups() { loading.value = true; try { const r = await fetch(API.value, { cache: 'no-store' }), d = await r.json(); if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`); groups.value = d.groups || []; message.success(`已读取 ${groups.value.length} 个预设动作组`) } catch (e) { message.error(`读取动作组失败：${e.message}`) } finally { loading.value = false } }
 function addGroup(g) { queue.value.push({ name: g, section: '手动·4分', beats: 4 }) }
 function removeGroup(i) { queue.value.splice(i, 1) }
+function openTwinPreview() {
+  if (!queue.value.length) return message.warning('先用 AI 编排或手动加入动作组')
+  localStorage.setItem('robotDancePlan', JSON.stringify({ queue: queue.value, bpm: bpm.value, amplitude: amplitude.value, savedAt: Date.now() }))
+  location.hash = 'bigscreen'
+}
 async function getRows(g) { if (cache.has(g)) return cache.get(g); const r = await fetch(`${API.value}/${encodeURIComponent(g)}`, { cache: 'no-store' }), d = await r.json(); if (!r.ok || !d.rows?.length) throw new Error(d.error || `${g} 为空`); cache.set(g, d.rows); return d.rows }
 async function aiArrange() {
   if (!groups.value.length) await loadGroups()
@@ -39,6 +44,7 @@ async function aiArrange() {
     }
     // 一格代表一个“和弦动作”。4 拍=一小节，2 拍=半小节，1 拍=四分重音；任何动作最多 8 拍=两小节。
     queue.value = [pick('low', '前奏·4分', 4), pick('mid', '前奏·4分', 4), pick('mid', '主歌·8分', 2), pick('low', '主歌·8分', 2), pick('mid', '主歌·4分', 4), pick('high', '副歌·8分', 2), pick('mid', '副歌·4分', 1), pick('high', '副歌·8分', 2), pick('low', '间奏·4分', 4), pick('mid', '间奏·8分', 2), pick('high', '最终副歌·8分', 2), pick('mid', '最终副歌·4分', 1), pick('high', '最终副歌·2小节', 8)]
+    localStorage.setItem('robotDancePlan', JSON.stringify({ queue: queue.value, bpm: bpm.value, amplitude: amplitude.value, savedAt: Date.now() }))
     message.success(`AI 已生成 ${queue.value.length} 个和弦动作；每个动作都不超过两小节`)
   } catch (e) { message.error(`AI 编排失败：${e.message}`) } finally { loading.value = false }
 }
@@ -49,7 +55,7 @@ function safeRow(row, tempo = 1) {
     duration: Math.min(1.25, Math.max(.25, (+row.time || 900) / 1000 * tempo)),
     position: ids.map((id, i) => ({
       id,
-      position: Math.round(Math.max(180, Math.min(820, 500 + ((+row.servos?.[i] || 500) - 500) * scale))),
+      position: Math.round(Math.max(440, Math.min(560, 500 + ((+row.servos?.[i] || 500) - 500) * scale))),
     })),
   }
 }

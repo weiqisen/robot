@@ -90,6 +90,7 @@ const armPanelCollapsed = ref(true)
 const actionGroups = ref([]), actionGroup = ref(''), actionRunning = ref(false)
 const actionPanelCollapsed = ref(true)
 const actionStep = ref(0), actionTotal = ref(0)
+const dancePreviewRunning = ref(false)
 const actionLabel = name => actionGroupLabel(name, actionGroups.value)
 async function loadActionGroups() { try { const r = await fetch(ACTION_API, { cache:'no-store' }); const j = await r.json(); if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`); actionGroups.value = j.groups || [] } catch (e) { message.error(`动作组读取失败：${e.message}`) } }
 function playActionRow(row, ms) {
@@ -116,6 +117,26 @@ async function runAllActionGroups() {
   try { for (const name of actionGroups.value) { if (!actionRunning.value) break; actionGroup.value = name; const r = await fetch(`${ACTION_API}/${encodeURIComponent(name)}`, { cache:'no-store' }); const j = await r.json(); if (!r.ok) { message.error(j.error || `动作组读取失败：${name}`); continue } actionTotal.value=j.rows?.length||0; for (let i=0;i<(j.rows||[]).length && actionRunning.value;i++){const row=j.rows[i],ms=row.time||1000;actionStep.value=i+1;playActionRow(row, ms);await new Promise(res=>setTimeout(res,ms))} } } finally { actionRunning.value=false; twinRef.value?.setActionGroupAnimating(false) }
 }
 function stopActionGroup() { actionRunning.value=false; twinRef.value?.setActionGroupAnimating(false) }
+async function previewDancePlan() {
+  if (dancePreviewRunning.value) return
+  let plan
+  try { plan = JSON.parse(localStorage.getItem('robotDancePlan') || 'null') } catch (_) {}
+  if (!plan?.queue?.length) return message.warning('机械舞页面尚未生成编排计划')
+  dancePreviewRunning.value = true; twinRef.value?.setActionGroupAnimating(true)
+  try {
+    for (const step of plan.queue) {
+      const r = await fetch(`${ACTION_API}/${encodeURIComponent(step.name)}`, { cache:'no-store' }); const j = await r.json()
+      if (!r.ok || !j.rows?.length) continue
+      // 仅驱动数字孪生；脉冲严格收在中位 ±60，避免把危险的原动作幅度带入预演。
+      for (const row of j.rows) {
+        if (!dancePreviewRunning.value) break
+        const pulses = row.servos.map((p, i) => Math.round(Math.max(i === 5 ? 460 : 440, Math.min(i === 5 ? 540 : 560, 500 + ((p || 500) - 500) * .2))))
+        twinRef.value?.animateServoPose(pulses, Math.max(250, Math.min(900, row.time || 900)))
+        await new Promise(resolve => setTimeout(resolve, Math.max(250, Math.min(900, row.time || 900))))
+      }
+    }
+  } finally { dancePreviewRunning.value=false; twinRef.value?.setActionGroupAnimating(false) }
+}
 loadActionGroups()
 
 // ---- 底盘手动驾驶：摇杆 + WASD，和实时控制页同一套安全前提 ----
@@ -418,7 +439,7 @@ onUnmounted(() => {
           <div v-if="!actionPanelCollapsed" class="scene-action-card">
             <div><small>动作组</small><b>{{ actionRunning ? `执行中 · ${actionStep}/${actionTotal}` : '工具台快捷执行' }}</b></div>
             <div class="scene-action-grid"><button v-for="g in actionGroups" :key="g" :class="{ selected: actionGroup === g, running: actionGroup === g && actionRunning }" :title="`${actionLabel(g)} · 点击执行`" @click="actionGroup=g;runActionGroup()"><span>{{ actionLabel(g) }}</span><i>▶</i></button></div>
-            <div class="scene-action-buttons"><button v-if="actionRunning" class="stop" @click="stopActionGroup">停止</button><button v-else :disabled="!actionGroups.length" @click="runAllActionGroups">一键执行全部</button><button @click="loadActionGroups">刷新</button></div>
+            <div class="scene-action-buttons"><button v-if="actionRunning" class="stop" @click="stopActionGroup">停止</button><button v-else :disabled="!actionGroups.length" @click="runAllActionGroups">一键执行全部</button><button :disabled="dancePreviewRunning" @click="previewDancePlan">{{ dancePreviewRunning ? '预演中…' : '机械舞预演' }}</button><button @click="loadActionGroups">刷新</button></div>
           </div>
           <div class="scene-status">
             <div><small>线速度</small><b>{{ vx.toFixed(2) }} <em>m/s</em></b></div>
