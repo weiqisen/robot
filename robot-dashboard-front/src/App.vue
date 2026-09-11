@@ -29,6 +29,7 @@ import Snack from './views/Snack.vue'
 import Remote from './views/Remote.vue'
 import ArmStudio from './views/ArmStudio.vue'
 import GpuBench from './views/GpuBench.vue'
+import RobotDance from './views/RobotDance.vue'
 import Docs from './views/Docs.vue'
 
 const { state } = useRos()
@@ -59,6 +60,7 @@ const MENU = [
   { group: '操作' },
   { key: 'control', icon: ControlOutlined, label: '实时控制', comp: markRaw(Control), full: true },
   { key: 'armstudio', icon: BuildOutlined, label: '动作组编辑器', comp: markRaw(ArmStudio), full: true },
+  { key: 'robotdance', icon: FundProjectionScreenOutlined, label: '机械舞', comp: markRaw(RobotDance), full: true },
   { key: 'remote', icon: DesktopOutlined, label: '远程桌面', comp: markRaw(Remote), full: true },
 ]
 const items = MENU.filter(m => m.key)
