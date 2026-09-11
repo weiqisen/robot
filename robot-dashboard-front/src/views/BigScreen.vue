@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref, reactive, watch, onMounted, onUnmounted } from 'vue'
 import { message, Modal } from 'ant-design-vue'
+import { RobotOutlined } from '@ant-design/icons-vue'
 import { useRos, imuEuler, deg, battPct, BATT_WARN } from '../composables/useRos'
 import Twin from './Twin.vue'
 import RingGauge from '../components/RingGauge.vue'
@@ -324,6 +325,7 @@ onUnmounted(() => {
     <div class="bg-grid" />
     <!-- 顶栏：远距离也能一眼读懂任务和安全状态 -->
     <header class="topbar">
+      <div class="dashboard-brand"><robot-outlined /><span>Robot <b>Dashboard</b></span></div>
       <button :class="['top-state', { active: topPanel === 'health' }]" @click="toggleTopPanel('health')"><span :class="['ldot', { on: state.connected }]" /><div><small>通信链路</small><b>{{ state.connected ? '在线' : '离线' }}</b></div></button>
       <button :class="['top-state', { active: topPanel === 'safety' }]" @click="toggleTopPanel('safety')"><span :class="['mode-icon', { armed: driveArmed }]">{{ driveArmed ? '●' : '◆' }}</span><div><small>安全状态</small><b :class="{ dangerText: driveArmed }">{{ driveMode }}</b></div></button>
       <button :class="['top-state', { active: topPanel === 'task' }]" @click="toggleTopPanel('task')"><span class="mode-icon">◎</span><div><small>任务模式</small><b>{{ taskMode }}</b></div></button>
@@ -710,6 +712,9 @@ onUnmounted(() => {
 
 /* 态势大屏增强层：覆盖原有紧凑控制台样式 */
 .topbar { height:64px; gap:22px; }
+.dashboard-brand { display:flex; align-items:center; gap:9px; min-width:172px; color:#E2E8F0; font:600 15px/1 Inter,sans-serif; letter-spacing:.2px; white-space:nowrap; }
+.dashboard-brand :deep(svg) { color:#4096ff; font-size:21px; }
+.dashboard-brand b { color:#7DD3FC; font-weight:700; }
 .top-state div { display:flex; flex-direction:column; gap:3px; }
 .top-state small { color:#64748B; font-size:9px; letter-spacing:.8px; }
 .top-state { display:flex; align-items:center; gap:8px; min-width:88px; padding:5px 7px;
@@ -825,9 +830,11 @@ onUnmounted(() => {
 .all-clear small { color:#64748B; margin-top:7px; font-size:10px; }
 .cbtn:disabled { opacity:.3; cursor:not-allowed; border-color:rgba(255,255,255,.08); color:#64748B; background:transparent; }
 @media (max-width:1280px) {
+  .dashboard-brand { min-width:auto; }
   .top-state { min-width:auto; } .top-state:nth-of-type(3) { display:none; }
 }
 @media (max-width:820px) {
+  .dashboard-brand { display:none; }
   .top-state { flex:1; } .top-state:nth-of-type(4) { display:none; }
   .scene-status { left:16px; bottom:16px; }
   .scene-status>div { min-width:70px; padding:8px; }
