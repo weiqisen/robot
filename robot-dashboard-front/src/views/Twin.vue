@@ -2740,7 +2740,6 @@ onBeforeUnmount(() => {
       <section class="fh-card fh-tl"><small>MISSION / CONTROL</small><b>{{ hudTask }}</b><span>{{ hudSource }}</span></section>
       <section class="fh-card fh-tr"><small>COMPUTE / LINK</small><b>CPU {{ cpuAvg == null ? '—' : cpuAvg+'%' }} · GPU {{ hudGpu == null ? '—' : hudGpu+'%' }}</b><span>{{ state.connected ? 'ROS LINK ONLINE' : 'ROS LINK LOST' }}</span></section>
       <section :class="['fh-card','fh-bl',{ shifted:props.armPanelOpen }]"><small>CHASSIS VECTOR</small><b>{{ hudVx >= 0 ? '▲' : '▼' }} {{ Math.abs(hudVx).toFixed(2) }} m/s</b><span>Y {{ hudVy.toFixed(2) }} · ω {{ hudWz.toFixed(2) }}</span></section>
-      <section class="fh-card fh-br"><small>MANIPULATOR</small><b>{{ state.snack?.state || 'IDLE' }}</b><span>夹爪 {{ gripperText }} · Joints {{ jointRows.filter(j=>j.deg!=null).length }}/6</span></section>
       <div v-if="state.snack?.step" class="fh-step"><i /><small>CURRENT DECISION</small><b>{{ state.snack.step }}</b></div>
       <transition name="alert-pop"><div v-if="hudAlert" class="fh-alert"><i>!</i><div><small>IMPORTANT WARNING</small><b>{{ hudAlert }}</b></div></div></transition>
     </div>
