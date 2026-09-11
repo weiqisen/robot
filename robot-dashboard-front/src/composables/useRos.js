@@ -40,6 +40,35 @@ let ros = null
 const subs = {}
 const pubs = {}
 let started = false
+let reconnectTimer = null
+
+function forgetTopics(unsubscribe = false) {
+  if (unsubscribe) {
+    Object.values(subs).forEach(t => { try { t.unsubscribe() } catch (_) {} })
+  }
+  Object.keys(subs).forEach(k => delete subs[k])
+  Object.keys(pubs).forEach(k => delete pubs[k])
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer) return
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null
+    if (!ros) connect()
+  }, 2000)
+}
+
+function closeRosForPageExit() {
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
+  const client = ros
+  ros = null
+  state.connected = false
+  // 正常页面刷新/关闭时先发 unsubscribe，再关 WebSocket。这样 rosbridge 不会把
+  // 已离开的浏览器订阅留到下一轮 ROS 消息里继续写，形成每秒 ClosedError。
+  forgetTopics(true)
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null }
+  try { client?.close() } catch (_) {}
+}
 
 function topic(name, messageType) {
   if (!pubs[name]) pubs[name] = new ROSLIB.Topic({ ros, name, messageType })
@@ -130,14 +159,26 @@ function refreshIntrospection() {
 }
 
 function connect() {
-  ros = new ROSLIB.Ros({ url: `ws://${ROBOT_HOST}:${ROSBRIDGE_PORT}` })
-  ros.on('connection', () => { state.connected = true; subscribeAll() })
-  ros.on('error', () => { state.connected = false })
-  ros.on('close', () => {
+  if (ros) return
+  const client = new ROSLIB.Ros({ url: `ws://${ROBOT_HOST}:${ROSBRIDGE_PORT}` })
+  ros = client
+  client.on('connection', () => {
+    // 旧连接的迟到事件不能给新连接重复注册一整套订阅。
+    if (client !== ros) { try { client.close() } catch (_) {}; return }
+    state.connected = true
+    subscribeAll()
+  })
+  client.on('error', () => { if (client === ros) state.connected = false })
+  client.on('close', () => {
+    if (client !== ros) return
+    ros = null
     state.connected = false
     state.explorer = null; state.explorerAt = 0
     state.navSafety = null; state.navSafetyAt = 0
-    setTimeout(connect, 2000)
+    // socket 已关闭时不要再发 unsubscribe；只清本地引用，随后只建一条新连接。
+    forgetTopics(false)
+    if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null }
+    scheduleReconnect()
   })
 }
 
@@ -251,7 +292,12 @@ const actions = {
 }
 
 export function useRos() {
-  if (!started) { started = true; connect() }
+  if (!started) {
+    started = true
+    connect()
+    // pagehide 同时覆盖刷新、关闭标签和进入 bfcache；hash 菜单切换不会误断开。
+    if (typeof window !== 'undefined') window.addEventListener('pagehide', closeRosForPageExit, { once: true })
+  }
   return { state: readonly(state), rawState: state, actions,
     HOST: ROBOT_HOST, VIDEO_PORT, VISION_VIDEO_PORT, WEBRTC_PORT, BATT_MIN, BATT_MAX, BATT_WARN }
 }
